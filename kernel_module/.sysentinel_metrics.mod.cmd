@@ -1,0 +1,1 @@
+savedcmd_sysentinel_metrics.mod := printf '%s\n'   sysentinel_core.o src/mei_shim.o src/proc_entry.o src/hypercall_watcher.o src/rootkit_defender.o src/triplefault.o | awk '!x[$$0]++ { print("./"$$0) }' > sysentinel_metrics.mod

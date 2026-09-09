@@ -1,0 +1,38 @@
+# SPDX-License-Identifier: MIT OR GPL-2.0-or-later
+#
+# sysentinel-cam — minimal V4L2 webcam snapshot tool.
+#
+# Used twice:
+#   1. Inside the initramfs (dracut module 91sysentinel): grabs the "intruder
+#      photo" right after a LUKS decrypt, before the root is pivoted.
+#   2. By the post-boot daemon: captures a frame for the login/btmp intruder
+#      alerts, then the daemon attaches it to the Telegram alert (sendPhoto).
+#
+# Auto-detects the FIRST usable capture device in /dev/video* — works for USB
+# and integrated (laptop) webcams alike. If no usable camera exists, it exits
+# non-zero and the caller falls back to a text-only notice (no photo).
+
+[package]
+name        = "sysentinel-cam"
+version     = "0.1.0"
+edition     = "2021"
+license     = "MIT OR GPL-2.0-or-later"
+description = "Minimal V4L2 webcam snapshot to JPEG for the sysentinel initramfs + daemon"
+publish     = false
+
+[[bin]]
+name = "sysentinel-cam"
+path = "src/main.rs"
+
+[dependencies]
+# Raw ioctls / mmap / poll for the V4L2 capture path.
+libc = "0.2"
+# JPEG encoding for the YUYV/GREY frames (MJPG frames are already JPEG).
+# Same tree as the daemon's dependency: pure-Rust encoder, no OpenSSL.
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
+
+[profile.release]
+opt-level = "z"    # small binary for the initramfs
+lto       = true
+panic     = "abort"
+strip     = true

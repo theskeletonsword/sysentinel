@@ -1,0 +1,57 @@
+# SPDX-License-Identifier: MIT OR GPL-2.0-or-later
+[Unit]
+Description=sysentinel — kernel log watchdog + interactive AI companion
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/sysentinel-daemon --config /etc/sysentinel/config.toml
+Restart=on-failure
+RestartSec=5
+
+# ── Privilege model ──────────────────────────────────────────────────────────
+# Run as a dedicated unprivileged user.
+User=sysentinel
+Group=sysentinel
+# utmp group: lets the login watcher read /var/log/wtmp (and btmp).
+SupplementaryGroups=utmp
+
+# Capabilities needed:
+#   CAP_SYSLOG   — read /dev/kmsg (required)
+#   CAP_PERFMON  — read hardware PMU counters (optional; graceful fallback
+#                  to software-only counters if not granted)
+#   CAP_KILL     — ring-3 "login kill": SIGKILL a session that the owner
+#                  denied (`no` / timeout / `/login kill`). Without the kernel
+#                  module's write_gid gate this is the only way to close an
+#                  intruder session from an unprivileged daemon. It lets the
+#                  daemon send signals to any process — that is the feature.
+#
+# Intel ME is queried in ring-0 by the 'sysentinel_metrics' kernel module
+# (read from /proc/sysentinel_metrics, mode 0644). AMD PSP/TPM is read from
+# sysfs. NO 'mei' group is needed. When the module is loaded with
+# write_gid=$(id -g sysentinel), this user can also send confirmed control
+# commands (reboot/poweroff/CR writes) through the same procfs file.
+AmbientCapabilities=CAP_SYSLOG CAP_PERFMON CAP_KILL
+CapabilityBoundingSet=CAP_SYSLOG CAP_PERFMON CAP_KILL
+NoNewPrivileges=true
+
+# ── Filesystem sandboxing ─────────────────────────────────────────────────────
+ProtectSystem=strict
+# ProtectHome must be OFF: the module analyser searches /home and /root for a
+# hand-copied .ko dropped by an attacker (`objdump` needs the real binary).
+ProtectHome=false
+# PrivateTmp must be OFF: the daemon must see the SYSTEM's /tmp drop zone (and
+# /var/tmp, /dev/shm) to find an intruder's module, not its own private copy.
+PrivateTmp=false
+ReadOnlyPaths=/
+# Daemon needs to write its pairing state file and logs.
+ReadWritePaths=/var/lib/sysentinel /var/log/sysentinel
+# /dev/kmsg, /proc, /sys are always accessible via the kernel.
+
+# ── Networking ───────────────────────────────────────────────────────────────
+# The daemon makes HTTPS calls to Telegram + LLM cloud APIs.
+# PrivateNetwork would break outbound HTTPS — do not enable it.
+
+[Install]
+WantedBy=multi-user.target

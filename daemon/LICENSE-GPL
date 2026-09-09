@@ -1,0 +1,16 @@
+GNU GENERAL PUBLIC LICENSE
+Version 2, June 1991
+
+This file is a placeholder. The full, canonical text of the GNU General
+Public License, Version 2, must be distributed alongside this project as
+required by the license itself. Obtain the official text from:
+
+    https://www.gnu.org/licenses/old-licenses/gpl-2.0.txt
+
+and place it in this file before distributing binaries built from the
+`kernel_module/` component, which is licensed strictly as GPL-2.0-only
+(required for linking against the Linux kernel). The `daemon/` component
+is dual-licensed MIT OR GPL-2.0-or-later; you may choose either license
+when redistributing the daemon.
+
+SPDX-License-Identifier: GPL-2.0-only

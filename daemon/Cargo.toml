@@ -1,0 +1,70 @@
+[package]
+name        = "sysentinel-daemon"
+version     = "0.2.0"
+edition     = "2021"
+license     = "MIT OR GPL-2.0-or-later"
+description = "Kernel log watchdog + interactive AI companion daemon with Telegram, LLM, Intel ME, AMD PSP, and PMU support"
+authors     = ["sysentinel contributors"]
+repository  = "https://example.invalid/sysentinel"
+
+[[bin]]
+name = "sysentinel-daemon"
+path = "src/main.rs"
+
+[dependencies]
+# ── HTTP client ────────────────────────────────────────────────────────────────
+# ureq with the `tls` feature uses rustls under the hood — no OpenSSL,
+# fully statically linkable, portable.
+ureq     = { version = "2.10", default-features = false, features = ["tls", "json"] }
+rustls   = "0.23"
+
+# ── Config + serialisation ────────────────────────────────────────────────────
+serde      = { version = "1", features = ["derive"] }
+toml       = "0.8"
+serde_json = "1"
+
+# ── Pairing-token hardening ────────────────────────────────────────────────────
+# Pairing tokens are never stored in plaintext. The daemon hashes them with
+# Argon2id and a random salt (OsRng → getrandom → /dev/urandom on Linux) so a
+# token that leaks from memory/state dumps cannot be brute-forced or reused.
+argon2 = { version = "0.5", features = ["rand"] }
+# Direct dependency so we can enable `getrandom` (→ OsRng → /dev/urandom) on
+# password-hash; feature unification also fixes it for argon2's re-export.
+password-hash = { version = "0.5", features = ["getrandom"] }
+
+# ── Error handling / logging / CLI ────────────────────────────────────────────
+anyhow     = "1"
+log        = "0.4"
+env_logger = "0.11"
+clap       = { version = "4", features = ["derive"] }
+
+# ── Time ──────────────────────────────────────────────────────────────────────
+chrono     = { version = "0.4", default-features = false, features = ["clock"] }
+
+# ── POSIX syscall wrappers ────────────────────────────────────────────────────
+# Used by:
+#   mei.rs  — IOCTL_MEI_CONNECT_CLIENT (raw ioctl + read/write)
+#   pmu.rs  — SYS_perf_event_open + PERF_EVENT_IOC_* ioctls
+libc       = "0.2"
+
+# ── Image encoding (camera evidence) ───────────────────────────────────────────
+# Pure-Rust V4L2 raw frames (YUYV/GREY) and any BMP written by emergency
+# tools get converted to JPEG for Telegram. vision analysis is NEVER used —
+# photos go straight to the chat as attachments (no expensive image tokens).
+image      = { version = "0.25", default-features = false, features = ["jpeg"] }
+
+# ── Local LLM inference (optional, feature-gated) ─────────────────────────────
+# Off by default: enables `llm.backend = "local"` via llama.cpp Rust bindings.
+# Pulls in a C++ build dependency (llama.cpp).
+# Enable with: cargo build --release --features local-llm
+llama-cpp-2 = { version = "0.1", optional = true }
+
+[features]
+default   = []
+local-llm = ["dep:llama-cpp-2"]
+
+[profile.release]
+opt-level = "z"    # Optimise for binary size (daemon is long-running; code fits in L1I)
+lto       = true   # Link-time optimisation for better inlining across crate boundaries
+panic     = "abort" # Smaller binary; panics are unrecoverable in a daemon anyway
+strip     = true   # Strip debug symbols from the released binary

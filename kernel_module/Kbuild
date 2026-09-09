@@ -1,0 +1,51 @@
+# SPDX-License-Identifier: GPL-2.0-only
+#
+# Kbuild file consumed by the kernel build system for an out-of-tree
+# rust-for-linux module (CONFIG_RUST=y required).
+#
+# The single Rust source file (sysentinel_metrics.rs) is the module root;
+# it `mod`-includes hypercall.rs and, when --cfg mei_available is set,
+# mei_driver.rs. The kernel build system compiles everything reachable
+# from that root into one module object.
+#
+# Optional MEI C shim:
+#   When the Makefile passes CONFIG_SYSENTINEL_MEI_SHIM=y, the small C
+#   wrapper src/mei_shim.c is compiled and linked to provide the
+#   sysentinel_mei_register / _unregister / _send / _recv symbols that
+#   mei_driver.rs calls via extern "C".
+
+obj-$(CONFIG_SYSENTINEL_METRICS) += sysentinel_metrics.o
+
+# The module is composed of several leaf objects. The Rust crate root must
+# therefore live in its own object (sysentinel_core.o) instead of occupying
+# the module object name: if the Rust source were sysentinel_metrics.rs,
+# kbuild would emit both the compiled crate AND the final multi-object link
+# as sysentinel_metrics.o, and the second (LD [M]) would clobber the first.
+sysentinel_metrics-y += sysentinel_core.o
+
+# Pass any extra rustc flags set by the Makefile (e.g. --cfg mei_available).
+KBUILD_RUSTFLAGS += $(SYSENTINEL_EXTRA_RUSTFLAGS)
+
+# Link the MEI C shim when requested.
+ifeq ($(CONFIG_SYSENTINEL_MEI_SHIM),y)
+sysentinel_metrics-y += src/mei_shim.o
+endif
+
+# The procfs shim is always required: /proc/sysentinel_metrics lives here
+# (rust-for-linux 7.1 has no /proc abstraction). It calls the Rust exports
+# rs_render_snapshot / rs_exec_command.
+sysentinel_metrics-y += src/proc_entry.o
+
+# Guest -> hypervisor hypercall watcher. kprobes the exported KVM symbol
+# kvm_emulate_hypercall to intercept every guest hypercall on a KVM host and
+# publishes a drainable log at /proc/sysentinel_hypercalls. It also provides
+# the privileged `killsession <pid>` helper the daemon uses to kick an
+# intruder's login. Harmless on bare-metal / guest installs (kprobe attach
+# fails gracefully and the node reports "unavailable").
+sysentinel_metrics-y += src/hypercall_watcher.o
+sysentinel_metrics-y += src/rootkit_defender.o
+
+# Emergency host-down helpers (hard reset via bogus IDT + int3, and forced
+# kernel panic via panic()). The Rust side latches triplefault per-boot and
+# the daemon only issues any of these after explicit confirmation.
+sysentinel_metrics-y += src/triplefault.o

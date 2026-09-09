@@ -1,0 +1,245 @@
+# SPDX-License-Identifier: MIT OR GPL-2.0-or-later
+#
+# sysentinel-daemon — example configuration file.
+# Copy to /etc/sysentinel/config.toml (or pass --config PATH) and fill in
+# your own values.  Keep it chmod 600:  sudo chmod 600 /etc/sysentinel/config.toml
+
+# ── [general] ────────────────────────────────────────────────────────────────
+
+[general]
+# Minimum severity that triggers a Telegram alert:
+#   "info" | "warning" | "error" | "critical"
+min_severity     = "warning"
+# Fallback sleep between /dev/kmsg reads (ms) when blocking mode is unavailable.
+poll_interval_ms = 500
+# Where the bot persists `/settings` notification preferences (JSON). Defaults
+# to /var/lib/sysentinel/settings.json.
+settings_file = "/var/lib/sysentinel/settings.json"
+# How often the live watcher checks thermal / memory / load / PMU / TSC and
+# reports the top processes (htop). Minimum effective value: 5 s.
+watch_interval_secs = 15
+# How often the LLM runs its own *proactive* review (only while the
+# `proactive` category is ON in /settings): it looks at sensors + recent dmesg
+# and decides on its own whether to tell you. Every run costs one small LLM call.
+review_interval_secs = 300
+
+# ── [settings] toggles lived in /settings (JSON, not this file) ───────────────
+# The daemon persists on/off per-category to /var/lib/sysentinel/settings.json.
+# Defaults (all ON unless noted): kernel, selinux, thermal, memory, load, htop,
+# pmu, battery, tsc, control, login, hypercall, modwatch. Default OFF: diag, proactive.
+#
+#   login           — announce every login (GUI + SSH) and let you accept/kill it
+#   login_timeout   — seconds to answer before auto-close (default 180; 0 = keep)
+#   login_auto_close— on timeout with no answer: close (default true)
+#   hypercall       — report what each guest asked the KVM hypervisor
+#   modwatch        — notice/ask about foreign kernel modules being insmod'd
+#   battery         — alert on laptop battery draining (≤20/10/5%); no-op on desktops
+#
+# Machine fingerprint (`/definehome`): saved to home.json next to settings_file.
+
+# ── [persona] ────────────────────────────────────────────────────────────────
+
+[persona]
+# Free-text description of the AI's tone and persona. Injected verbatim into
+# the system prompt. Write it however you like.
+#
+# Examples:
+#   "formal and concise, like a seasoned systems administrator's incident report"
+#   "colloquial Chilean Spanish, casual and direct, use local slang freely"
+#   "flaite/callejero Chilean style — very informal, Ché wey energy"
+#   "friendly senior DevOps engineer explaining things to a junior"
+tone = "formal and concise, like a seasoned systems administrator's incident report"
+# BCP-47 language tag. The AI will answer in this language regardless of tone.
+language = "es-CL"
+# Personify: the bot mirrors the machine's live mood (load, memory, temperature,
+# PMU) on every turn — "System mood / Animo del sistema". Cost: one short line
+# per turn. Set false to disable.
+emotions = true
+# Whether the CPU is undervolted. RESOLVED AT RUNTIME by vendor (Intel/AMD/
+# Zhaoxin): the persona only claims an undervolt/overvolt when positive evidence
+# exists (intel-undervolt applied, or the intel-undervolt service enabled with
+# non-zero offsets in /etc/intel-undervolt.conf). Otherwise it tells the truth
+# (stock). This flag is used ONLY as an opt-in when the state is unverifiable.
+# See /undervolt for the live check.
+undervolted = false
+# Rewrite every push notification (SELinux, thermal, RAM, load, PMU, TSC) in
+# the persona's own dialect instead of cold log lines. If you set the bot to
+# talk Chilean Spanish, the alerts will too. Costs one small LLM call per event.
+chatty_alerts = true
+
+# ── [telegram] ───────────────────────────────────────────────────────────────
+
+[telegram]
+# Create a bot via Telegram's @BotFather and paste its token here.
+bot_token   = "REPLACE_WITH_YOUR_BOT_TOKEN"
+
+# Paired Telegram chat ID. Leave as 0 (or omit) to use the pairing-token flow:
+# the daemon prints a "SYN-XXXXX" token in the log; send that token to your bot
+# in Telegram to pair. The chat_id is then saved automatically to state_file.
+#
+# To find your chat_id manually after sending a message to your bot:
+#   curl "https://api.telegram.org/bot<TOKEN>/getUpdates"
+chat_id     = 0
+
+# Enable outbound Telegram alerting at all.
+enabled     = true
+
+# Enable the interactive bot (getUpdates long-poll, pairing flow, AI chat).
+# When false, the daemon sends outbound alerts only (no listener thread).
+interactive = true
+
+# Where to persist the paired chat_id between restarts. Mode 0600.
+state_file  = "/var/lib/sysentinel/state.json"
+
+# ── REQUIRED FOR SECURE PAIRING ───────────────────────────────────────────────
+# Your Telegram user id (get it from @userinfobot in Telegram).
+#
+# The pairing token is BOUND to this id: it only works when sent FROM this exact
+# Telegram account. If someone else opens your bot and even has the token, access
+# is denied. The token itself is stored as an Argon2id hash with a random salt
+# (from /dev/urandom), never in plaintext.
+#
+# Replace 123456789 below with YOUR id from @userinfobot:
+telegram_id  = 0
+#
+# Leave it at 0 (or omit it) and the daemon will REFUSE to generate a pairing
+# token — safer than issuing an unbound one.
+#
+# ── [memory] ─────────────────────────────────────────────────────────────────
+
+[memory]
+# Long-term memory file: facts the bot remembers forever. Edit it by hand to
+# teach the bot permanent things about you / your machine. Injected into every
+# conversation turn.
+memory_file  = "/var/lib/sysentinel/memory.txt"
+
+# Rolling conversation context (context window / conversation history). Each
+# user+assistant turn is appended here automatically. Cleared with
+# /resetcontext in Telegram.
+context_file = "/var/lib/sysentinel/context.txt"
+
+# Max turns kept in context.txt before old ones are pruned (15 = 7.5 q/a pairs).
+# Keep it small to limit input tokens (and cache-token spend) on paid LLM APIs
+# like DeepSeek.
+context_max_entries = 15
+
+# ── [llm] ────────────────────────────────────────────────────────────────────
+
+[llm]
+# Ordered fallback chain of LLM backends. Tried in order — if one fails (API
+# error / timeout) the next one answers; "none" never fails and echoes raw
+# text, so it is the natural last resort for graceful degradation.
+#   "anthropic" | "openai" | "deepseek" | "gemini" | "llama" | "local" | "none"
+# Both a single string and a list work here:
+#   backend = "deepseek"
+#   backend = ["deepseek", "llama", "local", "none"]
+# NOTE: the paired user can change this LIVE and persisted:
+#   `/llm <name>`            → switch to a single provider
+#   `/settings backends a,b,c` → set the whole fallback chain
+# Either wins over this setting until reset.
+backend    = ["deepseek", "llama", "local", "none"]
+# Model name passed to the API backends. Examples:
+#   anthropic : "claude-opus-5"  or  "claude-sonnet-4-6"
+#   openai    : "gpt-4o"
+#   deepseek  : "deepseek-chat"
+#   gemini    : "gemini-1.5-pro"
+#   llama     : whichever GGUF the llama.cpp server is serving
+model      = "deepseek-chat"
+# Maximum tokens in the AI's reply. 512 is comfortable for most kernel events
+# and Telegram message limits. Raise for more detailed answers.
+max_tokens = 512
+# Per-request timeout (seconds) for the HTTP backends. After this a backend is
+# considered failed and the fallback chain moves to the next one.
+timeout_secs = 60
+
+[llm.openai]
+api_key  = "REPLACE_WITH_YOUR_OPENAI_KEY"
+base_url = "https://api.openai.com/v1"
+
+[llm.anthropic]
+api_key  = "REPLACE_WITH_YOUR_ANTHROPIC_KEY"
+base_url = "https://api.anthropic.com/v1"
+
+[llm.deepseek]
+api_key  = "REPLACE_WITH_YOUR_DEEPSEEK_KEY"
+base_url = "https://api.deepseek.com/v1"
+
+[llm.gemini]
+api_key  = "REPLACE_WITH_YOUR_GEMINI_KEY"
+base_url = "https://generativelanguage.googleapis.com/v1beta"
+
+[llm.llama]
+# llama.cpp HTTP server (OpenAI-compatible). Spin it up with e.g.:
+#   llama-server -m model.gguf -c 4096 --port 8080
+# and point base_url at its /v1 endpoint. `api_key` is usually unused (any
+# value works); keep it bare if your server needs no auth.
+# The context length can be changed live without restarting the server:
+#   /settings llama_ctx <tokens>   (send n_ctx ≤ the server's -c cap; 0 = default)
+api_key  = ""
+base_url = "http://127.0.0.1:8080/v1"
+
+[llm.local]
+# Path to a local .gguf model file — OR a directory of models scanned
+# recursively (vision *mmproj*.gguf and MTP mtp-*.gguf companions attach to
+# their base model automatically; see `/models`).
+model_path   = "/opt/sysentinel/models/"
+# mmproj_path = ""   # optional explicit projector; auto-resolved if unset
+# mtp_path    = ""   # optional explicit MTP companion; auto-resolved if unset
+context_size = 2048
+
+# ── [hwdiag] ─────────────────────────────────────────────────────────────────
+
+[hwdiag]
+# Enable periodic hardware diagnostics summaries sent to Telegram.
+enabled          = false
+# How often to send diagnostics, in minutes.
+interval_minutes = 60
+# Include Intel ME / AMD PSP firmware status in the summary.
+include_firmware = true
+
+# ── [pmu] ────────────────────────────────────────────────────────────────────
+
+[pmu]
+# Include PMU (Performance Monitoring Unit) counters in:
+#   - The system context sent to the LLM when you ask a question via Telegram.
+#   - The /status Telegram command.
+#   - Periodic hwdiag summaries.
+#
+# Software counters (context switches, page faults, CPU migrations) are always
+# available. Hardware counters (IPC, LLC misses, branch mispredictions) require:
+#   - AmbientCapabilities=CAP_PERFMON in the systemd unit, OR
+#   - echo 0 | sudo tee /proc/sys/kernel/perf_event_paranoid
+#
+# The daemon degrades gracefully if hardware counters are unavailable.
+enabled   = true
+# How long to sample PMU counters before reading them, in milliseconds.
+# 250 ms is a good balance; raise to 1000 ms for more accurate IPC measurement.
+sample_ms = 250
+
+# ── [camera] ─────────────────────────────────────────────────────────────────
+# Intrusion webcam: photos of whoever is at the keyboard, attached to the
+# Telegram alerts (sendPhoto). Three triggers:
+#   - LUKS decrypt (photo taken by the initramfs hook BEFORE login; daemon
+#     finds it here and asks "¿fui yo?")
+#   - a successful login
+#   - ≥ login_fail_threshold failed login attempts in a row
+# With no webcam, only the text alert is sent.
+
+[camera]
+# Off by default: no /dev/video* is ever touched until you enable this.
+enabled = true
+# The V4L2 binary (built from ramdisk/, installed by scripts/install-dracut.sh).
+# It auto-detects BOTH USB webcams and the built-in one.
+tool_path = "/usr/libexec/sysentinel-cam"
+# Where the initramfs hook mirrors the post-decrypt evidence (marker + photo).
+# The daemon scans this dir at startup and dedupes by kernel boot_id.
+evidence_dir = "/var/lib/sysentinel/luks-evidence"
+# Failed attempts before an intruder photo + alert (3 guesses = brute-force).
+login_fail_threshold = 3
+# Keep counting failures within this many minutes before a burst re-arms.
+fail_window_minutes = 10
+# Requested capture resolution; the camera picks the nearest supported one.
+width  = 640
+height = 480
+# Seconds to wait for a frame while a format is being tried.
+timeout = 10
