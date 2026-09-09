@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR GPL-2.0-or-later
+// SPDX-License-Identifier: Apache-2.0
 //!
 //! On-demand dmesg reading — because running `dmesg | less` is someone else's
 //! problem. The bot reads the kernel ring buffer (via the `dmesg` binary, or

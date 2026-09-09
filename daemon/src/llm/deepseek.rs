@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR GPL-2.0-or-later
+// SPDX-License-Identifier: Apache-2.0
 //! DeepSeek backend. DeepSeek's API is OpenAI-Chat-Completions-compatible,
 //! so this is a thin, independently-configured wrapper around the same
 //! request/response shape as `openai.rs` (kept separate so the two

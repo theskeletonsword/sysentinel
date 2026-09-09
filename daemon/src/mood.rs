@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR GPL-2.0-or-later
+// SPDX-License-Identifier: Apache-2.0
 //!
 //! Emotional state of the machine — the "mood" the bot's persona should
 //! mirror, derived from live physical signals: load average, memory

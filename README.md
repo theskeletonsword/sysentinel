@@ -19,8 +19,9 @@ watches your kernel in real-time and lets you talk to your machine over Telegram
                                   └─────────────────────────────────────────┘
 ```
 
-Licensed under **MIT OR GPL-2.0-or-later** (daemon) and **GPL-2.0-only**
-(kernel module — required for kernel linking).
+The repository is **Apache 2.0**, and the daemon follows it. The kernel
+module is **MIT OR GPL-2.0-or-later**: it keeps a GPL option because it links
+against GPL-only kernel symbols — declare the GPL flavour when building it.
 
 ---
 
@@ -33,8 +34,12 @@ Licensed under **MIT OR GPL-2.0-or-later** (daemon) and **GPL-2.0-only**
 | **Telegram alerts** | Sends an alert to your paired Telegram chat |
 | **Interactive chat** | Talk to your PC via Telegram — ask "why is my system slow?", "what happened last night?", "how's my CPU?" |
 | **Pairing flow** | One-time 5-minute token pair; strict `chat_id` whitelist thereafter |
-| **Intel ME status** | Reads ME firmware version via the kernel MEI bus (ring-0, exposed on `/proc/sysentinel_metrics`) |
-| **AMD PSP status** | Reads PSP/TPM firmware info via sysfs, correctly labelled by CPU vendor |
+| **Intel ME status** | Live ring −3 alliance: the module binds the MKHI MEI client and re-runs `GET_FW_VERSION` over the HECI bus on every windowed `/proc` read (`me_live=ok(v18.1.2204.0,rt=…ms)`, `me_drift` flags version drift) |
+| **AMD PSP status** | Real PSP handshake (`PSP_CMD_HSTI_QUERY` → fused HSTI word via the ccp driver's exported platform-access API), shown as `psp=up(hsti=…,flags=tsme,rt=…ms)`; degrades to vendor presence where the mailbox is firewalled |
+| **Ring −3 HAL** | HAL dispatcher (kernel `ring3.rs` mirrors daemon `hal.rs`): **Intel → ME/HECI/MKHI**, **AMD → PSP** (ccp platform-access HSTI), **neither (old/VIA/ARM) → no ring −3 channel engaged**; stable silicon tokens reinforce `/definehome`, `platform_label()` + TPM/chipset evidence for the bootkit audit |
+| **Ring −2 SMM** | Firmware **posture, not pokes**: the channel **provably never raises an SMI** — it only reads the tables the firmware publishes. `smm on` performs a read-only ACPI scan: FADT `smi_command` + documented command values (`smm_iface=fadt-smi@0x…`) and the WSMT SMM-mitigation table (`smm_wsmt=0x…(list)`); a firmwware with a published SMI bridge but no WSMT protections is exactly what an SMM bootkit needs. Latency instrument narrowed to the ring −1 hypercall (`hvm_lat=…us`); `ro=ok|dirty` passively watches module rodata. No outb/inb to any APM port exists in the code by construction |
+| **TPM key (es tu PC)** | A `/dev/urandom` AEAD key sealed inside the physical TPM accompanies the fingerprint — AES-256-GCM on AES-NI/VAES CPUs, else ChaCha20-Poly1305 (fresh nonce, never reused); fingerprint-only fallback when there's no TPM |
+| **Bootkit audit** | `/bootkit` (or `/definehome audit`): UEFI vars, Secure Boot, kernel lockdown, taint, LSTAR hook, hypervisor, ME/PSP, dmesg + integrity, with hedged verdicts |
 | **PMU counters** | Reads CPU cycles, IPC, LLC misses, branch mispredictions, context switches via `perf_event_open` |
 | **Hypercalls** | Kernel module issues `vmcall`/`vmmcall`/`hvc` with CPUID-based hypervisor detection |
 | **Persona** | Configure the AI's tone per `config.toml` — formal, colloquial, regional slang, whatever |
@@ -47,26 +52,31 @@ Licensed under **MIT OR GPL-2.0-or-later** (daemon) and **GPL-2.0-only**
 ```
 sysentinel/
 ├── README.md
-├── LICENSE-MIT                   MIT licence text
-├── LICENSE-GPL                   GPL-2.0 licence text
+├── LICENSE                         Apache 2.0 licence text
+├── NOTICE
 ├── Makefile                      Top-level: builds daemon + kernel module
 │
-├── kernel_module/                Ring 0 — Rust kernel module (GPL-2.0-only)
+├── kernel_module/                Ring 0 — Rust kernel module (MIT OR GPL-2.0-or-later)
 │   ├── Kbuild
 │   ├── Makefile
+│   ├── LICENSE-MIT
 │   ├── LICENSE-GPL
 │   ├── README.md
 │   └── src/
 │       ├── sysentinel_core.rs    Rust root: snapshot + rs_render_snapshot / rs_exec_command
 │       ├── proc_entry.c          procfs shim: /proc/sysentinel_metrics (no /dev node)
 │       ├── hypercall.rs            vmcall / vmmcall / hvc + CPUID detection
-│       ├── mei_driver.rs           Intel MEI mei_cl_driver (ring-0 ME access)
-│       └── mei_shim.c              C glue for mei_cl_bus.h API
+│       ├── ring3.rs                Ring −3 HAL dispatcher: intel-me → MEI, amd-psp → PSP, none → neither
+│       ├── smm.rs                  Ring −2 SMM posture (ACPI-only): FADT smi_command + WSMT scan, hvm_lat, rodata watch
+│       ├── mei_driver.rs           Intel MEI mei_cl_driver (ring-0 ME access; live MKHI re-query)
+│       ├── psp.rs                  AMD PSP: vendor presence + live HSTI handshake
+│       ├── mei_shim.c              C glue for mei_cl_bus.h API
+│       ├── smm_shim.c              C glue: read-only ACPI table reader (acpi_gbl_FADT + WSMT) — zero port I/O
+│       └── psp_shim.c              C glue for the ccp driver's platform-access API
 │
-├── daemon/                       Ring 3 — user-space daemon (MIT OR GPL-2.0-or-later)
+├── daemon/                       Ring 3 — user-space daemon (Apache-2.0)
 │   ├── Cargo.toml
-│   ├── LICENSE-MIT
-│   ├── LICENSE-GPL
+│   ├── LICENSE                   Apache 2.0 licence text
 │   ├── README.md                 (daemon-specific build / run notes)
 │   ├── config/
 │   │   └── config.example.toml
@@ -77,6 +87,10 @@ sysentinel/
 │       ├── classify.rs           OOM / panic / segfault / oops classifier
 │       ├── telegram.rs           Outbound sendMessage helper
 │       ├── bot.rs                Interactive bot: pairing, whitelist, AI chat
+│       ├── bootkit_audit.rs       Bootkit auditor: ring 3 → ring −3 boot-chain checks
+│       ├── hal.rs                 Ring −3 HAL dispatcher: ME/HECI/MKHI · PSP · TPM · chipset
+│       ├── detecthome.rs          `/definehome` hardware fingerprint (serials + silicon tokens)
+│       ├── tpmkey.rs              TPM-sealed AEAD key (AES-256-GCM / ChaCha20-Poly1305, fresh nonce) proving "es tu PC"
 │       ├── mei.rs                Intel ME (HECI /dev/mei0) + AMD PSP (sysfs)
 │       ├── pmu.rs                PMU counters via perf_event_open
 │       ├── hwdiag.rs             lm-sensors + PCI + firmware periodic summary
@@ -134,11 +148,14 @@ make KDIR=/lib/modules/$(uname -r)/build -C kernel_module
 
 # With Intel ME kernel client (requires CONFIG_INTEL_MEI=y):
 make KDIR=/lib/modules/$(uname -r)/build -C kernel_module MEI=y
+# With live AMD PSP handshake via the ccp driver (default PSP=y):
+make KDIR=/lib/modules/$(uname -r)/build -C kernel_module PSP=y
+# Metric-only (no MEI/PSP): make MEI=n PSP=n -C kernel_module
 
 # Load
 sudo insmod kernel_module/sysentinel_metrics.ko
 cat /proc/sysentinel_metrics
-# → uptime_s=3600 modules=72 hypervisor=KVM/Intel_VT-x kvm_features=0x000001ff me_fw=18.0.1234.0 psp=n/a
+# → uptime_s=3600 modules=72 hypervisor=KVM/Intel_VT-x kvm_features=0x000001ff ring3=intel-me me_fw=18.0.1234.0 smm=off ro=ok(rt=0us)
 
 # Unload
 sudo rmmod sysentinel_metrics
@@ -171,8 +188,12 @@ Once paired, you can send any message to your bot:
 | `/login list` | Same as `/logins` |
 | `/login kill <pid>` | ARMED session kill — reply `no` to close it |
 | `/mods` | Loaded modules; marks ones outside the official tree |
-| `/definehome` | Bind/verify that THIS machine is your PC (hardware fingerprint) |
+| `/definehome` | Bind/verify that THIS machine is your PC (hardware fingerprint + ring −3 silicon + TPM key) |
+| `/definehome status` | Saved HOME profile + firmware drift (same PC, reflashes) + TPM key re-verify |
+| `/definehome hal` | Ring −3 coprocessor detail (Intel ME/HECI/MKHI, AMD PSP, TPM, chipset) |
+| `/definehome audit` | Bootkit audit (alias of `/bootkit`) |
 | `/definehome delete` | Forget the saved HOME profile (you changed PCs) |
+| `/bootkit` | Bootkit audit: UEFI vars, Secure Boot, lockdown, taint, LSTAR hook, ring −3 |
 | `/settings` | View notification categories (kernel, selinux, thermal, memory, load, htop, pmu, battery, tsc, diag, control, login, hypercall, modwatch, proactive) |
 | `/settings <cat> on\|off` | Flip one — decides what the daemon pushes to chat |
 | `/settings login_timeout <s>` | Seconds to answer a login alert (0 = keep open) |
@@ -186,7 +207,7 @@ Once paired, you can send any message to your bot:
 | `/kernelpanic` | ARM a deliberate kernel `panic()` (halt, or reboot per `panic=N`) |
 | `confirm` | Execute the armed control or SELinux allow |
 | `cancel` | Abort the armed control or SELinux allow |
-| `/firmware` | Intel ME and AMD PSP firmware version |
+| `/firmware` | Intel ME and AMD PSP firmware version (HAL ring −3) |
 | `/resetcontext` | Clear conversation history (`context.txt`; `memory.txt` untouched) |
 | `/help` | Command list |
 | `/unpair` | Remove pairing (re-pair required) |
@@ -287,9 +308,11 @@ Key properties:
 ## Licence
 
 ```
-daemon/      MIT OR GPL-2.0-or-later
-kernel_module/  GPL-2.0-only
+(whole repository)  Apache-2.0
+daemon/             Apache-2.0
+kernel_module/      MIT OR GPL-2.0-or-later
 ```
 
-The daemon is dual-licensed so you can use it in projects that prefer MIT.
-The kernel module must be GPL-2.0-only because it links against kernel symbols.
+The daemon matches the repository's Apache-2.0 umbrella. The kernel module is
+dual-licensed: use the GPL flavour when building/linking it, since it uses
+GPL-only kernel symbols; the MIT option covers out-of-kernel reuse.

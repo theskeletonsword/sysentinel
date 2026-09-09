@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: MIT OR GPL-2.0-or-later
+# SPDX-License-Identifier: Apache-2.0
 #
 # sysentinel-daemon — example configuration file.
 # Copy to /etc/sysentinel/config.toml (or pass --config PATH) and fill in

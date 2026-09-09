@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR GPL-2.0-or-later
+// SPDX-License-Identifier: Apache-2.0
 //! Local GGUF inference backend, built only when compiled with
 //! `--features local-llm`. Kept out of the default build because it
 //! pulls in a C++ compilation step (llama.cpp) — cloud backends need

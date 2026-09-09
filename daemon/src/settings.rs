@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR GPL-2.0-or-later
+// SPDX-License-Identifier: Apache-2.0
 //!
 //! Per-user notification preferences, driven by the bot's `/settings`.
 //!
@@ -268,7 +268,7 @@ impl Settings {
 
     /// A compact per-category on/off table for the bot reply.
     pub fn to_table(&self) -> String {
-        let mut out = String::from("Notification settings (avísame de):\n");
+        let mut out = String::from("Notification settings (tell me about):\n");
         for cat in CATEGORIES {
             let on = self.enabled(cat).unwrap_or(false);
             let (emoji, state) = if on { ("🔔", "on") } else { ("🔕", "off") };
@@ -307,7 +307,7 @@ impl Settings {
             self.luks_deny_action
         ));
         out.push_str(&format!(
-            "  ⏳ `luks_timeout` = {} s to answer the ¿fui yo? ask\n",
+            "  ⏳ `luks_timeout` = {} s to answer the \"is it me?\" ask\n",
             self.luks_timeout
         ));
         let model = if self.llm_model.is_empty() {

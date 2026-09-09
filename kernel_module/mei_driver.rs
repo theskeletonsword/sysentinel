@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: MIT OR GPL-2.0-or-later
 //!
 //! Intel Management Engine Interface (MEI/HECI) kernel-side client driver.
 //!
@@ -32,16 +32,14 @@
 //!
 //! # AMD PSP note
 //!
-//! AMD PSP firmware-version queries require ring-0 access to an MSR-based
-//! mailbox (`MP0_SMN_C2P_MSG_0` / `MP0_SMN_C2P_MSG_1` at SMN addresses
-//! `0x3B10528` / `0x3B10924` on Ryzen), and on recent AMD platforms this
-//! mailbox is firewalled from the x86 side entirely. Reliable PSP status
-//! from user-space is exposed via `/dev/tpm0` or sysfs; that path is
-//! handled in `daemon/src/mei.rs` without requiring any ring-0 access.
+//! AMD's ring -3 partner is handled by `psp.rs` + `src/psp_shim.c` through
+//! the CCP/PSP driver's exported *platform access* API — a sanctioned
+//! `PSP_CMD_HSTI_QUERY` handshake, not raw SMN poking.
 //!
 //! # License
 //!
-//! GPL-2.0-only — required for use with in-kernel symbols.
+//! MIT OR GPL-2.0-or-later (dual; the module declares `Dual MIT/GPL`, which
+//! the kernel treats as GPL-compatible for use with in-kernel symbols).
 
 #![allow(dead_code)]
 #![cfg(mei_available)]
@@ -142,11 +140,63 @@ global_lock! {
     unsafe(uninit) static ME_VERSION: Mutex<Option<MeFwVersion>> = None;
 }
 
-/// Initialize the ME firmware-version lock. Must be called exactly once,
+/// Handle to the bound MEI client device.
+///
+/// The raw `struct mei_cl_device *` is only meaningful between the bus's
+/// `probe` and `remove` callbacks, so every access goes through the
+/// `MEI_CLDEV` lock: the box is `None` when unbound. Distinct from
+/// `ME_VERSION`, which records the *result* of the probe-time exchange.
+#[derive(Clone, Copy)]
+struct MeiClDevPtr(*mut MeiClDevice);
+
+// SAFETY: the pointer is only ever dereferenced/released by the MEI bus
+// callbacks while the `MEI_CLDEV` lock is held, so sharing it across threads
+// through the mutex is sound.
+unsafe impl Send for MeiClDevPtr {}
+// SAFETY: as above — the value it points to is managed by the MEI bus and
+// accesses are serialized by `MEI_CLDEV`.
+unsafe impl Sync for MeiClDevPtr {}
+
+global_lock! {
+    // SAFETY: `MEI_CLDEV.init()` runs alongside `ME_VERSION.init()` from the
+    // module initializer, before any access.
+    unsafe(uninit) static MEI_CLDEV: Mutex<Option<MeiClDevPtr>> = None;
+}
+
+/// Re-query the ME channel at most once per this boot-time window, so the
+/// /proc read path does not stall on a slow/failed ME round-trip on every read.
+const LIVE_WINDOW_NS: u64 = 5 * 1_000_000_000;
+
+/// Result of a live MEI re-query (or the cached copy of the most recent one).
+#[derive(Debug, Clone, Copy)]
+pub struct LiveMei {
+    /// Boot-time nanoseconds at which this result was produced.
+    pub queried_uptime_ns: u64,
+    /// Whether an MEI client was bound when queried.
+    pub bound: bool,
+    /// Whether the exchange succeeded.
+    pub ok: bool,
+    /// Live firmware version (present only when `ok`).
+    pub version: Option<MeFwVersion>,
+    /// Exchange round-trip time in microseconds.
+    pub rt_us: u64,
+}
+
+global_lock! {
+    // SAFETY: `ME_LIVE.init()` runs alongside the others from the module
+    // initializer, before any access.
+    unsafe(uninit) static ME_LIVE: Mutex<Option<LiveMei>> = None;
+}
+
+/// Initialize the ME firmware-version locks. Must be called exactly once,
 /// before the first read or write (i.e. from the module initializer).
 pub fn ensure_initialized() {
     // SAFETY: The module initializer runs once, before any access.
-    unsafe { ME_VERSION.init() };
+    unsafe {
+        ME_VERSION.init();
+        MEI_CLDEV.init();
+        ME_LIVE.init();
+    }
 }
 
 /// Parsed Intel ME firmware version.
@@ -162,6 +212,66 @@ pub struct MeFwVersion {
 /// value or `None` if the MEI client has not bound yet).
 pub fn get_me_fw_version() -> Option<MeFwVersion> {
     *ME_VERSION.lock()
+}
+
+/// Boot-time nanoseconds (same source as the metrics snapshot's uptime).
+pub(crate) fn boottime_ns() -> u64 {
+    kernel::time::Instant::<kernel::time::BootTime>::now()
+        .elapsed()
+        .as_nanos()
+        .unsigned_abs()
+}
+
+/// Re-run the MKHI handshake **now** over the bound MEI client, exercising
+/// the module → ring -3 channel live instead of trusting the probe-time cache.
+///
+/// A single attempt, with no sleeps (unlike the probe path's retry loop), so
+/// it is safe on the /proc read path; a sick/unresponsive ME yields
+/// `ok: false` quickly rather than hanging the read.
+pub fn query_live() -> LiveMei {
+    let dev = match *MEI_CLDEV.lock() {
+        Some(p) => p.0,
+        None => {
+            return LiveMei {
+                queried_uptime_ns: 0,
+                bound: false,
+                ok: false,
+                version: None,
+                rt_us: 0,
+            }
+        }
+    };
+
+    let t0 = boottime_ns();
+    // SAFETY: `dev` is a bound `struct mei_cl_device *`; the bus guarantees
+    // the device object outlives this exchange even if `remove` runs
+    // concurrently (disconnected clients fail their send/recv with an error).
+    let version = unsafe { try_query_once(dev) }.ok();
+    let rt_us = boottime_ns().saturating_sub(t0) / 1000;
+
+    LiveMei {
+        queried_uptime_ns: t0,
+        bound: true,
+        ok: version.is_some(),
+        version,
+        rt_us,
+    }
+}
+
+/// Live ME status for the metrics read path, re-querying at most once per
+/// [`LIVE_WINDOW_NS`] so an unresponsive ME cannot stall every `/proc` read.
+pub fn live_status(now_uptime_ns: u64) -> LiveMei {
+    if let Some(l) = *ME_LIVE.lock() {
+        if now_uptime_ns.saturating_sub(l.queried_uptime_ns) < LIVE_WINDOW_NS {
+            return l;
+        }
+    }
+    let live = LiveMei {
+        queried_uptime_ns: now_uptime_ns,
+        ..query_live()
+    };
+    *ME_LIVE.lock() = Some(live);
+    live
 }
 
 // ── MKHI message format ───────────────────────────────────────────────────────
@@ -280,6 +390,9 @@ const RETRY_DELAY_MS: u64 = 50;
 pub unsafe extern "C" fn sysentinel_mei_probe(cldev: *mut MeiClDevice) -> core::ffi::c_int {
     pr_info!("sysentinel: MEI MKHI client probed; querying ME firmware version\n");
 
+    // Record the bound device so the read path can re-run the handshake live.
+    *MEI_CLDEV.lock() = Some(MeiClDevPtr(cldev));
+
     match unsafe { query_me_fw_version(cldev) } {
         Ok(ver) => {
             pr_info!(
@@ -311,6 +424,7 @@ pub unsafe extern "C" fn sysentinel_mei_probe(cldev: *mut MeiClDevice) -> core::
 #[no_mangle]
 pub unsafe extern "C" fn sysentinel_mei_remove(_cldev: *mut MeiClDevice) {
     pr_info!("sysentinel: MEI MKHI client removed\n");
+    *MEI_CLDEV.lock() = None;
     *ME_VERSION.lock() = None;
 }
 

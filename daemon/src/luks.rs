@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR GPL-2.0-or-later
+// SPDX-License-Identifier: Apache-2.0
 //!
 //! LUKS tripwire follow-up ("¿fui yo?").
 //!
@@ -343,10 +343,10 @@ fn scan_for_markers(
         let boot = if boot_id.len() > 12 { &boot_id[..12] } else { &boot_id };
 
         let caption = format!(
-            "🚨 ¿Fui yo?\n\nEse arranque con LUKS se descifró (ts {ts}, host `{host}`).\n\
-             boot_id `{boot}`, cámara: `{cam}`.\n\n\
-             Si **no** fuiste tú (o esto no te suena), responde `no` — aplicaré la \
-             acción de denegación y la evidencia queda guardada para ti.",
+            "🚨 Is it me?\n\nA LUKS boot was decrypted (ts {ts}, host `{host}`).\n\
+             boot_id `{boot}`, camera: `{cam}`.\n\n\
+             If it **wasn't** you (or this doesn't ring a bell), reply `no` — I'll apply the \
+             deny action and the evidence stays archived for you.",
         );
 
         if dry_run {

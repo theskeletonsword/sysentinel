@@ -2,7 +2,7 @@
 name        = "sysentinel-daemon"
 version     = "0.2.0"
 edition     = "2021"
-license     = "MIT OR GPL-2.0-or-later"
+license     = "Apache-2.0"
 description = "Kernel log watchdog + interactive AI companion daemon with Telegram, LLM, Intel ME, AMD PSP, and PMU support"
 authors     = ["sysentinel contributors"]
 repository  = "https://example.invalid/sysentinel"
@@ -31,6 +31,15 @@ argon2 = { version = "0.5", features = ["rand"] }
 # Direct dependency so we can enable `getrandom` (→ OsRng → /dev/urandom) on
 # password-hash; feature unification also fixes it for argon2's re-export.
 password-hash = { version = "0.5", features = ["getrandom"] }
+
+# ── The "llavecita" (TPM key) ──────────────────────────────────────────────────
+# aws-lc-rs is AWS's maintained Rust fork of OpenSSL/BoringSSL (FIPS-validated
+# crypto, ring-compatible API). The daemon uses it to HMAC-SHA256 the machine
+# fingerprint with a seed that only the physical TPM can release (see
+# tpmkey.rs). The entropy for that seed comes straight from getrandom(2), i.e.
+# /dev/urandom on Linux.
+aws-lc-rs   = "1"
+getrandom   = "0.2"
 
 # ── Error handling / logging / CLI ────────────────────────────────────────────
 anyhow     = "1"

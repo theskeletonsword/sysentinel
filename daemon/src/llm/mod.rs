@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR GPL-2.0-or-later
+// SPDX-License-Identifier: Apache-2.0
 //!
 //! Pluggable LLM backend switcher.
 //!
@@ -483,7 +483,10 @@ pub fn build_system_prompt(config: &Config) -> String {
          2. Answer free-form questions about the machine using the live system context provided.\n\
          3. Suggest corrective actions when appropriate.\n\n\
          Tone and persona: {tone}\n\
-         Language: always answer in {lang}.\n\
+         Language: default {lang}, but when the user sends you a message, reply \
+         in THEIR language or dialect as written (Chilean/rioplatense Spanish, \
+         Chinese, Italian, whatever they used) — never force {lang} on a direct \
+         reply. Keep their idioms.\n\
          Do not invent data not present in the provided context. \
          If you don't know, say so.",
         tone = config.persona.tone,

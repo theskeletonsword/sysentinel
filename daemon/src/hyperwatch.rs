@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR GPL-2.0-or-later
+// SPDX-License-Identifier: Apache-2.0
 //!
 //! Hypercall watcher — what did the VM just ask the hypervisor?
 //!
@@ -314,13 +314,13 @@ pub fn run_hypercall_loop(
             g.paired_chat_id.or(config.telegram.chat_id).filter(|&id| id != 0)
         };
 
-        let mut text = format!("🛰️ El guest le preguntó algo al hypervisor ({} hypercall{})\n", records.len(), if records.len() == 1 { "" } else { "s" });
+        let mut text = format!("🛰️ The guest asked the hypervisor something ({} hypercall{})\n", records.len(), if records.len() == 1 { "" } else { "s" });
         for r in records.iter().take(12) {
             text.push_str(&r.describe());
             text.push('\n');
         }
         if records.len() > 12 {
-            text.push_str(&format!("  … y {} más", records.len() - 12));
+            text.push_str(&format!("  … and {} more", records.len() - 12));
         }
 
         if dry_run {

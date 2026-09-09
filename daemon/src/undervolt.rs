@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR GPL-2.0-or-later
+// SPDX-License-Identifier: Apache-2.0
 //!
 //! Undervolt/overvolt truth — the persona must NEVER claim a V/F curve shift
 //! that isn't actually there. This module checks, per CPU vendor, whether an
@@ -160,30 +160,30 @@ pub fn describe() -> String {
     let vendor = cpu_vendor_id().unwrap_or_else(|| "?".to_string());
     match status() {
         UndervoltStatus::Active => {
-            format!("Sí — hay un offset de V/F **activo** (`{vendor}`), undervolt o overvolt según el signo.")
+            format!("Yes — a V/F offset is **active** (`{vendor}`); undervolt or overvolt depending on the sign.")
         }
         UndervoltStatus::Inactive => match vendor.as_str() {
             "AuthenticAMD" | "HygonGenuine" => {
-                "No hay undervolt/overvolt activo verificable. En AMD el Curve \
-                 Optimizer se configura en BIOS/SMU y no es visible desde Linux, \
-                 así que sin evidencia positiva tu CPU corre en stock."
+                "No verified undervolt/overvolt is active. On AMD, the Curve \
+                 Optimizer is set in BIOS/SMU and isn't visible from Linux, \
+                 so without positive evidence your CPU runs stock."
                     .to_string()
             }
             "CentaurHauls" | "Zhaoxin" => {
-                "No — Zhaoxin no expone offsets de V/F; tu CPU corre en stock."
+                "No — Zhaoxin doesn't expose V/F offsets; your CPU runs stock."
                     .to_string()
             }
             "GenuineIntel" => {
-                "No — no hay intel-undervolt activo (ni offsets en `/etc/intel-undervolt.conf` \
-                 con servicio aplicado). Intel corre en stock."
+                "No — no intel-undervolt active (nor offsets in `/etc/intel-undervolt.conf` \
+                 with the service applied). Intel runs stock."
                     .to_string()
             }
-            _ => "No hay evidencia de undervolt/overvolt activo; el CPU corre en stock.".to_string(),
+            _ => "No evidence of an active undervolt/overvolt; the CPU runs stock.".to_string(),
         },
         UndervoltStatus::Unknown => {
-            "No pude verificar el estado de la curva V/F con certeza (hay una \
-             config `/etc/intel-undervolt.conf` pero el servicio no está \
-             habilitado). No te afirmo nada."
+            "I couldn't verify the V/F curve state with certainty (there's a \
+             `/etc/intel-undervolt.conf` config but the service isn't \
+             enabled). I won't affirm anything."
                 .to_string()
         }
     }

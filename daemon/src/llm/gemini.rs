@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR GPL-2.0-or-later
+// SPDX-License-Identifier: Apache-2.0
 //! Google Gemini backend, using the `generateContent` REST endpoint.
 
 use super::{ExplainRequest, LlmBackend};

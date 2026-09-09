@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR GPL-2.0-or-later
+// SPDX-License-Identifier: Apache-2.0
 //!
 //! Login watcher — announces every login (GUI and SSH) so an unauthorised
 //! session can be killed before it does damage.
@@ -408,12 +408,12 @@ fn announce_fail_burst(
     let who = if user.is_empty() { "?" } else { &user };
     let when = time_label(rec.ut_tv.tv_sec as i64);
     let text = format!(
-        "🚨 *Fuerza bruta* — {} intentos fallidos en la ventana (último: `{}` via `{}`{})\n\
+        "🚨 *Brute-force* — {} failed attempts in the window (last: `{}` via `{}`{})\n\
          tsv={} ({})\n\n\
-         Foto del teclado adjunta si había webcam. Revisa quién está delante.",
+         Webcam photo attached if available. Check who's at the keyboard.",
         threshold, who, line,
         if host.is_empty() { String::new() } else { format!(" host=`{host}`") },
-        when, if user.is_empty() { "usuario desconocido" } else { "usuario difiere" },
+        when, if user.is_empty() { "unknown user" } else { "user mismatch" },
     );
     log::warn!(
         "loginwatch: FAIL BURST — {n} failed attempts in window (user={user} line={line} host={host})",
@@ -492,10 +492,10 @@ fn sweep_expired(
             p.event.user, p.event.pid, closed
         );
         let txt = format!(
-            "⏰ *Sesión sin confirmar* — `{}` ({}) no se confirmó a tiempo.\n{} la sesión (pid={}).",
+            "⏰ *Unconfirmed session* — `{}` ({}) was not confirmed in time.\n{} the session (pid={}).",
             p.event.user,
             p.event.channel.label(),
-            if closed { "🗑️ Cerré" } else { "⚠️ No pude cerrar" },
+            if closed { "🗑️ Closed" } else { "⚠️ Could not close" },
             p.event.pid,
         );
         if dry_run {
@@ -509,8 +509,8 @@ fn sweep_expired(
         }
     } else {
         let txt = format!(
-            "⏰ Sin respuesta sobre `{}` — la dejé abierta (`login_auto_close` off).\n\
-             Cierra con `/login kill {}` si era intruso.",
+            "⏰ No response about `{}` — session left open (`login_auto_close` off).\n\
+             Close with `/login kill {}` if it was an intruder.",
             p.event.user, p.event.pid
         );
         log::warn!("loginwatch: timeout, auto_close off — left session by {} open", p.event.user);

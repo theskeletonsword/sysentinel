@@ -85,4 +85,4 @@ template, and a `sysentinel.service` unit.
 
 ## License
 
-MIT OR GPL-2.0-or-later — pick whichever license suits your use case.
+Apache-2.0 — same as the repository itself.

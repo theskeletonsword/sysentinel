@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: MIT OR GPL-2.0-or-later
 //
 // mei_shim.c — C glue between the Rust mei_driver module and the Linux
 // MEI (Management Engine Interface) bus subsystem.

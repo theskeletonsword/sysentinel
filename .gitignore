@@ -1,0 +1,16 @@
+# Rust build artifacts
+daemon/target/
+ramdisk/target/
+
+# Kernel module build artifacts (kbuild)
+*.o
+*.ko
+*.mod
+*.mod.c
+*.cmd
+*.symvers
+Module.symvers
+modules.order
+
+# Local state
+*.lock

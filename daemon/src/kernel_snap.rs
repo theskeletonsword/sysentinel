@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR GPL-2.0-or-later
+// SPDX-License-Identifier: Apache-2.0
 //!
 //! Live snapshot and control channel for the `sysentinel_metrics` module.
 //!
@@ -15,9 +15,9 @@
 //! from uid 0 or from the GID passed as `write_gid` at modprobe time. The
 //! bot layers a human-confirmation flow on top before it ever sends one.
 //!
-//! Works identically on Intel ME and AMD PSP hosts: on an AMD machine the
-//! module reports `psp=present` (and no `me_fw=`); on an Intel bare-metal or
-//! VM host it reports the opposite.
+//! Works identically on Intel ME and AMD PSP hosts, following the module's
+//! ring −3 dispatcher (the `ring3=` token): Intel → `me_fw=`/`me_live=`, AMD →
+//! `psp=up(...)`, neither → no ME/PSP tokens.
 
 /// One decoded read of `/proc/sysentinel_metrics`. All fields optional —
 /// the value is present only if the module reported it.

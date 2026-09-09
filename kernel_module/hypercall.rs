@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: MIT OR GPL-2.0-or-later
 //!
 //! Architecture-agnostic hypercall interface.
 //!
@@ -226,17 +226,12 @@ pub fn detect_hypervisor() -> HypervisorKind {
     HypervisorKind::None
 }
 
-// ── CPU vendor (portable AMD PSP proxy) ───────────────────────────────────────
+// ── CPU vendor (ring −3 partner selection) ───────────────────────────────────
 
-/// Return whether the physical CPU is AMD (or the AMD-compatible Hygon).
-///
-/// The AMD Platform Security Processor (PSP) is an on-die coprocessor present
-/// on every modern AMD SoC. Mainline Linux exposes no stable sysfs node or
-/// `/dev` entry for it on stock kernels, so CPU vendor is the portable,
-/// dependency-free signal used by the module's PSP detection: on non-AMD
-/// CPUs — Intel, ARM, … — the PSP does not exist.
+/// Return the 12-byte CPU vendor string from CPUID leaf 0 (EBX, ECX, EDX,
+/// each little-endian). `[0; 12]` on architectures without CPUID.
 #[cfg(target_arch = "x86_64")]
-pub fn cpu_vendor_is_amd() -> bool {
+fn cpu_vendor() -> [u8; 12] {
     let (ebx, ecx, edx): (u32, u32, u32);
     unsafe {
         core::arch::asm!(
@@ -252,18 +247,36 @@ pub fn cpu_vendor_is_amd() -> bool {
         );
     }
 
-    // Reconstruct the 12-byte vendor string (EBX, ECX, EDX, each LE).
     let mut vendor = [0u8; 12];
     vendor[0..4].copy_from_slice(&ebx.to_le_bytes());
     vendor[4..8].copy_from_slice(&ecx.to_le_bytes());
     vendor[8..12].copy_from_slice(&edx.to_le_bytes());
-
-    vendor == *b"AuthenticAMD" || vendor == *b"HygonGenuine"
+    vendor
 }
 
 #[cfg(not(target_arch = "x86_64"))]
+fn cpu_vendor() -> [u8; 12] {
+    [0; 12]
+}
+
+/// Return whether the physical CPU is AMD (or the AMD-compatible Hygon).
+///
+/// The AMD Platform Security Processor (PSP) is an on-die coprocessor present
+/// on every modern AMD SoC. Mainline Linux exposes no stable sysfs node or
+/// `/dev` entry for it on stock kernels, so CPU vendor is the portable,
+/// dependency-free signal used by the module's `ring3` dispatcher.
 pub fn cpu_vendor_is_amd() -> bool {
-    false
+    let vendor = cpu_vendor();
+    vendor == *b"AuthenticAMD" || vendor == *b"HygonGenuine"
+}
+
+/// Return whether the physical CPU is Intel.
+///
+/// Intel System-on-Chip (SOC) platforms carry the Management Engine (ME),
+/// reachable over the HECI/MEI bus — the counterpart of AMD's PSP. Used by the
+/// module's `ring3` dispatcher to pick which ring −3 channel to engage.
+pub fn cpu_vendor_is_intel() -> bool {
+    cpu_vendor() == *b"GenuineIntel"
 }
 
 // ── Raw hypercall instructions ────────────────────────────────────────────────
@@ -499,6 +512,31 @@ Err(ENOTSUPP)
 pub fn kvm_query_features() -> Result<u64> {
     let r = hypercall(kvm_hc::FEATURES, 0, 0, 0)?;
     Ok(r.rax)
+}
+
+/// Measure one round-trip of the KVM `FEATURES` hypercall in microseconds, used
+/// by the ring −1/ring −2 cross-ring comparison.
+///
+/// Returns `None` on bare-metal (no hypercall to time) or if the hypervisor
+/// does not implement `KVM_HC_FEATURES`. `KVM_HC_FEATURES` is the same benign
+/// read-only hypercall this module already issues for the `kvm_features=`
+/// token, so timining it here adds no new exposure.
+pub fn hypercall_latency_us() -> Option<u64> {
+    if detect_hypervisor() == HypervisorKind::None {
+        return None;
+    }
+    let t0 = kernel::time::Instant::<kernel::time::BootTime>::now()
+        .elapsed()
+        .as_nanos()
+        .unsigned_abs();
+    if kvm_query_features().is_err() {
+        return None;
+    }
+    let t1 = kernel::time::Instant::<kernel::time::BootTime>::now()
+        .elapsed()
+        .as_nanos()
+        .unsigned_abs();
+    Some(t1.saturating_sub(t0) / 1000)
 }
 
 /// Returns a human-readable description of the detected hypervisor.

@@ -1,0 +1,14 @@
+sysentinel
+Copyright (c) 2026 sysentinel contributors
+
+This software is distributed under the Apache License, Version 2.0 (see the
+LICENSE file in the root of this repository; the license is also published at
+https://www.apache.org/licenses/LICENSE-2.0).
+
+Additional grants and notices:
+
+- daemon/ is Apache-2.0 (daemon/LICENSE).
+- kernel_module/ is dual-licensed MIT OR GPL-2.0-or-later; the GPL licence
+  text is shipped in kernel_module/LICENSE-GPL because the module links
+  GPL-only kernel symbols (declared to the kernel as "Dual MIT/GPL").
+- ramdisk/ is MIT OR GPL-2.0-or-later.

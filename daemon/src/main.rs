@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR GPL-2.0-or-later
+// SPDX-License-Identifier: Apache-2.0
 //!
 //! sysentinel-daemon — your PC's AI companion.
 //!
@@ -36,10 +36,13 @@
 
 mod bot;
 mod battery;
+mod bootkit_audit;
+mod camera;
 mod classify;
 mod config;
 mod detecthome;
 mod dmesg;
+mod hal;
 mod hwdiag;
 mod hwinfo;
 mod hyperwatch;
@@ -59,9 +62,8 @@ mod settings;
 mod ring3;
 mod secureboot;
 mod telegram;
+mod tpmkey;
 mod undervolt;
-
-mod camera;
 
 use anyhow::{Context, Result};
 use bot::{SharedBotState, TelegramBot};

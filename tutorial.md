@@ -138,9 +138,10 @@ make            # MEI habilitado por defecto (usa el árbol de /lib/modules/$(un
 sudo make modules_install
 sudo modprobe sysentinel_metrics
 cat /proc/sysentinel_metrics
-# uptime_s=12345 modules=64 mem_free_kb=204800 mem_total_kb=8388608 hypervisor=... me_fw=18.1.2204.0 psp=n/a
-#   - me_fw=  … solo en plataformas Intel con ME conectado, vía el bus MEI del kernel
-#   - psp=    … "present" solo en CPUs AMD (detector portátil por vendor; en este Intel saldrá n/a)
+# uptime_s=12345 modules=64 mem_free_kb=204800 mem_total_kb=8388608 hypervisor=... ring3=intel-me me_fw=18.1.2204.0
+#   - ring3=   … resultado del dispatcher HAL del módulo: intel-me | amd-psp | none
+#   - me_fw=   … solo cuando ring3=intel-me (ME conectado, vía el bus MEI del kernel)
+#   - psp=     … solo cuando ring3=amd-psp (handshake HSTI vía el ccp platform-access)
 sudo rmmod sysentinel_metrics
 ```
 

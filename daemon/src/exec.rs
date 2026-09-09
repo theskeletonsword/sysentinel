@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR GPL-2.0-or-later
+// SPDX-License-Identifier: Apache-2.0
 //!
 //! Arbitrary command execution, gated by the kernel module being loaded.
 //!
@@ -53,12 +53,12 @@ pub enum ExecError {
 impl std::fmt::Display for ExecError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ExecError::Spawn(e)        => write!(f, "no pude lanzar el proceso: {e}"),
-            ExecError::Timeout(s)      => write!(f, "timeout de {s}s — maté el proceso y su grupo"),
-            ExecError::Io(e)           => write!(f, "error de E/S: {e}"),
+            ExecError::Spawn(e)        => write!(f, "could not spawn the process: {e}"),
+            ExecError::Timeout(s)      => write!(f, "timeout after {s}s — killed the process and its group"),
+            ExecError::Io(e)           => write!(f, "I/O error: {e}"),
             ExecError::TooManyJobs { limit, running } => write!(
                 f,
-                "límite de {limit} jobs en paralelo ({running} corriendo) — matá uno con `/exec stop <id>`"
+                "limit of {limit} parallel jobs ({running} running) — kill one with `/exec stop <id>`"
             ),
         }
     }

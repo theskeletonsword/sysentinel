@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR GPL-2.0-or-later
+// SPDX-License-Identifier: Apache-2.0
 //!
 //! Battery truth — read `/sys/class/power_supply` and tell the user whether
 //! this machine runs on battery (notebook/laptop) or not (desktop tower /
@@ -86,20 +86,20 @@ pub fn describe() -> String {
                 .status
                 .as_deref()
                 .map(translate_status)
-                .unwrap_or_else(|| "desconocido".into());
+                .unwrap_or_else(|| "unknown".into());
             let full = b
                 .energy_full
-                .map(|wh| format!(" de {:.1} Wh", wh as f64 / 1_000_000.0))
+                .map(|wh| format!(" of {:.1} Wh", wh as f64 / 1_000_000.0))
                 .unwrap_or_default();
             let time = if b.is_discharging() {
-                format!(", quedan {}", b.minutes_left_label())
+                format!(", {} left", b.minutes_left_label())
             } else {
                 String::new()
             };
-            format!("🔋 Batería `{}`: **{pct}** ({st}{time}){full}", b.name)
+            format!("🔋 Battery `{}`: **{pct}** ({st}{time}){full}", b.name)
         }
-        None => "🚫 No hay batería en este equipo — es una torre/desktop, así que \
-                el tema batería **no aplica**."
+        None => "🚫 No battery on this machine — it's a desktop tower, so the \
+                battery topic **does not apply**."
             .to_string(),
     }
 }
@@ -191,29 +191,29 @@ pub fn run_battery_loop(
 
 fn battery_alert_text(b: &Battery, band: i32) -> String {
     let time = if b.is_discharging() {
-        format!(" • quedan {}", b.minutes_left_label())
+        format!(" • {} left", b.minutes_left_label())
     } else {
         String::new()
     };
     match band {
         5 => format!(
-            "⚡🏃💀 *LA BATERÍA SE ESTÁ AGOTANDO* — {}% ({}){}. ¡Conectá el cargador YA!",
+            "⚡🏃💀 *BATTERY IS DYING* — {}% ({}){}. Plug in the charger NOW!",
             b.percent.unwrap_or(0),
             b.name,
             time,
         ),
-        10 => format!("⚠️ *Batería crítica* — {}% ({}){}.", b.percent.unwrap_or(0), b.name, time),
-        _ => format!("🔋 *Batería baja* — {}% ({}){}.", b.percent.unwrap_or(0), b.name, time),
+        10 => format!("⚠️ *Critical battery* — {}% ({}){}.", b.percent.unwrap_or(0), b.name, time),
+        _ => format!("🔋 *Low battery* — {}% ({}){}.", b.percent.unwrap_or(0), b.name, time),
     }
 }
 
 fn translate_status(s: &str) -> &'static str {
     match s {
-        "Charging" => "cargando",
-        "Discharging" => "descargando",
-        "Full" => "cargada al 100%",
-        "Not charging" => "no cargando",
-        _ => "desconocido",
+        "Charging" => "charging",
+        "Discharging" => "discharging",
+        "Full" => "full (100%)",
+        "Not charging" => "not charging",
+        _ => "unknown",
     }
 }
 
@@ -297,8 +297,8 @@ mod tests {
 
     #[test]
     fn translate_maps_status() {
-        assert_eq!(translate_status("Discharging"), "descargando");
-        assert_eq!(translate_status("Charging"), "cargando");
-        assert_eq!(translate_status("Weird"), "desconocido");
+        assert_eq!(translate_status("Discharging"), "discharging");
+        assert_eq!(translate_status("Charging"), "charging");
+        assert_eq!(translate_status("Weird"), "unknown");
     }
 }

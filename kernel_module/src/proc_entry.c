@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: MIT OR GPL-2.0-or-later
 //
 // sysentinel_metrics procfs shim.
 //

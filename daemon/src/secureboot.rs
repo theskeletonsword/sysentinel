@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR GPL-2.0-or-later
+// SPDX-License-Identifier: Apache-2.0
 //!
 //! Secure Boot truth — whether the firmware has Secure Boot active, and what
 //! that means for loading the `sysentinel_metrics` kernel module.
@@ -142,34 +142,34 @@ fn bootctl() -> Option<SecureBoot> {
     None
 }
 
-/// One honest, actionable answer to "¿nuestro entorno tiene Secure Boot?".
+/// One honest, actionable answer to "does our environment have Secure Boot?".
 pub fn describe() -> String {
     let sb = status();
     match sb {
         SecureBoot::Enabled => {
-            "Sí — Secure Boot está **activo** (UEFI). El kernel rechaza módulos \
-             sin firmar: para cargar `sysentinel_metrics.ko` hay que firmarlo con \
-             una MOK e inscribirla (o desactivar SB)."
+            "Yes — Secure Boot is **active** (UEFI). The kernel rejects unsigned \
+             modules: to load `sysentinel_metrics.ko` you must sign it with \
+             a MOK and enroll it (or disable SB)."
                 .to_string()
         }
         SecureBoot::Disabled => {
-            "No — Secure Boot está **desactivado** (UEFI). Podés `insmod` el módulo \
-             sin firma, sin enroll de llaves."
+            "No — Secure Boot is **disabled** (UEFI). You can `insmod` the module \
+             unsigned, no key enrollment needed."
                 .to_string()
         }
         SecureBoot::SetupMode => {
-            "Secure Boot está en **modo setup/enrollment** — el firmware acepta \
-             inscribir llaves MOK ahora mismo (`mokutil --import` + reboot)."
+            "Secure Boot is in **setup/enrollment mode** — the firmware accepts \
+             MOK keys right now (`mokutil --import` + reboot)."
                 .to_string()
         }
         SecureBoot::Unsupported => {
-            "No aplica: arrancaste en modo **BIOS/legacy**, no UEFI — Secure Boot \
-             no existe en este entorno. El módulo se insmoda sin firma."
+            "N/A: you booted in **BIOS/legacy** mode, not UEFI — Secure Boot \
+             does not exist in this environment. The module insmods unsigned."
                 .to_string()
         }
         SecureBoot::Unknown => {
-            "No pude leer el estado (¿permisos sobre efivars, sin `mokutil`/`bootctl`?). \
-             No te afirmo nada."
+            "I couldn't read the state (permissions on efivars, no `mokutil`/`bootctl`?). \
+             I won't affirm anything."
                 .to_string()
         }
     }
@@ -179,42 +179,42 @@ pub fn describe() -> String {
 pub fn module_load_guidance() -> String {
     match status() {
         SecureBoot::Enabled => {
-            "\n_Cargar el módulo con Secure Boot:_\n\
+            "\n_Loading the module with Secure Boot:_\n\
              ```sh\n\
-             # 1) generar llave MOK\n\
+             # 1) generate the MOK key\n\
              openssl req -new -x509 -newkey rsa:2048 -keyout MOK.key \\\n\
                -outform DER -out MOK.der -nodes -days 36500 -subj \"/CN=sysentinel\"\n\
-             # 2) firmar el .ko\n\
+             # 2) sign the .ko\n\
              sudo /usr/src/linux-headers-$(uname -r)/scripts/sign-file \\\n\
                sha256 MOK.key MOK.der kernel_module/sysentinel_metrics.ko\n\
-             # 3) inscribir la llave y reiniciar (el firmware pide enroll)\n\
+             # 3) enroll the key and reboot (the firmware asks to enroll)\n\
              sudo mokutil --import MOK.der && sudo reboot\n\
-             # 4) tras el enroll, ya carga normal\n\
+             # 4) after enrollment, it loads normally\n\
              sudo insmod kernel_module/sysentinel_metrics.ko write_gid=...\n\
              ```\n\
-             Hasta entonces uso los fallbacks ring-3 (procfs, wtmp, tracefs, dmesg)."
+             Until then I use the ring-3 fallbacks (procfs, wtmp, tracefs, dmesg)."
                 .to_string()
         }
         SecureBoot::Disabled | SecureBoot::Unsupported => {
-            "\n_Sin Secure Boot, cargás el módulo directo:_\n\
+            "\n_Without Secure Boot, load the module directly:_\n\
              ```sh\n\
              sudo insmod kernel_module/sysentinel_metrics.ko write_gid=1000\n\
              ```\n\
-             Sin firma, sin MOK, sin reboot."
+             No signature, no MOK, no reboot."
                 .to_string()
         }
         SecureBoot::SetupMode => {
-            "\n_Modo setup:_ ahora mismo podés inscribir la llave — no hace falta \
-             apagar Secure Boot:\n\
+            "\n_Setup mode:_ you can enroll the key right now — no need to \
+             disable Secure Boot:\n\
              ```sh\n\
              sudo mokutil --import MOK.der && sudo reboot\n\
              ```\n\
-             o cargar el módulo firmado ya mismo."
+             or load the signed module right away."
                 .to_string()
         }
         SecureBoot::Unknown => {
-            "\nNo sé el estado de Secure Boot, así que no te recomiendo un camino \
-             concreto. Probá `mokutil --sb-state` o `bootctl status` a mano."
+            "\nI don't know the Secure Boot state, so I won't recommend a \
+             specific path. Try `mokutil --sb-state` or `bootctl status` yourself."
                 .to_string()
         }
     }

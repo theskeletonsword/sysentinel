@@ -16,6 +16,9 @@
 #   # With Intel MEI kernel client driver (requires CONFIG_INTEL_MEI=y):
 #   make MEI=y KDIR=/path/to/kernel/source
 #
+#   # With live AMD PSP handshake via the ccp driver (default):
+#   make PSP=y KDIR=/path/to/kernel/source
+#
 #   sudo make KDIR=/path/to/kernel/source modules_install
 #   sudo modprobe sysentinel_metrics
 #   cat /proc/sysentinel_metrics
@@ -57,6 +60,23 @@ else
 export SYSENTINEL_EXTRA_RUSTFLAGS :=
 export CONFIG_SYSENTINEL_MEI_SHIM := n
 $(info sysentinel: Intel MEI support DISABLED (use MEI=y to enable))
+endif
+
+# ── Optional AMD PSP platform-access support ─────────────────────────────────
+# PSP=y (default) links src/psp_shim.c against the in-kernel CCP/PSP driver so
+# the AMD PSP is queried live (HSTI handshake) instead of presence-only.
+# Requires CONFIG_CRYPTO_DEV_CCP_DD in the host kernel (built-in or loaded
+# before sysentinel). Use PSP=n to drop it (e.g. non-AMD kernels without ccp).
+
+PSP ?= y
+
+ifeq ($(PSP),y)
+export SYSENTINEL_EXTRA_RUSTFLAGS := $(SYSENTINEL_EXTRA_RUSTFLAGS) --cfg psp_available
+export CONFIG_SYSENTINEL_PSP_SHIM := y
+$(info sysentinel: AMD PSP platform-access support ENABLED (default))
+else
+export CONFIG_SYSENTINEL_PSP_SHIM := n
+$(info sysentinel: AMD PSP platform-access support DISABLED (use PSP=y to enable))
 endif
 
 all:

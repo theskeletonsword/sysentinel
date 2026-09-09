@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR GPL-2.0-or-later
+// SPDX-License-Identifier: Apache-2.0
 //!
 //! Performance Monitoring Unit (PMU) reader via the Linux `perf_event_open`
 //! syscall interface.

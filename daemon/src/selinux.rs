@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR GPL-2.0-or-later
+// SPDX-License-Identifier: Apache-2.0
 //!
 //! SELinux AVC denial handling — the "de qué se trata / lo permito o no"
 //! workflow.

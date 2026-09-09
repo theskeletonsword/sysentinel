@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR GPL-2.0-or-later
+// SPDX-License-Identifier: Apache-2.0
 //!
 //! Module watcher — someone `insmod` an unknown kernel module? The bot asks,
 //! and (on request) disassembles the suspect with `objdump` for analysis.

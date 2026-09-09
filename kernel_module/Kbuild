@@ -31,6 +31,18 @@ ifeq ($(CONFIG_SYSENTINEL_MEI_SHIM),y)
 sysentinel_metrics-y += src/mei_shim.o
 endif
 
+# Link the PSP C shim (live AMD PSP handshake via the ccp driver) when requested.
+ifeq ($(CONFIG_SYSENTINEL_PSP_SHIM),y)
+sysentinel_metrics-y += src/psp_shim.o
+endif
+
+# The ring −2 SMM shim is always linked: it provides the APM-port SMI probe
+# (0xB2/0xB3), the WSMT CommBuffer discovery + canary round-trip, and the
+# rdtsc_ordered() timing primitive. The Rust side keeps it inert until the
+# privileged control path issues `smm on`. On CONFIG_X86_64=y it is fully
+# functional; elsewhere the file compiles to errno-only stubs.
+sysentinel_metrics-y += src/smm_shim.o
+
 # The procfs shim is always required: /proc/sysentinel_metrics lives here
 # (rust-for-linux 7.1 has no /proc abstraction). It calls the Rust exports
 # rs_render_snapshot / rs_exec_command.

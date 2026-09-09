@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR GPL-2.0-or-later
+// SPDX-License-Identifier: Apache-2.0
 //!
 //! Hardware inventory straight from `/proc` and `/sysfs` — the userspace
 //! equivalent of `lscpu`, a PCI bus list, and (when an NVIDIA GPU exists)

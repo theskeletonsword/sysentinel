@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR GPL-2.0-or-later
+// SPDX-License-Identifier: Apache-2.0
 //!
 //! This-machine fingerprint for `/definehome` / `/detecthome`.
 //!
@@ -17,6 +17,27 @@
 //! All of those differ between two otherwise-identical PCs, so a cloned or
 //! same-model machine produces a DIFFERENT hash — no false positives. The
 //! CPU/GPU/RAM totals are included for the human-readable report only.
+//!
+//! # Ring −3 reinforcement (silicon truth)
+//!
+//! Since the `hal` module landed, the fingerprint is reinforced with tokens
+//! the operating system cannot forge and firmware updates do NOT change:
+//!
+//!   - which ring −3 coprocessor the silicon carries (Intel ME via HECI/MKHI
+//!     vs AMD PSP) — from `/hal`
+//!   - CPU family/model/stepping + package id
+//!   - the PCH/chipset vendor:device:revision (the glue of the platform)
+//!   - HECI controller presence (the PCI contract for the ME, per-unit)
+//!   - TPM chip identity (model + version major), read straight from sysfs
+//!   - the fact that MKHI answered `GET_FW_VERSION` over the real MEI bus
+//!     (ring 0 → ring −3): only the physical ME can reply, a bootkit cannot
+//!
+//! Those are produced by [`crate::hal::silicon_tokens()`] and mixed into the
+//! same SHA-256 as the serials always were. The *rolling* firmware versions
+//! (ME fw, TPM fw) are *not* hashed — they legitimately change on an update —
+//! but they are captured in the profile as [`HomeProfile::silicon_note`] and
+//! reported as **drift** by `/definehome status`, so a reflashed ME/BIOS/TPM
+//! is visible without ever false-negativing "esta es tu PC".
 //!
 //! The hash is SHA-256 (implemented inline; no extra dependency, and it
 //! beats the std `DefaultHasher` by being stable across builds).
@@ -47,6 +68,14 @@ pub struct MachineIdentity {
     pub dimm_serials: Vec<String>,
     // ── Network (unique per NIC) ─────────────────────────────────────────────
     pub primary_mac: String,
+    // ── Ring −3 silicon (from the `hal` module) ──────────────────────────────
+    /// Long-lived, firmware-update-stable tokens (coprocessor kind, CPU part,
+    /// chipset ids, HECI presence, TPM chip id, MKHI proof). Mixed into the
+    /// identity hash — see the module docs.
+    pub silicon_ids: Vec<String>,
+    /// *Rolling* firmware versions (ME fw, TPM fw, chipset) — shown in the
+    /// report and as drift, deliberately NOT hashed.
+    pub firmware_evidence: Vec<String>,
 }
 
 /// Persisted "this is MY PC" profile written by `/definehome`.
@@ -56,6 +85,20 @@ pub struct HomeProfile {
     pub captured_at: String,
     pub hostname: String,
     pub summary: String,
+    /// Ring −3 landscape at capture time: silicon tokens + rolling firmware
+    /// evidence. Used by `/definehome status` to show drift on updates.
+    #[serde(default)]
+    pub silicon_note: String,
+    /// TPM key ("es tu PC", see `crate::tpmkey`): the AEAD-sealed holder +
+    /// TPM metadata that only the physical TPM at define-time can open, bound
+    /// to the fingerprint's AAD. `None` ⇒ fingerprint-only binding (no TPM).
+    #[serde(default)]
+    pub tpm_key: Option<crate::tpmkey::TpmKeyMeta>,
+}
+
+/// Seconds-epoch timestamp, in the profile's existing `{:?}` style.
+pub fn now_iso() -> String {
+    format!("{:?}", std::time::SystemTime::now())
 }
 
 /// Read a DMI value, tolerating a missing node and "unknown" markers.
@@ -157,6 +200,12 @@ pub fn collect_identity() -> MachineIdentity {
         })
         .unwrap_or_default();
 
+    // Ring −3 silicon reinforcement — see the module docs. The tokens are
+    // stable and come from the HAL dispatcher; the rolling firmware evidence
+    // rides along for the drift report only.
+    id.silicon_ids = crate::hal::silicon_tokens();
+    id.firmware_evidence = crate::hal::firmware_evidence();
+
     id
 }
 
@@ -190,7 +239,8 @@ fn default_route_iface() -> Option<String> {
 
 impl MachineIdentity {
     /// The tokens that make a machine ONE-OF-ITS-KIND, even against a
-    /// factory-identical twin.
+    /// factory-identical twin: the unique serials plus the ring −3 silicon
+    /// contract, all of which are per-unit and stable across firmware updates.
     fn unique_tokens(&self) -> Vec<String> {
         let mut t: Vec<String> = vec![
             self.board_serial.clone(),
@@ -200,6 +250,9 @@ impl MachineIdentity {
             self.primary_mac.clone(),
         ];
         t.extend(self.dimm_serials.clone());
+        // Ring −3 reinforcement: coprocessor kind, CPU part, chipset, HECI,
+        // TPM chip identity, MKHI proof.
+        t.extend(self.silicon_ids.clone());
         t.sort();
         t.dedup();
         t
@@ -220,10 +273,26 @@ impl MachineIdentity {
             format!("{} ({:?})", self.gpus.len(), self.gpus)
         };
         let dimms = self.dimm_serials.join(", ");
+        // Ring −3 line: coprocessor + the strongest silicon proofs.
+        let silicon = if self.silicon_ids.is_empty() {
+            "n/a (no readable silicon)".to_string()
+        } else {
+            let cp = crate::hal::platform_label();
+            let mut t = self.silicon_ids.clone();
+            // Keep the report compact: drop raw chipset/part noise we already
+            // summarised, keep everything else as proof.
+            t.sort();
+            format!("{cp} — {}", t.join(", "))
+        };
+        let fw = if self.firmware_evidence.is_empty() {
+            "n/a".to_string()
+        } else {
+            self.firmware_evidence.join(", ")
+        };
         format!(
             "CPU      {}\ncores    {}\nGPU      {}\nRAM      {} MB\n\
              board    {} {}\nserial   {}\nproduct  {} {}\nuuid     {}\n\
-             MAC      {}\nDIMMs    {}",
+             MAC      {}\nDIMMs    {}\nsilicon (ring −3) {}\nfw       {}",
             or_na(&self.cpu_model),
             self.cpu_cores,
             gpu,
@@ -236,8 +305,66 @@ impl MachineIdentity {
             or_na(&self.product_uuid),
             or_na(&self.primary_mac),
             dimms,
+            silicon,
+            fw,
         )
     }
+
+    /// Rolling firmware evidence keyed as `name=value`.
+    pub fn firmware_map(&self) -> Vec<(String, String)> {
+        self.firmware_evidence
+            .iter()
+            .filter_map(|e| e.split_once('=').map(|(k, v)| (k.to_string(), v.to_string())))
+            .collect()
+    }
+}
+
+/// Diff the saved profile's silicon/firmware snapshot against the live one.
+/// Returns `(silicon_stable, changed_firmware)` — silicon differences mean the
+/// *hardware* changed (handled by the fingerprint), firmware differences mean
+/// devices were reflashed on this same machine (drift, not identity change).
+pub fn silicon_drift(
+    saved: &HomeProfile,
+    current: &MachineIdentity,
+) -> (bool, Vec<String>) {
+    let mut saved_silicon: Vec<String> = Vec::new();
+    let mut saved_fw: Vec<(String, String)> = Vec::new();
+    for line in saved.silicon_note.lines() {
+        if let Some(rest) = line.strip_prefix("silicon|") {
+            saved_silicon = rest.split('·').map(str::to_string).collect();
+        } else if let Some(rest) = line.strip_prefix("fw|") {
+            for pair in rest.split('·') {
+                if let Some((k, v)) = pair.split_once('=') {
+                    saved_fw.push((k.to_string(), v.to_string()));
+                }
+            }
+        }
+    }
+
+    let silicon_stable = current.silicon_ids.iter().all(|t| saved_silicon.contains(t))
+        && saved_silicon.iter().all(|t| current.silicon_ids.contains(t));
+
+    let live = current.firmware_map();
+    let mut changed: Vec<String> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for (k, v) in &live {
+        seen.insert(k.clone());
+        let was = saved_fw.iter().find(|(sk, _)| sk == k).map(|(_, sv)| sv.as_str());
+        if was.is_some() && was != Some(v.as_str()) {
+            changed.push(format!(
+                "{k}: {} → {}",
+                was.unwrap_or("?"),
+                v
+            ));
+        }
+    }
+    // Keys in the profile that are gone now (e.g. TPM removed).
+    for (k, v) in &saved_fw {
+        if !seen.contains(k) {
+            changed.push(format!("{k}: {} → (ausente)", *v));
+        }
+    }
+    (silicon_stable, changed)
 }
 
 fn or_na(s: &str) -> &str {
@@ -264,21 +391,81 @@ pub fn save_profile(path: &Path, id: &MachineIdentity) -> Result<()> {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("creating {}", parent.display()))?;
     }
-    let profile = HomeProfile {
+    let mut profile = HomeProfile {
         fingerprint: id.fingerprint(),
-        captured_at: format!("{:?}", std::time::SystemTime::now()),
+        captured_at: now_iso(),
         hostname: std::fs::read_to_string("/proc/sys/kernel/hostname")
             .unwrap_or_default()
             .trim()
             .to_string(),
         summary: id.summary_table(),
+        // The ring −3 silicon snapshot: stable tokens first, rolling firmware
+        // evidence second. This is what `/definehome status` diff-drifts.
+        silicon_note: format!(
+            "silicon|{}\nfw|{}",
+            id.silicon_ids.join("·"),
+            id.firmware_evidence
+                .iter()
+                .map(|e| e.to_string())
+                .collect::<Vec<_>>()
+                .join("·")
+        ),
+        tpm_key: None,
     };
+
+    // The TPM key: bind a /dev/urandom key inside the physical TPM and seal a
+    // random holder under it, AES-256-GCM if this CPU has AES-NI/VAES else
+    // ChaCha20-Poly1305 (random nonce, never reused). This *accompanies* the
+    // fingerprint; if the TPM is unreachable we keep fingerprint-only binding
+    // and say so explicitly in the report.
+    let base = path.parent();
+    match base.and_then(|b| crate::tpmkey::bind(&profile.fingerprint, b).ok()) {
+        Some(key) => {
+            log::info!(
+                "save_profile: TPM key bound (alg {}, handle 0x{:08x})",
+                key.meta.alg.label(),
+                key.meta.handle
+            );
+            profile.summary.push_str(&format!(
+                "\n\n🔑 *TPM key*: bound — {} · handle `0x{:08x}`",
+                key.meta.alg.label(),
+                key.meta.handle
+            ));
+            profile.tpm_key = Some(key.meta);
+        }
+        None => {
+            log::warn!("save_profile: no TPM key possible — fingerprint-only binding");
+            profile.summary.push_str(
+                "\n\n🔑 *TPM key*: none (no reachable TPM) — fingerprint-only binding.",
+            );
+        }
+    }
+
     std::fs::write(path, serde_json::to_string_pretty(&profile)?)
         .with_context(|| format!("writing {}", path.display()))
 }
 
 pub fn clear_profile(path: &Path) {
+    // Best-effort TPM release (evict the persistent object + drop the seal
+    // directory) before forgetting the profile itself.
+    if let Some(base) = path.parent() {
+        crate::tpmkey::unbind(base);
+    }
     let _ = std::fs::remove_file(path);
+}
+
+/// Human-readable TPM-key verdict for `/definehome status` and the fp-match
+/// report, or `None` when the profile was bound fingerprint-only.
+pub fn tpm_key_line(profile: &HomeProfile, live_fp: &str, base: &Path) -> Option<String> {
+    let meta = profile.tpm_key.clone()?;
+    let verdict = crate::tpmkey::verify(&meta, live_fp, base);
+    Some(format!(
+        "\n{}\n_({} · handle 0x{:08x} · bound {})_",
+        verdict.short(),
+        meta.alg.label(),
+        meta.handle,
+        meta.bound_at,
+    ))
 }
 
 // ── Bare-bones SHA-256 (no external crate needed) ────────────────────────────

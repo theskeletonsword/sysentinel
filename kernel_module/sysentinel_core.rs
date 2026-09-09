@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: MIT OR GPL-2.0-or-later
 //!
 //! sysentinel_metrics — system metrics, hypervisor + ME/PSP status, and
 //! privileged control commands, exposed as `/proc/sysentinel_metrics`.
@@ -9,12 +9,17 @@
 //!
 //! ```text
 //! uptime_s=12345 modules=64 mem_free_kb=204800 mem_total_kb=8388608
-//! hypervisor=bare-metal cr0=0x0000000080050033
-//! me_fw=18.1.2204.0 psp=n/a
+//! hypervisor=bare-metal ring3=intel-me cr0=0x0000000080050033
+//! me_fw=18.1.2204.0 me_live=ok(v18.1.2204.0,rt=2ms)
+//! smm=off ro=ok(rt=0us)
 //! ```
 //!
-//! Fields are space-separated `key=value` segments ending with a newline.
-//! The exact set depends on the hardware/virtualisation platform at runtime:
+//! The ring −3 channel is chosen by the [`ring3`] dispatcher (mirroring the
+//! daemon HAL): **Intel** → ME/HECI/MKHI tokens above; **AMD/Hygon** → a
+//! `psp=up(...)` handshake token instead; **neither** → no ME/PSP tokens at
+//! all (old/VIA/ARM-class silicon). Fields are space-separated `key=value`
+//! segments ending with a newline. The exact set depends on the
+//! hardware/virtualisation platform at runtime:
 //!
 //! | Field           | Source                            | Always present? |
 //! |---|---|---|
@@ -23,10 +28,18 @@
 //! | `mem_free_kb`   | `si_meminfo().freeram`            | yes             |
 //! | `mem_total_kb`  | `si_meminfo().totalram`           | yes             |
 //! | `hypervisor`    | CPUID leaf 0x40000000 / EL1 reg   | yes             |
+//! | `ring3`         | dispatcher: intel-me / amd-psp / none | yes           |
 //! | `cr0`           | current `%cr0` value              | x86_64 only     |
 //! | `kvm_features`  | `KVM_HC_FEATURES` hypercall       | only under KVM  |
-//! | `me_fw`         | MKHI GET_FW_VERSION via MEI bus   | only on Intel   |
-//! | `psp`           | AMD PSP presence                  | yes             |
+//! | `me_fw`         | MKHI GET_FW_VERSION via MEI bus   | Intel only      |
+//! | `me_live`       | live MKHI re-query (rate-limited) | Intel only      |
+//! | `me_drift`      | live ≠ probe firmware version     | Intel, if drifted|
+//! | `psp`           | AMD PSP HSTI handshake            | AMD only        |
+//! | `smm`           | ring −2 SMM firmware posture — ACPI-only, **provably never raises an SMI** (`off` default; `acpi` / `err(c=…)` after the read-only scan on `smm on`) | yes |
+//! | `smm_iface`     | read-only: the firmware's declared SMM bridge (FADT `smi_command` port + documented command values) | armed |
+//! | `smm_wsmt`      | read-only: WSMT SMM-mitigation posture (fixed-buffers, comm-nested-ptr, system-res) | armed |
+//! | `crosstalk`     | ring −1 hypercall vs ring −2 SMM latency | SMM on + VM |
+//! | `ro`            | passive rodata canary watch (`ok`/`dirty`) | yes          |
 //!
 //! The procfs shim that owns the file is `src/proc_entry.c`; the logic
 //! lives here. rust-for-linux 7.1 has no `/proc` abstraction, so this
@@ -48,6 +61,8 @@
 //! | `kernelpanic` | `panic()` — deliberate kernel panic (halt, or reboot per `panic=N`) |
 //! | `cr0_wp on`   | set `%cr0.WP` (write-protect)                |
 //! | `cr0_wp off`  | clear `%cr0.WP`                              |
+//! | `smm on`      | arm the ring −2 SMM channel: runs the **read-only** ACPI posture scan (FADT + WSMT) — no SMI, no port I/O |
+//! | `smm off`     | disable the SMM channel                       |
 //! | `status`      | no-op (round-trip check)                     |
 //!
 //! Every `triplefault*` command fires **exactly once per boot**: a per-boot
@@ -76,6 +91,8 @@
 // Pull in both submodules. They are conditionally compiled inside.
 mod hypercall;
 mod psp;
+mod ring3;
+mod smm;
 
 #[cfg(mei_available)]
 mod mei_driver;
@@ -144,7 +161,7 @@ module! {
     name: "sysentinel_metrics",
     authors: ["sysentinel contributors"],
     description: "System metrics, ME/PSP status, and privileged controls via /proc/sysentinel_metrics",
-    license: "GPL",
+    license: "Dual MIT/GPL",
 }
 
 // ── Metrics snapshot ──────────────────────────────────────────────────────────
@@ -277,7 +294,7 @@ impl Snapshot {
     ///
     /// Output format (example):
     /// ```text
-    /// uptime_s=12345 modules=64 mem_free_kb=204800 mem_total_kb=8388608 hypervisor=KVM/Intel_VT-x kvm_features=0x000001ff me_fw=18.1.2204.0 psp=n/a
+    /// uptime_s=12345 modules=64 mem_free_kb=204800 mem_total_kb=8388608 hypervisor=KVM/Intel_VT-x kvm_features=0x000001ff ring3=intel-me me_fw=18.1.2204.0
     /// ```
     fn render(&self) -> KVec<u8> {
         let mut buf: KVec<u8> = KVec::new();
@@ -286,13 +303,14 @@ impl Snapshot {
         // Spaces are used as field separators; the line ends with '\n'.
         let _ = write!(
             w,
-            "uptime_s={} modules={} mem_free_kb={} mem_total_kb={} hypervisor={}",
+            "uptime_s={} modules={} mem_free_kb={} mem_total_kb={} hypervisor={} ring3={}",
             self.uptime_secs,
             self.loaded_modules,
             self.free_mem_kb,
             self.total_mem_kb,
             // Spaces in the hypervisor string would break the format; replace with '_'.
             HypervisorEscaped(self.hypervisor),
+            ring3::partner().short(),
         );
 
         if let Some(features) = self.kvm_features {
@@ -316,6 +334,40 @@ impl Snapshot {
             let _ = write!(w, "{}", text);
         }
 
+        // Live ME channel: re-run the MKHI handshake over the bound MEI client
+        // (rate-limited by mei_driver) so the daemon sees the module → ring -3
+        // alliance working right now, and flags drift from the probe-time value.
+        // Engaged only when the ring −3 dispatcher picked Intel ME.
+        #[cfg(mei_available)]
+        if ring3::partner().is_intel_me() {
+            let now_ns = mei_driver::boottime_ns();
+            let live = mei_driver::live_status(now_ns);
+            if !live.bound {
+                let _ = write!(w, " me_live=no-client");
+            } else if let Some(v) = live.version {
+                let _ = write!(
+                    w,
+                    " me_live=ok(v{}.{}.{}.{},rt={}ms)",
+                    v.major,
+                    v.minor,
+                    v.build,
+                    v.hotfix,
+                    live.rt_us / 1000
+                );
+                if let Some(cached) = mei_driver::get_me_fw_version() {
+                    if cached.major != v.major
+                        || cached.minor != v.minor
+                        || cached.build != v.build
+                        || cached.hotfix != v.hotfix
+                    {
+                        let _ = write!(w, " me_drift=1");
+                    }
+                }
+            } else {
+                let _ = write!(w, " me_live=err");
+            }
+        }
+
         let mut wrote_cr = false;
         for reg in [0u8, 2, 3, 4, 8] {
             if let Some(v) = cr_value(&self, reg) {
@@ -325,7 +377,37 @@ impl Snapshot {
         }
         let _ = wrote_cr;
 
-        let _ = write!(w, " psp={}", self.psp.as_str());
+        // AMD PSP: engaged only when the ring −3 dispatcher picked the PSP; on
+        // Intel the token is absent entirely (that silicon talks to the ME, not
+        // the PSP), and on neither-vendor old silicon no token is emitted.
+        if ring3::partner().is_amd_psp() {
+            if let psp::PspStatus::Up { hsti, rt_us } = self.psp {
+                let mut flags = [0u8; 64];
+                let flen = self.psp.hsti_flags_buf(&mut flags);
+                let _ = write!(
+                    w,
+                    " psp=up(hsti={:#010x},flags={},rt={}ms)",
+                    hsti,
+                    core::str::from_utf8(&flags[..flen]).unwrap_or("?"),
+                    rt_us / 1000
+                );
+            } else {
+                let _ = write!(w, " psp={}", self.psp.as_str());
+            }
+        }
+
+        // Ring −2 (SMM) firmware posture + passive rodata watch. Reading NEVER
+        // raises an SMI: the module has no path to the APM ports at all — the
+        // posture is read from the ACPI tables the firmware publishes (FADT
+        // smi_command + WSMT), so `smm on`/`smm_wsmt` are pure table reads and
+        // the rodata canary is a checksum over our own memory.
+        let now_ns = kernel::time::Instant::<kernel::time::BootTime>::now()
+            .elapsed()
+            .as_nanos()
+            .unsigned_abs();
+        smm::ro_check(now_ns);
+        smm::write_tokens(&mut w);
+        smm::write_ro_token(&mut w);
 
         let _ = write!(w, "\n");
         buf
@@ -345,15 +427,14 @@ impl core::fmt::Write for KVecWriter<'_> {
     }
 }
 
-// KVecWriter alias used by mei_driver.rs at module scope.
-pub(crate) use KVecWriter as RenderBuf;
-
 /// Stack-allocated buf writer (for no-alloc formatting of ME version).
+#[cfg(mei_available)]
 struct BufWriter<'a> {
     buf: &'a mut [u8; 32],
     pos: usize,
 }
 
+#[cfg(mei_available)]
 impl core::fmt::Write for BufWriter<'_> {
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
         let remaining = self.buf.len().saturating_sub(self.pos);
@@ -583,6 +664,24 @@ pub unsafe extern "C" fn rs_exec_command(
             // this reaches us.
             unsafe { sysentinel_defense_clean() }
         }
+        // Ring −2 SMM channel — ACPI-only, provably never raises an SMI. Arming
+        // performs the read-only firmware-posture scan (FADT + WSMT, pure
+        // table reads); there is no path to the APM ports at all.
+        "smm on" => {
+            smm::smm_enable();
+            pr_info!("sysentinel_metrics: CONTROL: ring −2 SMM channel armed (ACPI posture scan, no SMI possible)\n");
+            0
+        }
+        "smm off" => {
+            smm::smm_disable();
+            pr_info!("sysentinel_metrics: CONTROL: ring −2 SMM channel disabled\n");
+            0
+        }
+        "smm status" => {
+            let state = if smm::smm_is_enabled() { "enabled" } else { "disabled" };
+            pr_info!("sysentinel_metrics: CONTROL: ring −2 SMM channel {state}\n");
+            0
+        }
         _ => parse_pid_command(s, |pid| {
             // SAFETY: C helper SIGKILLs the pid via find_vpid/kill_pid.
             unsafe { sysentinel_kill_process(pid) }
@@ -682,6 +781,9 @@ impl kernel::Module for SysentinelMetrics {
             hypercall::hypervisor_description()
         );
 
+        // Seed the passive rodata canary (ring −2 instrument #3; no SMI).
+        smm::ro_init();
+
         // Register /proc/sysentinel_metrics (see src/proc_entry.c).
         // SAFETY: C shim just allocates a proc entry; no pointers shared.
         let rc = unsafe { sysentinel_proc_init() };
@@ -707,18 +809,31 @@ impl kernel::Module for SysentinelMetrics {
             pr_warn!("sysentinel_metrics: hypercall watcher init failed (errno {})\n", -hcw_rc);
         }
 
-        // Attempt to register the MEI client driver (Intel ME).
-        // Failure is non-fatal — we continue without ME status.
+        // Engage the ring −3 partner chosen by the dispatcher (mirrors the
+        // daemon HAL): on Intel, register the MEI client driver (ME/HECI/MKHI);
+        // on AMD the PSP path needs no driver registration, so nothing else is
+        // done here. Failure is non-fatal — we continue without ME status.
+        let partner = ring3::partner();
+        pr_info!("sysentinel_metrics: ring −3 partner: {}\n", partner.label());
+
         #[cfg(mei_available)]
         let mei_registered = {
             mei_driver::ensure_initialized();
-            match mei_driver::register() {
-                Ok(()) => true,
-                Err(e) if e == ENODEV => false,
-                Err(e) => {
-                    pr_warn!("sysentinel_metrics: MEI registration failed ({e:?}); continuing without ME\n");
-                    false
+            if partner.is_intel_me() {
+                match mei_driver::register() {
+                    Ok(()) => true,
+                    Err(e) if e == ENODEV => false,
+                    Err(e) => {
+                        pr_warn!("sysentinel_metrics: MEI registration failed ({e:?}); continuing without ME\n");
+                        false
+                    }
                 }
+            } else {
+                pr_info!(
+                    "sysentinel_metrics: silicon has no Intel ME ({}); MEI client not registered\n",
+                    partner.label()
+                );
+                false
             }
         };
         #[cfg(not(mei_available))]

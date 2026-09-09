@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR GPL-2.0-or-later
+// SPDX-License-Identifier: Apache-2.0
 //!
 //! User-space Intel ME / AMD PSP firmware status reader.
 //!
@@ -19,12 +19,12 @@
 //! # AMD PSP
 //!
 //! The AMD Platform Security Processor does not expose a stable ioctl ABI to
-//! user-space for direct firmware-version queries. The PSP mailbox registers
-//! (`MP0_SMN_C2P_MSG_*`) are accessible from the x86 side only via SMN
-//! (System Management Network) aperture reads, which require ring-0 or a
-//! specialised kernel driver. This module reads best-effort version
-//! information from the kernel's TPM sysfs interface (**only when the host CPU
-//! is AMD/Hygon**) and from CCP device presence in `/sys`.
+//! user-space for direct firmware-version queries. The kernel module now
+//! performs a real ring-0 handshake with it (`PSP_CMD_HSTI_QUERY` via the ccp
+//! driver's exported platform-access API) and reports the fused HSTI word on
+//! `psp=up(...)` — that token is parsed below when present. On hosts without
+//! the module (or without ccp platform-access), this module falls back to
+//! best-effort TPM sysfs data (**only when the host CPU is AMD/Hygon**).
 //!
 //! On non-AMD hosts (e.g. Intel with PTT) the same TPM sysfs data is reported
 //! under a vendor-accurate label instead of being misattributed to the PSP.
@@ -39,7 +39,7 @@ use std::fs;
 // ── Public types ─────────────────────────────────────────────────────────────
 
 /// Intel ME firmware version reported by the MKHI MEI client.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MeFirmwareVersion {
     pub major:  u16,
     pub minor:  u16,
@@ -53,11 +53,27 @@ impl std::fmt::Display for MeFirmwareVersion {
     }
 }
 
+/// Live ME channel status from the kernel module's `me_live=` token.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MeLiveStatus {
+    /// The MKHI round-trip succeeded on the most recent live re-query.
+    pub ok: bool,
+    /// Firmware version returned by the live query (present only when `ok`).
+    pub version: Option<MeFirmwareVersion>,
+    /// Round-trip time in milliseconds.
+    pub rt_ms: Option<u64>,
+}
+
 /// Aggregated firmware/coprocessor status for this host.
 #[derive(Debug, Clone, Default)]
 pub struct FirmwareStatus {
     /// Intel ME version, or `None` if not present or not accessible.
     pub intel_me: Option<MeFirmwareVersion>,
+    /// Live ME channel status (kernel module `me_live=`), if the module
+    /// reported it. `None` when the kernel module is not loaded / no ME.
+    pub me_live: Option<MeLiveStatus>,
+    /// `me_drift=1` — the live MKHI version differs from the probe-time one.
+    pub me_drift: bool,
     /// AMD PSP description string, or `None` if not present.
     pub amd_psp:  Option<String>,
     /// Additional notes (active LSMs, TPM caps, etc.).
@@ -69,13 +85,33 @@ impl std::fmt::Display for FirmwareStatus {
         if let Some(ref me) = self.intel_me {
             writeln!(f, "Intel ME firmware: {me}")?;
         }
+        if let Some(ref live) = self.me_live {
+            match (&live.version, live.rt_ms) {
+                (Some(v), Some(ms)) => {
+                    writeln!(f, "Intel ME live channel: ok (v{v}, rt={ms}ms)")?;
+                }
+                (Some(v), None) => {
+                    writeln!(f, "Intel ME live channel: ok (v{v})")?;
+                }
+                (None, _) => {
+                    writeln!(f, "Intel ME live channel: {}", if live.ok { "ok" } else { "down" })?;
+                }
+            }
+        }
+        if self.me_drift {
+            writeln!(f, "⚠ Intel ME live version differs from probe-time value (me_drift)")?;
+        }
         if let Some(ref psp) = self.amd_psp {
             writeln!(f, "AMD PSP: {psp}")?;
         }
         for note in &self.notes {
             writeln!(f, "  {note}")?;
         }
-        if self.intel_me.is_none() && self.amd_psp.is_none() && self.notes.is_empty() {
+        if self.intel_me.is_none()
+            && self.me_live.is_none()
+            && self.amd_psp.is_none()
+            && self.notes.is_empty()
+        {
             write!(f, "(no Intel ME or AMD PSP detected on this system)")?;
         }
         Ok(())
@@ -94,6 +130,18 @@ fn parse_me_fw(s: &str) -> Option<MeFirmwareVersion> {
     Some(MeFirmwareVersion { major, minor, build, hotfix })
 }
 
+/// Read the kernel module's one-line snapshot, if the module is loaded.
+fn metrics_text() -> Option<String> {
+    match fs::read_to_string("/proc/sysentinel_metrics") {
+        Ok(d) => Some(d),
+        Err(e) => {
+            log::debug!("mei: /proc/sysentinel_metrics unreadable ({e}); \
+                         query needs the loaded kernel module");
+            None
+        }
+    }
+}
+
 /// Query the Intel ME firmware version from the `sysentinel_metrics` kernel
 /// module (`/proc/sysentinel_metrics`).
 ///
@@ -102,13 +150,8 @@ fn parse_me_fw(s: &str) -> Option<MeFirmwareVersion> {
 /// - `Ok(None)` if the module is not loaded, the file is unreadable, or the
 ///   firmware data is absent — treated silently as "no Intel ME", never an error.
 pub fn query_intel_me() -> Result<Option<MeFirmwareVersion>> {
-    let data = match fs::read_to_string("/proc/sysentinel_metrics") {
-        Ok(d) => d,
-        Err(e) => {
-            log::debug!("mei: /proc/sysentinel_metrics unreadable ({e}); \
-                         ME query needs the loaded kernel module");
-            return Ok(None);
-        }
+    let Some(data) = metrics_text() else {
+        return Ok(None);
     };
 
     for token in data.split_whitespace() {
@@ -119,6 +162,70 @@ pub fn query_intel_me() -> Result<Option<MeFirmwareVersion>> {
         }
     }
 
+    Ok(None)
+}
+
+/// Parse a kernel-module `me_live=` token.
+///
+/// Accepted shapes:
+/// - `ok(v18.1.2204.0,rt=2ms)`
+/// - `ok(v18.1.2204.0)`
+/// - `ok`
+/// - `err`
+/// - `no-client`
+fn parse_me_live(s: &str) -> Option<MeLiveStatus> {
+    if matches!(s, "err" | "no-client") {
+        return Some(MeLiveStatus::default());
+    }
+    let rest = s.strip_prefix("ok")?.trim_start_matches('(');
+    if rest.is_empty() || rest == ")" {
+        // Bare `me_live=ok` — round-trip fine, no version details.
+        return Some(MeLiveStatus {
+            ok: true,
+            version: None,
+            rt_ms: None,
+        });
+    }
+    let body = rest.strip_suffix(')')?;
+    let mut fields = body.split(',');
+    let version = fields
+        .next()
+        .and_then(|v| v.strip_prefix('v'))
+        .and_then(parse_me_fw);
+    let rt_ms = fields
+        .next()
+        .and_then(|r| r.strip_prefix("rt="))
+        .and_then(|n| n.strip_suffix("ms"))
+        .and_then(|n| n.parse().ok());
+    Some(MeLiveStatus {
+        ok: true,
+        version,
+        rt_ms,
+    })
+}
+
+/// Parse a kernel-module `psp=up(...)` token into its detail string.
+fn parse_psp_up(s: &str) -> Option<String> {
+    s.strip_prefix("up(")?.strip_suffix(')').map(String::from)
+}
+
+/// Query the live ME channel status (`me_live=`) from the kernel module.
+pub fn query_me_live() -> Result<Option<MeLiveStatus>> {
+    let Some(data) = metrics_text() else {
+        return Ok(None);
+    };
+    for token in data.split_whitespace() {
+        if let Some(v) = token.strip_prefix("me_live=") {
+            return Ok(parse_me_live(v));
+        }
+        if token == "me_drift=1" {
+            return Ok(Some(MeLiveStatus {
+                ok: true,
+                version: None,
+                rt_ms: None,
+            }));
+        }
+    }
     Ok(None)
 }
 
@@ -254,6 +361,20 @@ pub fn query_firmware_status() -> FirmwareStatus {
         }
     };
 
+    let me_live = match query_me_live() {
+        Ok(v)  => v,
+        Err(e) => {
+            log::warn!("Intel ME live query failed: {e:#}");
+            None
+        }
+    };
+
+    // me_drift=1 requires the kernel module's own classification; the live
+    // token above is also present in that case.
+    let me_drift = metrics_text()
+        .map(|d| d.split_whitespace().any(|t| t == "me_drift=1"))
+        .unwrap_or(false);
+
     let amd_psp = match query_amd_psp() {
         Ok(v)  => v,
         Err(e) => {
@@ -263,6 +384,47 @@ pub fn query_firmware_status() -> FirmwareStatus {
     };
 
     let mut notes: Vec<String> = Vec::new();
+
+    // Kernel-module ring −3 channel: the dispatcher's decision and, on AMD,
+    // the fused PSP HSTI handshake evidence (`psp=up(...)`). Ring −2 tokens
+    // (`smm=`, `smm_iface=`, `smm_wsmt=`, `ro=`) come from the same line.
+    if let Some(data) = metrics_text() {
+        for token in data.split_whitespace() {
+            if let Some(d) = token.strip_prefix("ring3=") {
+                notes.push(format!("Ring −3 dispatch (kernel module): {d}"));
+            } else if let Some(d) = token.strip_prefix("smm_iface=") {
+                notes.push(format!(
+                    "Firmware-declared SMM bridge (ACPI FADT SMI port): {d}"
+                ));
+            } else if let Some(d) = token.strip_prefix("smm_wsmt=") {
+                if d == "none" {
+                    notes.push(
+                        "No WSMT table — firmware claims no SMM mitigations".into(),
+                    );
+                } else {
+                    notes.push(format!("WSMT SMM-mitigation posture: {d}"));
+                }
+            } else if let Some(d) = token.strip_prefix("smm=") {
+                notes.push(format!("Ring −2 SMM channel: {d}"));
+                if d == "acpi" {
+                    notes.push(
+                        "ACPI-only (FADT + WSMT read) — provably zero SMIs fired".into(),
+                    );
+                }
+            } else if let Some(d) = token.strip_prefix("hvm_lat=") {
+                notes.push(format!("Ring −1 hypercall latency: {d}"));
+            } else if let Some(d) = token.strip_prefix("crosstalk=") {
+                if d != "bare-metal" && d != "no-smm" {
+                    notes.push(format!("Cross-side latency delta: {d}"));
+                }
+            } else if token == "ro=dirty" {
+                notes.push("Module rodata changed — possible silent write-hook".into());
+            } else if let Some(detail) = token.strip_prefix("psp=up(") {
+                let detail = detail.strip_suffix(')').unwrap_or(detail);
+                notes.push(format!("PSP HSTI handshake (kernel module): {detail}"));
+            }
+        }
+    }
 
     // On non-AMD hosts the TPM is not driven by an AMD PSP (on Intel platforms
     // it is usually the in-CPU "Intel PTT"). Report the same sysfs data under
@@ -291,5 +453,91 @@ pub fn query_firmware_status() -> FirmwareStatus {
         }
     }
 
-    FirmwareStatus { intel_me, amd_psp, notes }
+    FirmwareStatus { intel_me, me_live, me_drift, amd_psp, notes }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_me_live_full() {
+        let st = parse_me_live("ok(v18.1.2204.0,rt=2ms)").unwrap();
+        assert!(st.ok);
+        assert_eq!(st.rt_ms, Some(2));
+        let v = st.version.unwrap();
+        assert_eq!((v.major, v.minor, v.build, v.hotfix), (18, 1, 2204, 0));
+    }
+
+    #[test]
+    fn parse_me_live_bare_and_down() {
+        assert_eq!(parse_me_live("ok").unwrap(), MeLiveStatus { ok: true, version: None, rt_ms: None });
+        assert_eq!(parse_me_live("err").unwrap(), MeLiveStatus::default());
+        assert_eq!(parse_me_live("no-client").unwrap(), MeLiveStatus::default());
+        assert!(parse_me_live("bogus").is_none());
+    }
+
+    #[test]
+    fn parse_psp_up_token() {
+        assert_eq!(
+            parse_psp_up("up(hsti=0x00002100,flags=tsme,rt=1ms)").unwrap(),
+            "hsti=0x00002100,flags=tsme,rt=1ms"
+        );
+        assert!(parse_psp_up("present").is_none());
+    }
+
+    #[test]
+    fn me_drift_classifier() {
+        let text = "uptime_s=1 me_fw=18.1.2204.0 me_live=ok(v18.1.2204.0,rt=2ms) me_drift=1 ring3=intel-me\n";
+        assert!(text.split_whitespace().any(|t| t == "me_drift=1"));
+        assert!(text.split_whitespace().any(|t| t == "ring3=intel-me"));
+    }
+
+    #[test]
+    fn ring3_token_surface() {
+        // Intel: ME tokens, no psp token. AMD: psp token, no me_live token.
+        let intel = "ring3=intel-me me_fw=18.1.2204.0 me_live=ok(v18.1.2204.0,rt=2ms)\n";
+        let amd = "ring3=amd-psp psp=up(hsti=0x00002100,flags=tsme,rt=1ms)\n";
+        let old = "ring3=none cr0=0x0000000080050033\n";
+
+        let dispatch = |text: &str| {
+            text.split_whitespace()
+                .find_map(|t| t.strip_prefix("ring3="))
+                .map(str::to_string)
+        };
+        assert_eq!(dispatch(intel).as_deref(), Some("intel-me"));
+        assert_eq!(dispatch(amd).as_deref(), Some("amd-psp"));
+        assert_eq!(dispatch(old).as_deref(), Some("none"));
+        assert!(!amd.contains("me_live"));
+        assert!(!intel.contains("psp="));
+        assert!(!old.contains("me_") && !old.contains("psp="));
+    }
+
+    #[test]
+    fn ring2_smm_tokens_surface() {
+        // SMM channel off by default; opt-in states surface as smm=… and the
+        // passive rodata watch always emits ro=.
+        let off = "ring3=amd-psp smm=off ro=ok(rt=0us)\n";
+        assert!(off.contains("smm=off"));
+        assert!(off.contains("ro=ok"));
+
+        let acpi = "ring3=intel-me smm=acpi smm_iface=fadt-smi@0xb2(en=0xf0,pstate=0x80) smm_wsmt=0x00000001(fixed-buffers) hvm_lat=3us ro=ok(rt=1us)\n";
+        for t in acpi.split_whitespace() {
+            assert!(t != "ro=dirty");
+        }
+        assert!(acpi.contains("smm=acpi"));
+        assert!(acpi.contains("smm_iface=fadt-smi@0xb2"));
+        assert!(acpi.contains("smm_wsmt=0x00000001(fixed-buffers)"));
+        assert!(acpi.contains("hvm_lat=3us"));
+        assert!(acpi.contains("ro=ok"));
+
+        let noiface = "ring3=intel-me smm=acpi smm_iface=none smm_wsmt=none crosstalk=bare-metal ro=ok(rt=1us)\n";
+        assert!(noiface.contains("smm_iface=none"));
+        assert!(noiface.contains("smm_wsmt=none"));
+        assert!(noiface.contains("crosstalk=bare-metal"));
+
+        let dirty = "ring3=amd-psp smm=acpi smm_iface=fadt-smi@0xb2 smm_wsmt=0x00000000(unprotected) ro=dirty\n";
+        assert!(dirty.contains("ro=dirty"));
+        assert!(dirty.contains("smm_wsmt=0x00000000(unprotected)"));
+    }
 }

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR GPL-2.0-or-later
+// SPDX-License-Identifier: Apache-2.0
 //!
 //! Ring-3 fallbacks — facts the daemon can still gather when the
 //! `sysentinel_metrics` kernel module is NOT loaded (Secure Boot without a
@@ -55,7 +55,7 @@ pub fn hypervisor_detect() -> String {
     if let Ok(mods) = std::fs::read_to_string("/proc/modules") {
         let m = mods.to_lowercase();
         if m.contains("kvm") && m.contains("intel") || m.contains("kvm_amd") {
-            return "KVM (módulos kvm cargados)".into();
+            return "KVM (kvm modules loaded)".into();
         }
         if m.contains("vboxdrv") {
             return "VirtualBox".into();
@@ -64,17 +64,17 @@ pub fn hypervisor_detect() -> String {
             return "VMware".into();
         }
     }
-    "bare metal (sin hypervisor detectado)".into()
+    "bare metal (no hypervisor detected)".into()
 }
 
 /// The block appended to `/status` and the LLM context when the module is
 /// absent, so nothing is silently missing — and nothing is faked.
 pub fn module_fallback_block() -> String {
     let mut out = String::new();
-    out.push_str("⚠️ módulo del kernel (`sysentinel_metrics`) **no cargado** — ");
-    out.push_str("sin lecturas ring-0 (CR, ME/PSP, killsession). Uso fallbacks ring-3:\n");
+    out.push_str("⚠️ kernel module (`sysentinel_metrics`) **not loaded** — ");
+    out.push_str("no ring-0 reads (CR, ME/PSP, killsession). Using ring-3 fallbacks:\n");
 
-    out.push_str(&format!("- Plataforma (ring-3): {}\n", hypervisor_detect()));
+    out.push_str(&format!("- Platform (ring-3): {}\n", hypervisor_detect()));
 
     let fw = crate::mei::query_firmware_status();
     if let Some(me) = &fw.intel_me {
@@ -87,7 +87,7 @@ pub fn module_fallback_block() -> String {
         out.push_str(&format!("- {note}\n"));
     }
     if fw.intel_me.is_none() && fw.amd_psp.is_none() {
-        out.push_str("- Sin versiones de ME/PSP legibles desde sysfs sin el módulo.\n");
+        out.push_str("- No ME/PSP versions readable from sysfs without the module.\n");
     }
 
     // PMU: pure perf_event_open — works WITHOUT the module. With
@@ -95,12 +95,12 @@ pub fn module_fallback_block() -> String {
     let paranoid = crate::pmu::read_paranoid();
     let pmu_note = match paranoid {
         Some(p) if p <= 0 => {
-            "perf_event_open sistema-wide (perf_event_paranoid ≤ 0)".to_string()
+            "perf_event_open system-wide (perf_event_paranoid ≤ 0)".to_string()
         }
         Some(p) => {
-            format!("perf_event_open por-proceso (paranoid={p})")
+            format!("perf_event_open per-process (paranoid={p})")
         }
-        None => "contadores PMU no disponibles".to_string(),
+        None => "PMU counters unavailable".to_string(),
     };
     out.push_str(&format!("- PMU/IPC: {pmu_note}\n"));
 
@@ -119,7 +119,7 @@ mod tests {
     #[test]
     fn fallback_block_never_fabricates_ring0() {
         let b = module_fallback_block();
-        assert!(b.contains("no cargado"));
+        assert!(b.contains("not loaded"));
         assert!(b.contains("ring-3"));
     }
 
