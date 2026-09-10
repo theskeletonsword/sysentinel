@@ -8,16 +8,21 @@ import android.content.SharedPreferences
  * Where the phone remembers which machine it is paired to.
  *
  * The pairing key is the whole secret: sealing a frame with it is the
- * authentication, so anything that can read it can speak as the owner. It lives
- * in the app's private preferences, which on a non-rooted device other apps
- * cannot read.
+ * authentication, so anything that can read it can speak as the owner.
  *
- * That is *private storage*, not *hardware-backed storage*, and the difference
- * is worth stating plainly: on a rooted handset, or one whose backups are not
- * encrypted, private is not the same as safe. Wrapping this with the Keystore
- * key from [DeviceIdentity] — so reading it needs the fingerprint too — is the
- * obvious next step and is not done yet. `android:allowBackup="false"` in the
- * manifest at least keeps it out of cloud backups.
+ * It is therefore **encrypted under a key held in the TEE or the secure
+ * element** and never written in the clear. Private storage is not the same as
+ * hardware-backed storage — on a rooted handset the difference is the whole
+ * question — so an attacker who copies the app's data directory now gets
+ * ciphertext and a key handle that is useless anywhere else.
+ *
+ * On a handset with no usable Keystore the key is stored in the clear and
+ * [wrappedInHardware] says so, rather than the app refusing to work. The owner
+ * can then decide; silently pretending would be worse than either.
+ *
+ * A factory reset or a reinstall destroys the Keystore key and makes the stored
+ * blob unreadable. That is a re-pair, not a bug — and it is exactly the
+ * property that makes wrapping worth having.
  */
 class Pairing(context: Context) {
 
@@ -32,10 +37,41 @@ class Pairing(context: Context) {
         get() = prefs.getInt(KEY_PORT, 8443)
         set(v) = prefs.edit().putInt(KEY_PORT, v).apply()
 
-    /** The 64-hex pairing key as typed; empty when not paired. */
+    /**
+     * The 64-hex pairing key; empty when not paired or when the wrapping key is
+     * gone (a reset or reinstall), which reads the same and means re-pair.
+     */
     var keyHex: String
-        get() = prefs.getString(KEY_HEX, "") ?: ""
-        set(v) = prefs.edit().putString(KEY_HEX, v.trim()).apply()
+        get() {
+            prefs.getString(KEY_WRAPPED, null)?.let { wrapped ->
+                return DeviceIdentity.unwrapSecret(wrapped) ?: ""
+            }
+            // Written before wrapping existed, or by a handset with no usable
+            // Keystore. Upgrade it in place the first time it is read.
+            val plain = prefs.getString(KEY_HEX, "") ?: ""
+            if (plain.isNotEmpty()) {
+                DeviceIdentity.wrapSecret(plain)?.let { wrapped ->
+                    prefs.edit().putString(KEY_WRAPPED, wrapped).remove(KEY_HEX).apply()
+                }
+            }
+            return plain
+        }
+        set(v) {
+            val clean = v.trim()
+            val wrapped = DeviceIdentity.wrapSecret(clean)
+            if (wrapped != null) {
+                prefs.edit().putString(KEY_WRAPPED, wrapped).remove(KEY_HEX).apply()
+            } else {
+                // No Keystore to lean on. Store it, and let the UI say so.
+                prefs.edit().putString(KEY_HEX, clean).remove(KEY_WRAPPED).apply()
+            }
+        }
+
+    /** True when the pairing key is protected by hardware rather than by file
+     *  permissions alone. Surfaced in the UI: it changes what a stolen phone
+     *  costs. */
+    val wrappedInHardware: Boolean
+        get() = prefs.contains(KEY_WRAPPED)
 
     /** Highest alert id already acknowledged, so a reinstall does not re-ask. */
     var lastAckedId: Long
@@ -56,6 +92,7 @@ class Pairing(context: Context) {
         const val KEY_HOST = "host"
         const val KEY_PORT = "port"
         const val KEY_HEX = "key"
+        const val KEY_WRAPPED = "key_wrapped"
         const val KEY_ACK = "acked"
     }
 }

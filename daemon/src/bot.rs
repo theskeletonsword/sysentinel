@@ -2584,6 +2584,57 @@ PMU).";
     ///
     /// The equivalent of the old `/unpair`: there is no chat id to clear any
     /// more, only the recorded device key.
+    /// Fire the armed control when the phone signs its nonce with a
+    /// biometric-bound key.
+    ///
+    /// This is what replaces typing the code back. The two are not equivalent
+    /// evidence and the audit line says which one was used: a code is
+    /// replayable by anyone the owner said it to, and a signature from a key
+    /// the Keystore releases only after a fingerprint is not.
+    ///
+    /// The nonce still has to match the armed control and still expires, so a
+    /// signature captured from an earlier confirmation buys nothing.
+    pub fn confirm_by_signature(&self, nonce: &str, signature: &[u8]) -> Result<String> {
+        let profile = crate::phonehome::profile_path(&self.config.phone.queue_path);
+        let Some(phone) = crate::phonehome::load(&profile) else {
+            anyhow::bail!("no hay teléfono emparejado: nada puede confirmar");
+        };
+        if !crate::phonehome::verify_challenge(&phone.public_key_der, nonce.as_bytes(), signature) {
+            anyhow::bail!(
+                "la firma no verifica contra la clave del teléfono emparejado"
+            );
+        }
+
+        let armed = {
+            let mut guard = self.state.lock().expect("bot state mutex");
+            guard
+                .pending_control
+                .take()
+                .filter(|p| p.nonce == nonce && !p.is_expired())
+        };
+        let Some(control) = armed else {
+            anyhow::bail!("no hay ninguna orden armada con ese código, o ya expiró");
+        };
+
+        let proof = crate::confirm::Confirmation {
+            claimed: crate::confirm::ConfirmMethod::Tee,
+            // The signature proves the key was used; whether that key really
+            // lives in a secure element is what attestation says, and that is
+            // recorded at pairing rather than asserted here.
+            attestation_verified: phone.attestation_verified,
+            aead: None,
+            device: Some(phone.describe()),
+        };
+        log::warn!(
+            "control {:?} confirmed by phone signature — {}",
+            control.kind,
+            proof.audit_line()
+        );
+        let label = control.kind.label().to_string();
+        self.execute_control(0, control);
+        Ok(format!("{label} — {}", proof.audit_line()))
+    }
+
     /// `/pair` — show the QR again, for pairing a replacement handset.
     ///
     /// Only useful after `/unpair`: while a handset is bound, the daemon
@@ -3845,6 +3896,31 @@ mod tests {
         assert!(state.get_selinux(2).is_none());
         assert!(state.push_selinux(&raw2).is_none());
         assert_eq!(state.recent_selinux.len(), 1);
+    }
+
+    #[test]
+    fn a_signed_confirmation_needs_the_paired_phone_and_the_right_nonce() {
+        use aws_lc_rs::signature::{EcdsaKeyPair, KeyPair, ECDSA_P256_SHA256_ASN1_SIGNING};
+        let rng = aws_lc_rs::rand::SystemRandom::new();
+        let phone = EcdsaKeyPair::generate(&ECDSA_P256_SHA256_ASN1_SIGNING).unwrap();
+        let other = EcdsaKeyPair::generate(&ECDSA_P256_SHA256_ASN1_SIGNING).unwrap();
+        let pubkey = phone.public_key().as_ref().to_vec();
+
+        let nonce = "CONFIRM-ABC123";
+        let sig = phone.sign(&rng, nonce.as_bytes()).unwrap();
+
+        // The paired handset signing the armed nonce: accepted.
+        assert!(crate::phonehome::verify_challenge(&pubkey, nonce.as_bytes(), sig.as_ref()));
+
+        // A different handset cannot confirm, however valid its own signature.
+        let their_sig = other.sign(&rng, nonce.as_bytes()).unwrap();
+        assert!(!crate::phonehome::verify_challenge(
+            &pubkey, nonce.as_bytes(), their_sig.as_ref()
+        ));
+
+        // A signature over a different nonce is not reusable — which is what
+        // stops a captured confirmation authorising the next order.
+        assert!(!crate::phonehome::verify_challenge(&pubkey, b"CONFIRM-XYZ789", sig.as_ref()));
     }
 
     #[test]

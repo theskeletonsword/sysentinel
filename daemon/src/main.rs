@@ -169,10 +169,12 @@ fn main() -> Result<()> {
             // to `/face register`. Same connection, same proof of identity.
             let for_photos = std::sync::Arc::new(commands);
             let for_text = std::sync::Arc::clone(&for_photos);
+            let for_confirm = std::sync::Arc::clone(&for_photos);
             match phone::start(
                 &config,
                 move |text| for_text.handle_owner_text(text),
                 move |bytes| for_photos.enroll_face_photo(bytes),
+                move |nonce, sig| for_confirm.confirm_by_signature(nonce, sig),
             ) {
                 Ok(ch) => notifiers.push(Box::new(ch)),
                 Err(e) => log::error!("phone channel unavailable: {e:#}"),

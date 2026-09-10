@@ -276,6 +276,205 @@ object DeviceIdentity {
         }
     }
 
+    // ── Wrapping the pairing key ─────────────────────────────────────────────
+    //
+    // The pairing key is the whole secret for the channel: sealing a frame with
+    // it is the authentication. Left in SharedPreferences it is *private*
+    // storage, not *hardware-backed* storage, and on a rooted handset the two
+    // are not the same thing.
+    //
+    // So it is stored encrypted under a key that lives in the TEE or the secure
+    // element and cannot be read out. An attacker who copies the app's data
+    // directory gets ciphertext and a key handle that is useless anywhere else.
+    //
+    // Deliberately NOT biometric-bound: the pairing key is needed to open every
+    // frame, including on a reconnect nobody is watching. Requiring a
+    // fingerprint to receive an alert would mean alerts only arrive when the
+    // owner happens to be looking, which defeats the point. The biometric
+    // belongs on the confirmation key, where it gates an action rather than a
+    // read.
+
+    private const val WRAP_ALIAS = "sysentinel-secret-wrap"
+    private const val GCM_TAG_BITS = 128
+    private const val GCM_NONCE_LEN = 12
+
+    /** The wrapping key, created on first use in the strongest backing available. */
+    private fun wrappingKey(): javax.crypto.SecretKey? {
+        val ks = KeyStore.getInstance(KEYSTORE).apply { load(null) }
+        (ks.getKey(WRAP_ALIAS, null) as? javax.crypto.SecretKey)?.let { return it }
+
+        for (strongBox in listOf(true, false)) {
+            if (strongBox && Build.VERSION.SDK_INT < Build.VERSION_CODES.P) continue
+            try {
+                val gen = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, KEYSTORE)
+                gen.init(
+                    KeyGenParameterSpec.Builder(
+                        WRAP_ALIAS,
+                        KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT,
+                    )
+                        .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+                        .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+                        .setKeySize(256)
+                        .apply {
+                            if (strongBox && Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                                setIsStrongBoxBacked(true)
+                            }
+                        }
+                        .build()
+                )
+                gen.generateKey()
+                Log.i(TAG, "secret-wrapping key created (strongBox=$strongBox)")
+                return ks.getKey(WRAP_ALIAS, null) as? javax.crypto.SecretKey
+            } catch (e: Exception) {
+                Log.i(TAG, "wrapping key refused (strongBox=$strongBox): ${e.message}")
+            }
+        }
+        return null
+    }
+
+    /**
+     * Encrypt a secret under the hardware key. Returns `nonce || ciphertext`,
+     * base64, or `null` on a handset with no usable Keystore — the caller then
+     * has to decide, and [Pairing] stores it in the clear and says so rather
+     * than refusing to work at all.
+     */
+    fun wrapSecret(plaintext: String): String? {
+        val key = wrappingKey() ?: return null
+        return try {
+            val c = javax.crypto.Cipher.getInstance("AES/GCM/NoPadding")
+            c.init(javax.crypto.Cipher.ENCRYPT_MODE, key)
+            val body = c.doFinal(plaintext.toByteArray(Charsets.UTF_8))
+            android.util.Base64.encodeToString(c.iv + body, android.util.Base64.NO_WRAP)
+        } catch (e: Exception) {
+            Log.e(TAG, "cannot wrap the secret: ${e.message}")
+            null
+        }
+    }
+
+    /** Undo [wrapSecret]. `null` when the blob is not ours or the key is gone. */
+    fun unwrapSecret(wrapped: String): String? {
+        val key = wrappingKey() ?: return null
+        return try {
+            val raw = android.util.Base64.decode(wrapped, android.util.Base64.NO_WRAP)
+            if (raw.size <= GCM_NONCE_LEN) return null
+            val c = javax.crypto.Cipher.getInstance("AES/GCM/NoPadding")
+            c.init(
+                javax.crypto.Cipher.DECRYPT_MODE,
+                key,
+                javax.crypto.spec.GCMParameterSpec(
+                    GCM_TAG_BITS, raw.copyOfRange(0, GCM_NONCE_LEN),
+                ),
+            )
+            String(c.doFinal(raw.copyOfRange(GCM_NONCE_LEN, raw.size)), Charsets.UTF_8)
+        } catch (e: Exception) {
+            // A factory reset or an app reinstall destroys the Keystore key, and
+            // then the stored blob is simply unreadable. That is re-pair, not a
+            // bug, and it is what makes wrapping worth having.
+            Log.w(TAG, "cannot unwrap the stored secret: ${e.message}")
+            null
+        }
+    }
+
+    /** Whether secrets are being protected by hardware on this handset. */
+    fun hardwareWrappingAvailable(): Boolean = wrappingKey() != null
+
+    // ── The confirmation key ─────────────────────────────────────────────────
+    //
+    // Separate from the device key on purpose, and the difference is the point
+    // of the whole feature.
+    //
+    // The device key answers "which handset is this", which the daemon needs on
+    // every reconnect including ones nobody is watching — so it must not need a
+    // finger. This one authorises an action, so it must: it is created with
+    // setUserAuthenticationRequired(true) and a validity of zero, meaning the
+    // Keystore releases it for exactly one operation after a fresh biometric
+    // and never caches that authorisation.
+    //
+    // That is what makes it better than typing a code back. A code can be read
+    // over a shoulder or demanded out loud, and once spoken anyone can type it.
+    // A signature from this key requires the owner's finger on this handset, at
+    // that moment.
+
+    private const val CONFIRM_ALIAS = "sysentinel-confirm-key"
+
+    /** Create the confirmation key if it does not exist. */
+    fun ensureConfirmKey(): Boolean {
+        val ks = KeyStore.getInstance(KEYSTORE).apply { load(null) }
+        if (ks.containsAlias(CONFIRM_ALIAS)) return true
+
+        for (strongBox in listOf(true, false)) {
+            if (strongBox && Build.VERSION.SDK_INT < Build.VERSION_CODES.P) continue
+            try {
+                val gen = KeyPairGenerator.getInstance(KeyProperties.KEY_ALGORITHM_EC, KEYSTORE)
+                gen.initialize(
+                    KeyGenParameterSpec.Builder(CONFIRM_ALIAS, KeyProperties.PURPOSE_SIGN)
+                        .setAlgorithmParameterSpec(ECGenParameterSpec("secp256r1"))
+                        .setDigests(KeyProperties.DIGEST_SHA256)
+                        .setUserAuthenticationRequired(true)
+                        .apply {
+                            setAttestationChallenge(freshChallenge())
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                                // 0 = every single use needs a fresh
+                                // authentication. Anything else would let one
+                                // fingerprint authorise a second action the
+                                // owner never saw.
+                                setUserAuthenticationParameters(
+                                    0, KeyProperties.AUTH_BIOMETRIC_STRONG,
+                                )
+                            } else {
+                                @Suppress("DEPRECATION")
+                                setUserAuthenticationValidityDurationSeconds(-1)
+                            }
+                            if (strongBox && Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                                setIsStrongBoxBacked(true)
+                            }
+                        }
+                        .build()
+                )
+                gen.generateKeyPair()
+                Log.i(TAG, "confirmation key created (strongBox=$strongBox)")
+                return true
+            } catch (e: Exception) {
+                Log.i(TAG, "confirmation key refused (strongBox=$strongBox): ${e.message}")
+            }
+        }
+        return false
+    }
+
+    /**
+     * A [Signature] initialised with the confirmation key, to hand to
+     * `BiometricPrompt`.
+     *
+     * The prompt unlocks *this object*, which is what ties the fingerprint to
+     * this specific signature rather than to a window of time. Signing happens
+     * in the prompt's success callback, not before it.
+     */
+    fun confirmSignature(): Signature? {
+        if (!ensureConfirmKey()) return null
+        return try {
+            val ks = KeyStore.getInstance(KEYSTORE).apply { load(null) }
+            val key = ks.getKey(CONFIRM_ALIAS, null) as? PrivateKey ?: return null
+            Signature.getInstance("SHA256withECDSA").apply { initSign(key) }
+        } catch (e: Exception) {
+            Log.e(TAG, "cannot prepare a confirmation signature: ${e.message}")
+            null
+        }
+    }
+
+    /** Public half of the confirmation key, for the daemon to record. */
+    fun confirmPublicKey(): ByteArray? {
+        val ks = KeyStore.getInstance(KEYSTORE).apply { load(null) }
+        return ks.getCertificate(CONFIRM_ALIAS)?.publicKey?.encoded
+    }
+
+    /** Whether this handset can do biometric confirmations at all. */
+    fun biometricConfirmAvailable(context: android.content.Context): Boolean {
+        val mgr = androidx.biometric.BiometricManager.from(context)
+        return mgr.canAuthenticate(
+            androidx.biometric.BiometricManager.Authenticators.BIOMETRIC_STRONG
+        ) == androidx.biometric.BiometricManager.BIOMETRIC_SUCCESS
+    }
+
     /** How the device key is backed, for the audit line. A claim, not a proof. */
     fun deviceKeyBacking(): String = when {
         devicePublicKey() == null -> "none"

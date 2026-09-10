@@ -110,6 +110,8 @@ dependencies {
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.appcompat:appcompat:1.7.0")
     implementation("androidx.biometric:biometric:1.1.0")
+    // BiometricPrompt needs a FragmentActivity to host its dialog.
+    implementation("androidx.fragment:fragment-ktx:1.8.4")
     implementation("androidx.recyclerview:recyclerview:1.3.2")
     implementation("com.google.android.material:material:1.12.0")
 

@@ -193,6 +193,28 @@ class PhoneLink(
     }
 
     /**
+     * Confirm an armed control by signing its nonce, instead of typing it back.
+     *
+     * The signature comes from a key the Keystore releases only after a fresh
+     * biometric, so this cannot be produced by someone who merely overheard the
+     * code.
+     */
+    fun confirm(nonce: String, signature: ByteArray): String {
+        val reply = exchange(
+            JSONObject()
+                .put("op", "confirm")
+                .put("nonce", nonce)
+                .put("signature", bytesJson(signature))
+        )
+        if (reply.optString("op") == "error") {
+            throw PhoneLinkException(
+                reply.optString("message", "el equipo rechazó la confirmación")
+            )
+        }
+        return reply.optString("detail", "confirmado")
+    }
+
+    /**
      * Send a photo for `/face register`.
      *
      * Base64 rather than a JSON array of integers: a 2 MB JPEG through an array

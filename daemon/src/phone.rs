@@ -286,6 +286,14 @@ pub enum FromPhone {
     Ack { id: u64 },
     /// A reply typed by the owner.
     Say { text: String },
+    /// Confirm the armed control by signing its nonce with a biometric-bound
+    /// key, instead of typing the code back.
+    ///
+    /// The code and this are not equivalent evidence. A code can be read over a
+    /// shoulder and demanded out loud, and once spoken anyone can type it. A
+    /// signature from a key the Keystore only releases after a fingerprint
+    /// cannot be produced by someone who is not holding the phone.
+    Confirm { nonce: String, signature: Vec<u8> },
     /// A photo for `/face register`.
     ///
     /// Base64 rather than a byte array: a JPEG through a JSON array of integers
@@ -416,6 +424,7 @@ pub fn start(
     config: &crate::config::Config,
     on_command: impl Fn(&str) + Send + Sync + 'static,
     on_photo: impl Fn(&[u8]) + Send + Sync + 'static,
+    on_confirm: impl Fn(&str, &[u8]) -> Result<String> + Send + Sync + 'static,
 ) -> Result<PhoneChannel> {
     let bind = config
         .phone
@@ -476,7 +485,10 @@ pub fn start(
     std::thread::Builder::new()
         .name("phone".to_string())
         .spawn(move || {
-            run_phone_loop(&bind_for_thread, key, listener_queue, profile, on_command, on_photo)
+            run_phone_loop(
+                &bind_for_thread, key, listener_queue, profile,
+                on_command, on_photo, on_confirm,
+            )
         })
         .context("spawning the phone listener")?;
 
@@ -577,6 +589,7 @@ pub fn run_phone_loop(
     profile_path: PathBuf,
     on_command: impl Fn(&str) + Send + Sync + 'static,
     on_photo: impl Fn(&[u8]) + Send + Sync + 'static,
+    on_confirm: impl Fn(&str, &[u8]) -> Result<String> + Send + Sync + 'static,
 ) {
     let listener = match TcpListener::bind(bind) {
         Ok(l) => l,
@@ -590,7 +603,7 @@ pub fn run_phone_loop(
     for stream in listener.incoming() {
         match stream {
             Ok(s) => {
-                if let Err(e) = serve(s, &key, &queue, &profile_path, &on_command, &on_photo) {
+                if let Err(e) = serve(s, &key, &queue, &profile_path, &on_command, &on_photo, &on_confirm) {
                     // Deliberately terse: a peer that fails to authenticate is
                     // told nothing and logged at debug, so a port scan does not
                     // fill the log or learn that it found the right protocol.
@@ -609,6 +622,7 @@ fn serve(
     profile_path: &Path,
     on_command: &(impl Fn(&str) + Send + Sync),
     on_photo: &(impl Fn(&[u8]) + Send + Sync),
+    on_confirm: &(impl Fn(&str, &[u8]) -> Result<String> + Send + Sync),
 ) -> Result<()> {
     stream.set_read_timeout(Some(IO_TIMEOUT))?;
     stream.set_write_timeout(Some(IO_TIMEOUT))?;
@@ -712,6 +726,15 @@ fn serve(
                     return Ok(());
                 }
                 answer
+            }
+            FromPhone::Confirm { nonce, signature } => {
+                match on_confirm(&nonce, &signature) {
+                    Ok(detail) => ToPhone::Identity {
+                        verdict: "confirmed".to_string(),
+                        detail,
+                    },
+                    Err(e) => ToPhone::Error { message: format!("{e:#}") },
+                }
             }
             FromPhone::Photo { jpeg_base64 } => match decode_base64(&jpeg_base64) {
                 Some(bytes) => {

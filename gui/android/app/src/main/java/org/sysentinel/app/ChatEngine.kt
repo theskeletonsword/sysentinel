@@ -115,6 +115,19 @@ class ChatEngine(private val pairing: Pairing, private val appVersion: String) {
         }
     }
 
+    /** Send a signed confirmation for an armed order. */
+    fun confirm(nonce: String, signature: ByteArray, onResult: (String) -> Unit) {
+        val l = link ?: run { onResult("sin conexión — no pude confirmar"); return }
+        io.execute {
+            val msg = try {
+                l.confirm(nonce, signature)
+            } catch (e: Exception) {
+                e.message ?: "la confirmación falló"
+            }
+            main.post { onResult(msg) }
+        }
+    }
+
     fun stop() {
         io.execute { link?.close(); link = null }
     }
