@@ -60,6 +60,7 @@ mod memory;
 mod mood;
 mod modulewatch;
 mod pmu;
+mod presence;
 mod procinfo;
 mod selinux;
 mod settings;

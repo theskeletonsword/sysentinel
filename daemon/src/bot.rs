@@ -3194,6 +3194,26 @@ PMU).";
                 let _ = self.send_markdown(chat_id, &hal.render_markdown());
                 return;
             }
+            // ── Presence evidence ladder (works with no camera at all) ───────
+            "presencia" | "presence" | "sensores" | "sensors" => {
+                let base = crate::presence::default_baseline_path(&self.config.face.path);
+                let ev = crate::presence::PresenceEvidence::collect(&base);
+                let _ = self.send(chat_id, &format!("```\n{}```", ev.render()));
+                return;
+            }
+            // ── Accept the current USB set as normal ─────────────────────────
+            "baseline" | "linea-base" | "normal" => {
+                let base = crate::presence::default_baseline_path(&self.config.face.path);
+                let msg = match crate::presence::record_baseline(&base) {
+                    Ok(n) => format!(
+                        "✅ Línea base USB registrada: *{n}* dispositivo(s) aceptados como \
+                         normales.\nA partir de ahora avisaré de cualquiera que aparezca."
+                    ),
+                    Err(e) => format!("❌ No pude escribir la línea base: {e}"),
+                };
+                let _ = self.send_markdown(chat_id, &msg);
+                return;
+            }
             // ── Full MEI/HECI client directory ───────────────────────────────
             "mei" | "heci" | "clients" | "surface" | "superficie" => {
                 let surface = crate::meiclients::enumerate();
