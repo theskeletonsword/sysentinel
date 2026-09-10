@@ -334,3 +334,24 @@ p_ambiguous  = 20
 w_ambiguous  = 22
 # Seconds to wait for a frame while a format is being tried.
 timeout = 10
+
+# ── [ipc] ────────────────────────────────────────────────────────────────────
+# Local control socket for the desktop GUI, so you don't have to type into a
+# chat window in front of colleagues.
+#
+# IT NEVER NOTIFIES. This socket answers questions and volunteers nothing: no
+# desktop notifications, no popups, no sound. That is a security property, not
+# an omission — if someone is standing over you, a machine that pops
+# "ROSTRO NO REGISTRADO" onto the screen has announced that it informed on you,
+# and you are the one who pays for it. Alerts stay on Telegram, where only your
+# phone sees them. The GUI is somewhere you go and look, on purpose.
+#
+# The daemon behind this socket runs as root, so the socket's permissions ARE
+# the access control. Left alone it is 0600 root-only; naming a group hands it
+# to that group at 0660. Destructive operations still require the
+# ARM -> CONFIRM ritual: a local front-end is a convenience, not a proof of
+# identity.
+
+[ipc]
+enabled = false
+# group = "sysentinel"

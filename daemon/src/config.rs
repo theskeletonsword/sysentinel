@@ -38,6 +38,8 @@ pub struct Config {
     pub camera:   CameraConfig,
     #[serde(default)]
     pub face:     FaceConfig,
+    #[serde(default)]
+    pub ipc:      IpcConfig,
 }
 
 // ── [general] ────────────────────────────────────────────────────────────────
@@ -398,6 +400,28 @@ impl Default for CameraConfig {
             height: 480,
             timeout: 10,
         }
+    }
+}
+
+// ── [ipc] ────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct IpcConfig {
+    /// Serve the local control socket that the desktop GUI talks to.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Group handed the socket, making it 0660 for that group's members.
+    /// Unset keeps it 0600 root-only — remember the daemon behind it is root,
+    /// so this is the whole access control.
+    #[serde(default)]
+    pub group: Option<String>,
+}
+
+impl Default for IpcConfig {
+    /// Off, and root-only when switched on. A local socket onto a root daemon
+    /// is not something to enable by accident.
+    fn default() -> Self {
+        Self { enabled: false, group: None }
     }
 }
 

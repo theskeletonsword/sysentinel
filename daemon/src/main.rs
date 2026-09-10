@@ -50,6 +50,7 @@ mod hal;
 mod hwdiag;
 mod hwinfo;
 mod hyperwatch;
+mod ipc;
 mod kmsg;
 mod kernel_snap;
 mod llm;
@@ -311,6 +312,17 @@ fn main() -> Result<()> {
             .spawn(move || battery::run_battery_loop(&cfg6, &state6, &st6, llm6.as_ref(), dry6))
             .context("spawning battery watcher thread")?;
         log::info!("battery-watch: battery watcher thread started");
+    }
+
+    // ── Local control socket for the desktop GUI (answers only, never pushes)
+    if config.ipc.enabled {
+        let cfg_ipc = config.clone();
+        let st_ipc = Arc::clone(&settings);
+        thread::Builder::new()
+            .name("ipc".to_string())
+            .spawn(move || ipc::run_ipc_loop(&cfg_ipc, &st_ipc))
+            .context("spawning ipc thread")?;
+        log::info!("ipc: local control socket thread started");
     }
 
     // ── Device watcher: keyboards and storage appearing on any bus ────────────
