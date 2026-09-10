@@ -21,7 +21,12 @@
 #include <linux/mei_cl_bus.h>
 #include <linux/uuid.h>
 
-MODULE_LICENSE("GPL");
+// "Dual MIT/GPL" is the ident matching this file's SPDX header (MIT OR
+// GPL-2.0-or-later). It is GPL-compatible, so the module still binds the
+// EXPORT_SYMBOL_GPL symbols it needs; only non-free modules are refused.
+// Plain "GPL" here would drop the MIT option this project relies on to reuse
+// the source under Apache-2.0.
+MODULE_LICENSE("Dual MIT/GPL");
 
 /* Forward declarations of Rust callbacks exported from mei_driver.rs. */
 extern int  sysentinel_mei_probe(struct mei_cl_device *cldev);

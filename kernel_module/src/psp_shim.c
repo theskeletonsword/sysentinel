@@ -101,4 +101,9 @@ int sysentinel_psp_query(struct sysentinel_psp_result *out)
 }
 EXPORT_SYMBOL_GPL(sysentinel_psp_query);
 
-MODULE_LICENSE("GPL");
+// "Dual MIT/GPL" is the ident matching this file's SPDX header (MIT OR
+// GPL-2.0-or-later). It is GPL-compatible, so the module still binds the
+// EXPORT_SYMBOL_GPL symbols it needs; only non-free modules are refused.
+// Plain "GPL" here would drop the MIT option this project relies on to reuse
+// the source under Apache-2.0.
+MODULE_LICENSE("Dual MIT/GPL");

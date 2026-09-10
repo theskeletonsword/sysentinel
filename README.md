@@ -1,5 +1,40 @@
 # sysentinel
 
+> ## ⚠️ LICENCE IS **PER-DIRECTORY** — READ THIS BEFORE YOU COPY ANYTHING ⚠️
+>
+> This repository is **not uniformly Apache-2.0.** Three directories are
+> dual-licensed **MIT OR GPL-2.0-or-later**, and one of those is the kernel
+> module — where the GPL half becomes binding the moment you build it.
+>
+> | Directory | Licence | Copying it into a proprietary/Apache-only product |
+> |---|---|---|
+> | `daemon/` | **Apache-2.0** | ✅ fine |
+> | `scripts/` | **MIT OR GPL-2.0-or-later** | ✅ fine — take the MIT option |
+> | `ramdisk/` | **MIT OR GPL-2.0-or-later** | ✅ fine — take the MIT option |
+> | **`kernel_module/`** | **MIT OR GPL-2.0-or-later** | ⛔ **the built `.ko` is GPL — see below** |
+>
+> **The trap is `kernel_module/`.** The *source* is dual-licensed, so you may
+> take the MIT option for the source alone. But the moment it is **built and
+> linked against the Linux kernel** — which is the only way it is useful — the
+> resulting `sysentinel_metrics.ko` is a work combined with GPL-2.0 code and
+> **must be distributed under GPL-2.0**, with source. Do not ship that binary
+> inside a proprietary product.
+>
+> Both halves of that dual licence are load-bearing and neither is decorative:
+> the **GPL** half is what lets the module bind `EXPORT_SYMBOL_GPL` symbols (a
+> module Linux does not consider free is refused them outright); the **MIT**
+> half is what keeps the source permissively reusable.
+>
+> Licence texts live in the directories themselves: `kernel_module/LICENSE-GPL`
+> + `kernel_module/LICENSE-MIT`, `ramdisk/LICENSE-GPL` + `ramdisk/LICENSE-MIT`,
+> `daemon/LICENSE`. Every source file carries an `SPDX-License-Identifier`
+> header, which is authoritative for that file. Full detail in
+> [`NOTICE`](NOTICE) and in [Licence](#licence) below.
+>
+> **The daemon is not a derivative work of the kernel** — it is ordinary
+> user-space talking over syscalls, sysfs and `/proc`. That is checked
+> mechanically by `make licence-audit LINUX_SRC=/path/to/linux`.
+
 **Your PC's AI companion** — a portable, transparent Linux system daemon that
 watches your kernel in real-time and lets you talk to your machine over Telegram.
 
@@ -40,7 +75,8 @@ against GPL-only kernel symbols — declare the GPL flavour when building it.
 | **Ring −2 SMM** | Firmware **posture, not pokes**: the channel **provably never raises an SMI** — it only reads the tables the firmware publishes. `smm on` performs a read-only ACPI scan: FADT `smi_command` + documented command values (`smm_iface=fadt-smi@0x…`) and the WSMT SMM-mitigation table (`smm_wsmt=0x…(list)`); a firmwware with a published SMI bridge but no WSMT protections is exactly what an SMM bootkit needs. Latency instrument narrowed to the ring −1 hypercall (`hvm_lat=…us`); `ro=ok|dirty` passively watches module rodata. No outb/inb to any APM port exists in the code by construction |
 | **TPM key** | A `/dev/urandom` AEAD key sealed inside the physical TPM accompanies the fingerprint — AES-256-GCM on AES-NI/VAES CPUs, else ChaCha20-Poly1305 (fresh nonce, never reused); fingerprint-only fallback when there's no TPM |
 | **Bootkit audit** | `/bootkit` (or `/definehome audit`): UEFI vars, Secure Boot, kernel lockdown, taint, LSTAR hook, hypervisor, ME/PSP, dmesg + integrity, with hedged verdicts |
-| **PMU counters** | Reads CPU cycles, IPC, LLC misses, branch mispredictions, context switches via `perf_event_open` |
+| **PMU counters** | Reads CPU cycles, IPC, LLC misses, branch mispredictions, context switches via `perf_event_open`. Adapts to `perf_event_paranoid` (and `CAP_PERFMON`) by probing rather than guessing, keeping the widest scope actually permitted instead of giving up |
+| **Hybrid CPU split** | On a heterogeneous CPU (Intel P/E, ARM big.LITTLE) the counters are reported **per core type**, so a busy E-core cluster and an idle P-core cluster are not averaged into a number describing neither. Core types come from the silicon itself — `CPUID.1AH` per the Intel SDM, `MIDR_EL1` per the Arm ARM — which cross-checks the kernel's own PMU grouping |
 | **Hypercalls** | Kernel module issues `vmcall`/`vmmcall`/`hvc` with CPUID-based hypervisor detection |
 | **Persona** | Configure the AI's tone per `config.toml` — formal, colloquial, regional slang, whatever |
 | **Multi-backend LLM** | Switch between Anthropic Claude, OpenAI, DeepSeek, Gemini, or a local GGUF model |
@@ -52,63 +88,96 @@ against GPL-only kernel symbols — declare the GPL flavour when building it.
 ```
 sysentinel/
 ├── README.md
+├── tutorial.md                     Step-by-step walkthrough
 ├── LICENSE                         Apache 2.0 licence text
 ├── NOTICE
-├── Makefile                      Top-level: builds daemon + kernel module
+├── Makefile                        Top-level: daemon + kernel module + ramdisk tools
 │
 ├── kernel_module/                Ring 0 — Rust kernel module (MIT OR GPL-2.0-or-later)
-│   ├── Kbuild
-│   ├── Makefile
-│   ├── LICENSE-MIT
-│   ├── LICENSE-GPL
-│   ├── README.md
-│   └── src/
-│       ├── sysentinel_core.rs    Rust root: snapshot + rs_render_snapshot / rs_exec_command
+│   ├── Kbuild · Makefile · README.md · LICENSE-MIT · LICENSE-GPL
+│   ├── sysentinel_core.rs        Rust root: snapshot + rs_render_snapshot / rs_exec_command
+│   ├── hypercall.rs              vmcall / vmmcall / hvc + CPUID detection
+│   ├── ring3.rs                  Ring −3 HAL dispatcher: intel-me → MEI, amd-psp → PSP, none → neither
+│   ├── smm.rs                    Ring −2 SMM posture (ACPI-only): FADT smi_command + WSMT scan, hvm_lat, rodata watch
+│   ├── mei_driver.rs             Intel MEI mei_cl_driver (ring-0 ME access; live MKHI re-query)
+│   ├── psp.rs                    AMD PSP: vendor presence + live HSTI handshake
+│   └── src/                      C shims and watchers
 │       ├── proc_entry.c          procfs shim: /proc/sysentinel_metrics (no /dev node)
-│       ├── hypercall.rs            vmcall / vmmcall / hvc + CPUID detection
-│       ├── ring3.rs                Ring −3 HAL dispatcher: intel-me → MEI, amd-psp → PSP, none → neither
-│       ├── smm.rs                  Ring −2 SMM posture (ACPI-only): FADT smi_command + WSMT scan, hvm_lat, rodata watch
-│       ├── mei_driver.rs           Intel MEI mei_cl_driver (ring-0 ME access; live MKHI re-query)
-│       ├── psp.rs                  AMD PSP: vendor presence + live HSTI handshake
-│       ├── mei_shim.c              C glue for mei_cl_bus.h API
-│       ├── smm_shim.c              C glue: read-only ACPI table reader (acpi_gbl_FADT + WSMT) — zero port I/O
-│       └── psp_shim.c              C glue for the ccp driver's platform-access API
+│       ├── mei_shim.c            C glue for mei_cl_bus.h API
+│       ├── psp_shim.c            C glue for the ccp driver's platform-access API
+│       ├── smm_shim.c            Read-only ACPI table reader (acpi_gbl_FADT + WSMT) — zero port I/O
+│       ├── hypercall_watcher.c   Hypercall/VM-exit observation
+│       ├── rootkit_defender.c    Syscall-table / LSTAR integrity checks
+│       └── triplefault.c         Triple-fault trip-wire
 │
 ├── daemon/                       Ring 3 — user-space daemon (Apache-2.0)
-│   ├── Cargo.toml
-│   ├── LICENSE                   Apache 2.0 licence text
-│   ├── README.md                 (daemon-specific build / run notes)
-│   ├── config/
-│   │   └── config.example.toml
+│   ├── Cargo.toml · Cargo.lock · LICENSE · README.md
+│   ├── config/config.example.toml
 │   └── src/
 │       ├── main.rs               Entry point, thread orchestration
 │       ├── config.rs             TOML config loading + validation
-│       ├── kmsg.rs               /dev/kmsg real-time reader
-│       ├── classify.rs           OOM / panic / segfault / oops classifier
-│       ├── telegram.rs           Outbound sendMessage helper
+│       ├── settings.rs           Live, chat-mutable runtime settings
 │       ├── bot.rs                Interactive bot: pairing, whitelist, AI chat
-│       ├── bootkit_audit.rs       Bootkit auditor: ring 3 → ring −3 boot-chain checks
-│       ├── hal.rs                 Ring −3 HAL dispatcher: ME/HECI/MKHI · PSP · TPM · chipset
-│       ├── detecthome.rs          `/definehome` hardware fingerprint (serials + silicon tokens)
-│       ├── tpmkey.rs              TPM-sealed AEAD key (AES-256-GCM / ChaCha20-Poly1305, fresh nonce) proving "es tu PC"
+│       ├── telegram.rs           Outbound sendMessage / sendPhoto helpers
+│       ├── exec.rs               Gated `/exec` with ARM → confirm + process-group kills
+│       │
+│       ├── kmsg.rs               /dev/kmsg real-time reader
+│       ├── dmesg.rs              Ring-buffer snapshots
+│       ├── classify.rs           OOM / panic / segfault / oops classifier
+│       ├── kernel_snap.rs        Kernel integrity snapshot (LSTAR, CR0.WP, taint)
+│       ├── modulewatch.rs        Module load/unload watcher + on-disk .ko hunt
+│       ├── hyperwatch.rs         Hypervisor presence / VM-exit watch
+│       ├── selinux.rs            AVC denial watcher
+│       ├── secureboot.rs         Secure Boot + lockdown state
+│       ├── bootkit_audit.rs      Bootkit auditor: ring 3 → ring −3 boot-chain checks
+│       │
+│       ├── hal.rs                Ring −3 HAL dispatcher: ME/HECI/MKHI · PSP · TPM · chipset
+│       ├── ring3.rs              Kernel-module channel (/proc/sysentinel_metrics)
 │       ├── mei.rs                Intel ME (HECI /dev/mei0) + AMD PSP (sysfs)
-│       ├── pmu.rs                PMU counters via perf_event_open
+│       ├── tpmkey.rs             TPM-sealed AEAD key (AES-256-GCM / ChaCha20-Poly1305)
+│       ├── detecthome.rs         `/definehome` hardware fingerprint (serials + silicon tokens)
+│       │
+│       ├── luks.rs               LUKS-decrypt tripwire ("¿fui yo?") over initramfs evidence
+│       ├── loginwatch.rs         Login success/failure watcher + intrusion capture
+│       ├── camera.rs             Webcam evidence via sysentinel-cam
+│       ├── fhash.rs              Perceptual face hashing (pHash/DCT + wHash/Haar)
+│       │
+│       ├── pmu.rs                PMU counters via perf_event_open; paranoid ladder + hybrid dispatcher
+│       ├── coretype.rs           Clean-room core-type oracle (CPUID.1AH / MIDR_EL1)
+│       ├── procinfo.rs           /proc/stat + per-process CPU/RSS sampling
+│       ├── hwinfo.rs             CPU / GPU / RAM / firmware inventory
 │       ├── hwdiag.rs             lm-sensors + PCI + firmware periodic summary
+│       ├── battery.rs            Battery health and charge watch
+│       ├── memory.rs             Long-term memory + rolling conversation context
+│       ├── mood.rs               Persona mood state
+│       ├── undervolt.rs          Undervolt / voltage-shift evidence
 │       └── llm/
-│           ├── mod.rs            LlmBackend trait + factory
+│           ├── mod.rs            LlmBackend trait + factory + fallback chains
+│           ├── models.rs         Per-provider model catalogue
 │           ├── anthropic.rs      Anthropic Messages API
 │           ├── openai.rs         OpenAI Chat Completions
 │           ├── deepseek.rs       DeepSeek (OpenAI-compatible)
 │           ├── gemini.rs         Google Gemini generateContent
 │           └── local.rs          Local GGUF via llama-cpp-2 (feature-gated)
 │
-├── docs/
-│   └── SECURITY.md               Security architecture and threat model
+├── ramdisk/                      Initramfs tools — static musl binaries (MIT OR GPL-2.0-or-later)
+│   ├── Cargo.toml                Workspace root (cam + face)
+│   ├── cam/src/main.rs           sysentinel-cam: V4L2 snapshot, no external deps
+│   ├── face/                     sysentinel-face: SCRFD detect + MobileFaceNet embed (tract/ONNX)
+│   │   ├── src/{main,nn,scrfd,align}.rs
+│   │   └── models/               ONNX weights (gitignored; fetch-face-models.sh)
+│   └── 91sysentinel/             dracut module
+│       ├── module-setup.sh       Hook installation + binary/module inclusion
+│       ├── sysentinel-init.sh    pre-udev: load sysentinel_metrics + uvcvideo
+│       ├── sysentinel-precrypt.sh pre-trigger: capture BEFORE the LUKS prompt
+│       └── sysentinel-luks.sh    pre-pivot: fallback capture + evidence mirroring
 │
 └── scripts/
-    ├── sysentinel.service         systemd unit
-    ├── install.sh
-    └── uninstall.sh
+    ├── sysentinel.service        systemd unit
+    ├── install.sh · uninstall.sh
+    ├── install-dracut.sh         Stage 91sysentinel + regenerate the initramfs
+    ├── fetch-face-models.sh      Download the ONNX face models
+    └── llama-link.sh             Link a local llama.cpp build for the GGUF backend
 ```
 
 ---
@@ -267,7 +336,7 @@ language = "en"
 | Capability | Required for | Optional? |
 |---|---|---|
 | `CAP_SYSLOG` | Reading `/dev/kmsg` | No |
-| `CAP_PERFMON` | Hardware PMU counters (IPC, LLC misses) | Yes (falls back to software counters) |
+| `CAP_PERFMON` | Machine-wide hardware PMU counters (IPC, LLC misses) | Yes — falls back through per-process counters to software-only, reporting which scope it got |
 | `CAP_KILL` | Ring-3 session kill (`no` on a login alert, `/login kill`, timeout auto-close) | Yes — only when the kernel module is loaded with `write_gid` do kills go through the module instead |
 | None extra | ME/PSP queries read via the kernel-module devnode + sysfs (no `mei` group) | — |
 | Network (HTTPS) | Telegram + LLM cloud APIs | Only if using cloud backends |
@@ -280,8 +349,6 @@ the module analyser can find an intruder's `.ko` in `/home`/`/root`/`/tmp`.
 ---
 
 ## Security
-
-See [`docs/SECURITY.md`](docs/SECURITY.md) for the full threat model.
 
 Key properties:
 - **No rootkit behaviour.** `lsmod`, `ps`, `find`, and standard monitoring tools always show this software plainly.
@@ -307,12 +374,54 @@ Key properties:
 
 ## Licence
 
-```
-(whole repository)  Apache-2.0
-daemon/             Apache-2.0
-kernel_module/      MIT OR GPL-2.0-or-later
+**Licence is per-directory.** The `SPDX-License-Identifier` header on each file
+is authoritative for that file; this map is the summary.
+
+| Path | Licence | Licence text shipped at |
+|---|---|---|
+| `daemon/` | Apache-2.0 | `daemon/LICENSE` |
+| `kernel_module/` | MIT OR GPL-2.0-or-later | `kernel_module/LICENSE-MIT`, `kernel_module/LICENSE-GPL` |
+| `ramdisk/` | MIT OR GPL-2.0-or-later | `ramdisk/LICENSE-MIT`, `ramdisk/LICENSE-GPL` |
+| `scripts/` | MIT OR GPL-2.0-or-later | `ramdisk/LICENSE-MIT`, `ramdisk/LICENSE-GPL` (same terms) |
+| `ramdisk/face/models/` | Apache-2.0 (third-party weights) | `ramdisk/face/models/LICENSE`, `.../NOTICE` |
+| everything else (root `README`, `Makefile`, …) | Apache-2.0 | `LICENSE` |
+
+### The one that bites: `kernel_module/`
+
+The source is dual-licensed, so the source alone may be taken under MIT. The
+built module is a different matter:
+
+> `sysentinel_metrics.ko` is produced by linking against the Linux kernel, which
+> is GPL-2.0. The resulting binary is a combined work and **must be redistributed
+> under GPL-2.0, with corresponding source**. The MIT option does not survive
+> that link. If you ship the `.ko`, you ship it under the GPL.
+
+Both halves of the dual licence are load-bearing:
+
+- **GPL-2.0-or-later** is what lets the module bind `EXPORT_SYMBOL_GPL` symbols
+  (the MEI client bus, the ccp platform-access API). A module Linux does not
+  treat as free is refused those symbols outright.
+- **MIT** keeps the source permissively reusable outside a kernel tree.
+
+Every `MODULE_LICENSE` in the module reads `"Dual MIT/GPL"` — the ident Linux
+defines for exactly that pair (`include/linux/module.h`) — and agrees with each
+file's SPDX header. Plain `"GPL"` there would quietly drop the MIT half.
+
+### The daemon is not a derivative work of the kernel
+
+`daemon/` is ordinary user-space: it talks over syscalls, sysfs and `/proc`, and
+links nothing from `kernel_module/`. The two communicate only through the text
+tokens published on `/proc/sysentinel_metrics` — a protocol both sides must
+spell the same way, not shared implementation.
+
+That claim is checked mechanically rather than asserted:
+
+```sh
+make licence-audit LINUX_SRC=/path/to/linux
 ```
 
-The daemon matches the repository's Apache-2.0 umbrella. The kernel module is
-dual-licensed: use the GPL flavour when building/linking it, since it uses
-GPL-only kernel symbols; the MIT option covers out-of-kernel reuse.
+It reports every word sequence `daemon/` shares with a GPL reference tree and
+fails on anything outside an allowlist of expected categories (syscall ABI
+constant names, quoted licence identifiers) — each with a written reason. See
+[`NOTICE`](NOTICE) for the full provenance statement, including the vendor
+manuals the hybrid-CPU support is derived from.

@@ -5,10 +5,77 @@ This software is distributed under the Apache License, Version 2.0 (see the
 LICENSE file in the root of this repository; the license is also published at
 https://www.apache.org/licenses/LICENSE-2.0).
 
+LICENCE IS PER-DIRECTORY. The SPDX-License-Identifier header on each file is
+authoritative for that file; the map below is the summary.
+
+    daemon/                  Apache-2.0                 daemon/LICENSE
+    kernel_module/           MIT OR GPL-2.0-or-later    kernel_module/LICENSE-{MIT,GPL}
+    ramdisk/                 MIT OR GPL-2.0-or-later    ramdisk/LICENSE-{MIT,GPL}
+    scripts/                 MIT OR GPL-2.0-or-later    ramdisk/LICENSE-{MIT,GPL}
+    ramdisk/face/models/     Apache-2.0 (third party)   ramdisk/face/models/LICENSE
+    everything else          Apache-2.0                 LICENSE
+
 Additional grants and notices:
 
 - daemon/ is Apache-2.0 (daemon/LICENSE).
-- kernel_module/ is dual-licensed MIT OR GPL-2.0-or-later; the GPL licence
-  text is shipped in kernel_module/LICENSE-GPL because the module links
-  GPL-only kernel symbols (declared to the kernel as "Dual MIT/GPL").
-- ramdisk/ is MIT OR GPL-2.0-or-later.
+- kernel_module/ is dual-licensed MIT OR GPL-2.0-or-later. Both halves of that
+  dual licence are load-bearing, and neither is optional:
+
+    * the GPL-2.0-or-later half is what lets the module bind kernel symbols
+      exported with EXPORT_SYMBOL_GPL (the MEI client bus and the ccp driver's
+      platform-access API). A module the kernel does not consider free is
+      refused those symbols outright;
+    * the MIT half is what keeps the source permissively reusable, so it can be
+      distributed under this repository's Apache-2.0 umbrella and reused
+      outside a kernel tree.
+
+  Every declaration in the module agrees on this: each source file carries
+  "SPDX-License-Identifier: MIT OR GPL-2.0-or-later", and every MODULE_LICENSE
+  in the module states "Dual MIT/GPL" — the ident Linux defines for exactly
+  that pair (include/linux/module.h). Plain "GPL" there would silently drop the
+  MIT half and, with it, the permissive reuse this project depends on.
+
+  Note that combining the module with the kernel at build/load time is what
+  brings GPL-2.0 obligations to the resulting binary; the MIT option governs
+  the source on its own.
+- ramdisk/ and scripts/ are MIT OR GPL-2.0-or-later. The full text of both
+  licences ships in ramdisk/LICENSE-MIT and ramdisk/LICENSE-GPL. Nothing in
+  either directory links against the kernel — they are ordinary user-space
+  programs and shell scripts — so unlike the kernel module, the MIT option
+  survives into the built binaries.
+
+Face models shipped inside the initramfs tool ramdisk/face/sysentinel-face are
+Apache-2.0. This repo only redistributes them — it does not claim authorship.
+Attribution and the license text ship next to the models in
+ramdisk/face/models/{NOTICE,LICENSE}:
+
+- SCRFD face detector (scrfd_2.5g_bnkps.onnx): Jiankang Deng, Jianzhu Guo,
+  Tongliang Liu, Anbang Yao, Song Zafeiriou (InsightFace); ONNX export by
+  RuteNL/SCRFD-face-detection-ONNX.
+- MobileFaceNet embedder (planned): Sheng Chen, Yang Liu, Xiang Gao, Zhen Han
+  (foamliu/MobileFaceNet, InsightFace).
+
+The daemon (Apache-2.0) and the kernel module (MIT OR GPL-2.0-or-later) are
+separate works that communicate only through a text interface: the tokens the
+module publishes on /proc/sysentinel_metrics. That token vocabulary necessarily
+appears on both sides — it is the protocol — but no implementation is shared
+across the boundary, and the daemon links nothing from the module.
+
+Performance-counter and CPU-topology code (daemon/src/pmu.rs,
+daemon/src/coretype.rs) is Apache-2.0 and incorporates no kernel source:
+
+- The perf_event_open constants and the perf_event_attr layout are the Linux
+  syscall ABI, taken from include/uapi/linux/perf_event.h. That header is
+  licensed "GPL-2.0 WITH Linux-syscall-note", and the Linux-syscall-note
+  exception states that user programs using kernel services through normal
+  system calls are not derived works.
+- Hybrid/heterogeneous CPU support is derived clean-room from processor
+  vendors' own public architecture manuals, not from kernel source:
+  Intel(R) 64 and IA-32 Architectures Software Developer's Manual, order
+  no. 325462, Table 21-63 "Leaf 1AH Native Model ID Enumeration"; and Arm(R)
+  Architecture Reference Manual, ARM DDI 0487, section D13.2.98 "MIDR_EL1".
+  Both are cited in the source and were verified against hardware.
+- The privilege-ladder behaviour of perf_event_paranoid is documented as
+  observable behaviour in our own words; the implementation probes for it
+  rather than encoding it.
+

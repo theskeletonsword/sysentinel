@@ -1,5 +1,27 @@
 # kernel_module/sysentinel_metrics
 
+> ## ⚠️ THIS DIRECTORY IS **NOT** APACHE-2.0 ⚠️
+>
+> The rest of this repository is Apache-2.0. **This directory is
+> `MIT OR GPL-2.0-or-later`**, and the distinction matters in practice:
+>
+> - The **source** here is dual-licensed — you may take it under MIT alone.
+> - The **built `sysentinel_metrics.ko` is GPL-2.0.** It is linked against the
+>   Linux kernel, so the binary is a combined work with GPL-2.0 code and must be
+>   redistributed under the GPL, with corresponding source. The MIT option does
+>   not survive that link. **Do not ship the `.ko` inside a proprietary product.**
+>
+> Both halves earn their keep: the **GPL** half is what lets this module bind
+> `EXPORT_SYMBOL_GPL` symbols (`mei_cl_bus`, the ccp platform-access API) — a
+> module Linux does not consider free is refused them; the **MIT** half keeps
+> the source reusable outside a kernel tree.
+>
+> Licence texts: [`LICENSE-MIT`](LICENSE-MIT) · [`LICENSE-GPL`](LICENSE-GPL)
+> (full GPLv2 text). Every source file here carries
+> `SPDX-License-Identifier: MIT OR GPL-2.0-or-later`, and every
+> `MODULE_LICENSE` reads `"Dual MIT/GPL"` — the ident Linux defines for that
+> pair. See the root [`NOTICE`](../NOTICE) for the whole picture.
+
 A Rust kernel module built against `rust-for-linux` (`CONFIG_RUST=y`) that
 publishes `/proc/sysentinel_metrics`: a one-line ring-0 snapshot (uptime,
 loaded-module count, free/total memory, hypervisor, KVM features, Intel ME

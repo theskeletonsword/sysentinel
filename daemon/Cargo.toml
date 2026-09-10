@@ -1,3 +1,7 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# This crate is Apache-2.0. Note that sibling directories are NOT — see the
+# per-directory licence map in the root README and NOTICE.
 [package]
 name        = "sysentinel-daemon"
 version     = "0.2.0"
