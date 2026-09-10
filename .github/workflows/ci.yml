@@ -65,6 +65,26 @@ jobs:
               || { echo "::error::$b is not statically linked"; exit 1; }
           done
 
+  gui:
+    name: GTK4 front-end
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: gui/linux
+      - name: gtk4 development packages
+        run: sudo apt-get update && sudo apt-get install -y libgtk-4-dev libadwaita-1-dev
+      - name: clippy
+        run: cargo clippy --manifest-path gui/linux/Cargo.toml --all-targets -- -D warnings
+      - name: test
+        run: cargo test --manifest-path gui/linux/Cargo.toml
+      - name: build (release)
+        run: cargo build --manifest-path gui/linux/Cargo.toml --release
+
   licences:
     name: licence map
     runs-on: ubuntu-latest

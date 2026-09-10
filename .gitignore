@@ -1,6 +1,7 @@
 # Rust build artifacts
 daemon/target/
 ramdisk/target/
+gui/linux/target/
 
 # Kernel module build artifacts (kbuild)
 *.o

@@ -1,0 +1,25 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Deliberately NOT a member of the daemon workspace: GTK is a heavy dependency
+# tree and building it has nothing to do with building the daemon. Keeping it
+# separate means daemon/ and its CI never grow a GTK requirement.
+
+[package]
+name        = "sysentinel-gui"
+version     = "0.1.0"
+edition     = "2021"
+license     = "Apache-2.0"
+description = "Local GTK4 front-end for the sysentinel daemon"
+authors     = ["sysentinel contributors"]
+
+[[bin]]
+name = "sysentinel-gui"
+path = "src/main.rs"
+
+[dependencies]
+gtk4       = { version = "0.9", package = "gtk4", features = ["v4_10"] }
+libadwaita = { version = "0.7", package = "libadwaita", features = ["v1_5"] }
+serde      = { version = "1", features = ["derive"] }
+serde_json = "1"
+# The modern gtk4-rs way to get worker results back onto the UI thread.
+async-channel = "2"

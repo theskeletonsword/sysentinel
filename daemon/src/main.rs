@@ -319,9 +319,10 @@ fn main() -> Result<()> {
     if config.ipc.enabled {
         let cfg_ipc = config.clone();
         let st_ipc = Arc::clone(&settings);
+        let llm_ipc: Arc<llm::RuntimeLlm> = Arc::clone(&llm_backend);
         thread::Builder::new()
             .name("ipc".to_string())
-            .spawn(move || ipc::run_ipc_loop(&cfg_ipc, &st_ipc))
+            .spawn(move || ipc::run_ipc_loop(&cfg_ipc, &st_ipc, llm_ipc.as_ref()))
             .context("spawning ipc thread")?;
         log::info!("ipc: local control socket thread started");
     }

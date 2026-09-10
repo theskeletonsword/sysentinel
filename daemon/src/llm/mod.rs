@@ -123,7 +123,7 @@ pub trait LlmBackend: Send + Sync {
 /// Returns the raw event text unchanged. Used for the `"none"` entry in the
 /// fallback chain: it never fails, so a chain ending in `"none"` degrades to
 /// raw text instead of erroring when every real backend is down.
-struct NoneBackend;
+pub(crate) struct NoneBackend;
 
 impl LlmBackend for NoneBackend {
     fn explain(&self, request: &ExplainRequest) -> Result<String> {

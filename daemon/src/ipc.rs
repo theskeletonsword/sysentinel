@@ -59,6 +59,13 @@ pub enum Request {
     Volumes,
     /// Which face engine is live and what is enrolled.
     Face,
+    /// Ask the machine a question, in the configured persona.
+    ///
+    /// Read-only by construction: this path renders an answer and nothing
+    /// else. Control orders keep the ARM → CONFIRM ritual on the out-of-band
+    /// channel, because a window on an unlocked desktop proves nothing about
+    /// who is sitting at it.
+    Chat { text: String },
 }
 
 /// A response. `ok` carries a rendered, human-readable block; the front-end
@@ -90,6 +97,7 @@ pub fn handle(
     req: &Request,
     config: &crate::config::Config,
     settings: &Arc<Mutex<crate::settings::Settings>>,
+    llm: &dyn crate::llm::LlmBackend,
 ) -> Response {
     match req {
         Request::Ping => Response::ok(format!(
@@ -130,6 +138,39 @@ pub fn handle(
                 ));
             }
             Response::ok(out)
+        }
+
+        Request::Chat { text } => {
+            if text.trim().is_empty() {
+                return Response::err("pregunta vacía");
+            }
+            if !config.llm.llm_enabled() {
+                return Response::err(
+                    "el LLM está desactivado en config.toml — los paneles siguen \
+                     funcionando, pero no hay con quién hablar",
+                );
+            }
+            let persona = crate::llm::resolved_persona(config);
+            let override_txt = {
+                let g = settings.lock().expect("settings mutex");
+                g.system_prompt_override.clone()
+            };
+            let system_prompt =
+                crate::llm::effective_system_prompt(config, override_txt.as_deref());
+            let directive = format!(
+                "You ARE this machine, answering its owner at a local console. \
+                 Answer in YOUR voice, in their language, naturally and briefly — \
+                 no log formatting, no titles.\nlanguage: {}\ntone: {}\n\n{}",
+                persona.language, persona.tone, text
+            );
+            match llm.explain(&crate::llm::ExplainRequest {
+                system_prompt: &system_prompt,
+                event_text: &directive,
+                max_tokens: config.llm.max_tokens,
+            }) {
+                Ok(answer) => Response::ok(answer),
+                Err(e) => Response::err(format!("el modelo no respondió: {e:#}")),
+            }
         }
 
         Request::Face => {
@@ -211,6 +252,7 @@ fn gid_for(group: &str) -> Option<u32> {
 pub fn run_ipc_loop(
     config: &crate::config::Config,
     settings: &Arc<Mutex<crate::settings::Settings>>,
+    llm: &dyn crate::llm::LlmBackend,
 ) {
     let path = default_socket_path();
     let group = config.ipc.group.as_deref().and_then(|g| {
@@ -236,7 +278,7 @@ pub fn run_ipc_loop(
 
     for stream in listener.incoming() {
         match stream {
-            Ok(s) => serve_connection(s, config, settings),
+            Ok(s) => serve_connection(s, config, settings, llm),
             Err(e) => log::warn!("ipc: accept failed: {e}"),
         }
     }
@@ -247,6 +289,7 @@ fn serve_connection(
     stream: UnixStream,
     config: &crate::config::Config,
     settings: &Arc<Mutex<crate::settings::Settings>>,
+    llm: &dyn crate::llm::LlmBackend,
 ) {
     log::debug!("ipc: client connected");
     let Ok(write_half) = stream.try_clone() else {
@@ -261,7 +304,7 @@ fn serve_connection(
             continue;
         }
         let response = match serde_json::from_str::<Request>(&line) {
-            Ok(req) => handle(&req, config, settings),
+            Ok(req) => handle(&req, config, settings, llm),
             Err(e) => Response::err(format!("request no reconocida: {e}")),
         };
         let Ok(mut encoded) = serde_json::to_string(&response) else {
@@ -358,7 +401,8 @@ mod tests {
         let settings = Arc::new(Mutex::new(crate::settings::Settings::default()));
         let server = std::thread::spawn(move || {
             if let Ok((s, _)) = listener.accept() {
-                serve_connection(s, &cfg, &settings);
+                let llm = crate::llm::NoneBackend;
+                serve_connection(s, &cfg, &settings, &llm);
             }
         });
 
