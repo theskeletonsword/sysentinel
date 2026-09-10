@@ -261,15 +261,26 @@ fn send_with_photo(
                 // Local face check (only when enrolled): the neural pipeline
                 // when `sysentinel-face` is installed, perceptual hashes
                 // otherwise. No tokens either way, and no images retained.
-                let face_line = if config.face.enabled {
-                    crate::facenn::verdict_line(&config.face, &path)
+                let assessment = if config.face.enabled {
+                    crate::facenn::assess(&config.face, &path)
                 } else {
                     None
                 };
-                let fatal = match &face_line {
-                    Some(l) if l.contains("NO registrado") => l,
+                // Grade the scene rather than grepping the wording: a duress
+                // frame and a lone intruder read very differently but both
+                // need to reach the owner.
+                let fatal = match &assessment {
+                    Some(a) if a.is_alarming() => a.text.as_str(),
                     _ => "",
                 };
+                if assessment.as_ref().is_some_and(|a| a.keep_response_out_of_band()) {
+                    // Nothing local may happen on this frame; the alert below
+                    // is out of band and the host stays as it was.
+                    log::warn!(
+                        "loginwatch: possible duress at the keyboard — alerting the paired \
+                         chat only, taking no visible local action"
+                    );
+                }
                 let caption = if fatal.is_empty() {
                     text.to_string()
                 } else {

@@ -293,6 +293,31 @@ path = "/var/lib/sysentinel/faces.json"
 # which engine is live.
 tool_path = "/usr/libexec/sysentinel-face"
 
+# ── Qué significa cada composición del encuadre ──────────────────────────────
+# El motor neuronal no cuenta caras, clasifica la escena — porque lo que decide
+# la respuesta correcta no es cuántas hay, sino QUIÉN falta:
+#
+#   dueño solo .................. normal, nada que hacer
+#   dueño + desconocidos ........ POSIBLE COERCIÓN. Alguien mira por encima del
+#                                 hombro, o está ahí para asegurarse de que
+#                                 entres. La alerta sale al chat y NO se ejecuta
+#                                 ninguna acción local: si te están coaccionando,
+#                                 una máquina que se apaga sola delata que avisó,
+#                                 y quien lo paga eres tú.
+#   1 desconocido, sin dueño .... acceso oportunista a una máquina desatendida
+#   2+ desconocidos, sin dueño .. PÉRDIDA DE CUSTODIA. La gente no se agrupa por
+#                                 accidente alrededor del portátil ajeno: dos
+#                                 personas es la firma de un procedimiento (un
+#                                 registro o una incautación llevan testigo por
+#                                 norma), de un robo con examen, o de alguien de
+#                                 casa enseñando tu equipo. Alerta fuerte, pero
+#                                 sin destruir nada por su cuenta.
+#   sin caras ................... la silla vacía NO es un intruso
+#
+# Las caras mucho más pequeñas que la mayor se descartan como retrato, pantalla
+# o fondo (umbral: 10% del área). Sin ese filtro, un póster detrás del escritorio
+# dispararía la alerta de coerción a diario, y una alerta diaria no la lee nadie.
+
 # Cosine thresholds over the 128-D embeddings (1.0 = identical, 0.0 = unrelated).
 # Measured on these models: the same image scores 1.000000, while six different
 # faces scored -0.03, 0.0005, 0.069, 0.10, 0.10 and 0.46. That 0.46 is why the
