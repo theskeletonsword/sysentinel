@@ -85,6 +85,37 @@ jobs:
       - name: build (release)
         run: cargo build --manifest-path gui/linux/Cargo.toml --release
 
+  apk:
+    name: Android APKs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: android-actions/setup-android@v3
+      # Release builds come out unsigned here, on purpose: CI checks that a
+      # release build compiles and that R8 does not strip anything, without
+      # ever holding the signing key.
+      - name: assemble
+        run: |
+          cd gui/android
+          gradle assembleDebug assembleRelease
+      # R8 cannot see a crypto provider name reach a class, so a missing keep
+      # rule builds cleanly and fails on the first frame at runtime. Check the
+      # strings survived instead of finding out on a handset.
+      - name: crypto strings survived minification
+        run: |
+          cd gui/android
+          for f in app/build/outputs/apk/*/release/*.apk; do
+            for s in "AES/GCM/NoPadding" "SHA256withECDSA" "AndroidKeyStore"; do
+              unzip -p "$f" classes.dex | strings | grep -qF "$s" \
+                || { echo "::error::$s stripped from $f"; exit 1; }
+            done
+          done
+          echo "crypto entry points intact in every release APK"
+
   interop:
     name: phone frame interop
     runs-on: ubuntu-latest

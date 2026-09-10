@@ -3,7 +3,7 @@
 # Top-level convenience Makefile. Each component also builds
 # standalone from within its own directory.
 
-.PHONY: all daemon kernel-module ramdisk gui apk check licence-map licence-audit clean install install-dracut uninstall
+.PHONY: all daemon kernel-module ramdisk gui apk apk-release check licence-map licence-audit clean install install-dracut uninstall
 
 all: daemon kernel-module ramdisk
 
@@ -62,6 +62,11 @@ gui:
 GRADLE ?= gradle
 apk:
 	cd gui/android && $(GRADLE) assembleDebug
+
+# Signed only when gui/android/keystore.properties exists; otherwise the APKs
+# come out unsigned and apksigner will say so. See gui/android/README.md.
+apk-release:
+	cd gui/android && $(GRADLE) assembleRelease
 
 clean:
 	cd daemon && cargo clean

@@ -1,8 +1,25 @@
 // SPDX-License-Identifier: Apache-2.0
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
+}
+
+// Signing details live outside the repository, always.
+//
+// On Android the signing key IS the app's identity: change it and the result
+// is a different app that cannot update over the old one. It matters more than
+// usual here, because ANDROID_ID is scoped per signing key and key attestation
+// binds to the app — so losing this key does not just break updates, it
+// re-pairs every handset.
+//
+// Absent, the release build still runs and produces an UNSIGNED apk, so a CI
+// job can check that it compiles without holding the key.
+val keystoreProperties = Properties().apply {
+    val f = rootProject.file("keystore.properties")
+    if (f.exists()) f.inputStream().use { load(it) }
 }
 
 android {
@@ -24,6 +41,40 @@ android {
     // `legacy` targets a 32-bit handset with a deliberately plain UI; it still
     // runs, it simply cannot prove as much, and the confirmation ladder in
     // daemon/src/confirm.rs already grades it for what it can.
+    signingConfigs {
+        create("release") {
+            val store = keystoreProperties.getProperty("storeFile")
+            if (store != null) {
+                storeFile = rootProject.file(store)
+                storePassword = keystoreProperties.getProperty("storePassword")
+                keyAlias = keystoreProperties.getProperty("keyAlias")
+                keyPassword = keystoreProperties.getProperty("keyPassword")
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            // R8: shrink and obfuscate. Less to reverse, and a smaller APK on
+            // the flavour that has to fit an older handset.
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro",
+            )
+            signingConfig = if (keystoreProperties.getProperty("storeFile") != null) {
+                signingConfigs.getByName("release")
+            } else {
+                // Unsigned: it builds, and `apksigner verify` will say so.
+                null
+            }
+        }
+        debug {
+            isMinifyEnabled = false
+        }
+    }
+
     flavorDimensions += "era"
     productFlavors {
         create("modern") {

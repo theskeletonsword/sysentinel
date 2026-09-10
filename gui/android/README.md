@@ -77,6 +77,49 @@ The legacy APK carries no `lib/` directory yet because there is no native code
 in it; the `abiFilters` take effect once there is. The size gap is Compose,
 which is why it is scoped to one flavour.
 
+## Release builds
+
+`assembleRelease` works out of the box and produces an **unsigned** APK, so CI
+can check that a release build compiles without holding the key. Unsigned means
+it will not install — `apksigner verify` says so plainly.
+
+To sign it, create a key once and point a gitignored properties file at it:
+
+```sh
+keytool -genkeypair -v -keystore ~/sysentinel-release.jks \
+    -alias sysentinel -keyalg RSA -keysize 4096 -validity 10000
+```
+
+```properties
+# gui/android/keystore.properties — gitignored, never commit
+storeFile=/home/you/sysentinel-release.jks
+storePassword=…
+keyAlias=sysentinel
+keyPassword=…
+```
+
+Then `gradle assembleRelease`, or `make apk-release` from the repository root.
+
+**Guard that key.** On Android the signing key *is* the app's identity: lose
+control of it and somebody else can ship updates as you; lose the key itself
+and you never can again. It matters more than usual here, because `ANDROID_ID`
+is scoped per signing key and key attestation binds to the app — so replacing
+it does not merely break updates, it re-pairs every handset.
+
+R8 shrinks and obfuscates release builds, which is most of the size:
+
+| APK | debug | release |
+|---|---|---|
+| modern | 28 MB | 3.1 MB |
+| legacy | 6.7 MB | 1.5 MB |
+
+`proguard-rules.pro` keeps `javax.crypto` and `java.security`, because the
+providers are looked up by *name* at runtime (`AES/GCM/NoPadding`,
+`SHA256withECDSA`, `ChaCha20-Poly1305`). R8 cannot see a string reach a class,
+so without those rules the app would build cleanly and then fail on its first
+frame. Verified after minification by checking those strings survive in the
+DEX of both flavours.
+
 ## Cipher choice
 
 The same rule the daemon already applies on x86 (`daemon/src/tpmkey.rs`), moved

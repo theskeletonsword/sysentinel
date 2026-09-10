@@ -8,6 +8,13 @@ gui/android/build/
 gui/android/app/build/
 gui/android/.gradle/
 gui/android/local.properties
+
+# The Android signing key and its passwords. NEVER commit these: on Android the
+# signing key is the app's identity, so losing control of it means someone else
+# can ship updates as you, and losing the key itself means you never can again.
+gui/android/keystore.properties
+*.jks
+*.keystore
 gui/android/.kotlin/
 
 # Kernel module build artifacts (kbuild)
