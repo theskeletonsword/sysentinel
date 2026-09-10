@@ -54,6 +54,7 @@ mod llm;
 mod loginwatch;
 mod luks;
 mod mei;
+mod meiclients;
 mod memory;
 mod mood;
 mod modulewatch;

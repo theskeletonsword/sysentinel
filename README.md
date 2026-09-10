@@ -71,6 +71,7 @@ against GPL-only kernel symbols — declare the GPL flavour when building it.
 | **Pairing flow** | One-time 5-minute token pair; strict `chat_id` whitelist thereafter |
 | **Intel ME status** | Live ring −3 alliance: the module binds the MKHI MEI client and re-runs `GET_FW_VERSION` over the HECI bus on every windowed `/proc` read (`me_live=ok(v18.1.2204.0,rt=…ms)`, `me_drift` flags version drift) |
 | **AMD PSP status** | Real PSP handshake (`PSP_CMD_HSTI_QUERY` → fused HSTI word via the ccp driver's exported platform-access API), shown as `psp=up(hsti=…,flags=tsme,rt=…ms)`; degrades to vendor presence where the mailbox is firewalled |
+| **Ring −3 service surface** | `/definehome mei` enumerates every MEI/HECI client the ME publishes — protocol version, max message size, connection limit, fixed-address clients — plus which kernel driver has claimed each one and who can open `/dev/mei0`. A client no driver claims is a firmware service nothing on the host uses yet anyone with the device node can reach. Read entirely from sysfs: no root, no HECI traffic, nothing disturbed |
 | **Ring −3 HAL** | HAL dispatcher (kernel `ring3.rs` mirrors daemon `hal.rs`): **Intel → ME/HECI/MKHI**, **AMD → PSP** (ccp platform-access HSTI), **neither (old/VIA/ARM) → no ring −3 channel engaged**; stable silicon tokens reinforce `/definehome`, `platform_label()` + TPM/chipset evidence for the bootkit audit |
 | **Ring −2 SMM** | Firmware **posture, not pokes**: the channel **provably never raises an SMI** — it only reads the tables the firmware publishes. `smm on` performs a read-only ACPI scan: FADT `smi_command` + documented command values (`smm_iface=fadt-smi@0x…`) and the WSMT SMM-mitigation table (`smm_wsmt=0x…(list)`); a firmwware with a published SMI bridge but no WSMT protections is exactly what an SMM bootkit needs. Latency instrument narrowed to the ring −1 hypercall (`hvm_lat=…us`); `ro=ok|dirty` passively watches module rodata. No outb/inb to any APM port exists in the code by construction |
 | **TPM key** | A `/dev/urandom` AEAD key sealed inside the physical TPM accompanies the fingerprint — AES-256-GCM on AES-NI/VAES CPUs, else ChaCha20-Poly1305 (fresh nonce, never reused); fingerprint-only fallback when there's no TPM |
@@ -134,6 +135,7 @@ sysentinel/
 │       ├── hal.rs                Ring −3 HAL dispatcher: ME/HECI/MKHI · PSP · TPM · chipset
 │       ├── ring3.rs              Kernel-module channel (/proc/sysentinel_metrics)
 │       ├── mei.rs                Intel ME (HECI /dev/mei0) + AMD PSP (sysfs)
+│       ├── meiclients.rs         MEI client directory + who can reach the bus
 │       ├── tpmkey.rs             TPM-sealed AEAD key (AES-256-GCM / ChaCha20-Poly1305)
 │       ├── detecthome.rs         `/definehome` hardware fingerprint (serials + silicon tokens)
 │       │

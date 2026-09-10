@@ -61,6 +61,24 @@ module publishes on /proc/sysentinel_metrics. That token vocabulary necessarily
 appears on both sides — it is the protocol — but no implementation is shared
 across the boundary, and the daemon links nothing from the module.
 
+Ring -3 / MEI code (daemon/src/meiclients.rs) is Apache-2.0 and takes its
+client naming from permissively licensed sources only:
+
+- Intel's metee library (Apache-2.0, https://github.com/intel/metee) publishes
+  the MKHI and firmware-update client GUIDs. Apache-2.0 is this daemon's own
+  licence, so those are usable directly, with the attribution given here.
+- me-tools by Igor Skochinsky (zlib-style permissive licence) corroborates the
+  MKHI subsystem GUID and the MKHI group/command numbering.
+- Every other client is either named from the kernel driver observed bound to
+  it on the running machine -- a fact about that system, not a table lookup --
+  or left as a bare GUID.
+
+Deliberately NOT used: the GUID tables in the Linux MEI drivers, which would
+name several more clients but are GPL-2.0 while this file is Apache-2.0.
+
+FreeBSD carries no MEI or PSP driver (sys/dev has intpm and tpm only), so it
+offered nothing to draw on here.
+
 Performance-counter and CPU-topology code (daemon/src/pmu.rs,
 daemon/src/coretype.rs) is Apache-2.0 and incorporates no kernel source:
 

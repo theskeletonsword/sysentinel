@@ -518,6 +518,16 @@ impl HalInfo {
             ));
         }
 
+        // The service surface behind those clients: what each one is, who has
+        // claimed it, and who on this host can reach the bus at all.
+        let surface = crate::meiclients::enumerate();
+        if !surface.is_empty() {
+            out.push_str("  Ring −3 surface:\n");
+            for note in surface.notes() {
+                out.push_str(&format!("    - {note}\n"));
+            }
+        }
+
         for t in &self.tpm {
             let desc = if t.description.is_empty() {
                 t.path.clone()

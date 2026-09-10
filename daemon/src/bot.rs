@@ -3194,6 +3194,12 @@ PMU).";
                 let _ = self.send_markdown(chat_id, &hal.render_markdown());
                 return;
             }
+            // ── Full MEI/HECI client directory ───────────────────────────────
+            "mei" | "heci" | "clients" | "surface" | "superficie" => {
+                let surface = crate::meiclients::enumerate();
+                let _ = self.send(chat_id, &format!("```\n{}```", surface.render()));
+                return;
+            }
             // ── Bootkit audit ────────────────────────────────────────────────
             "audit" | "bootkit" | "scan" | "verificar" => {
                 self.cmd_bootkit(chat_id);
