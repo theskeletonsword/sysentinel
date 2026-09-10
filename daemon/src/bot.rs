@@ -152,6 +152,8 @@ impl PairingToken {
     /// stored hash. A correct token returns `true`, anything else `false`.
     /// This is what "no lien pueden romper el token" means in practice: the
     /// stored blob is a salted PHC hash, not the shared secret.
+    // Covered by the pairing unit tests; the live path verifies via `check_token`.
+    #[allow(dead_code)]
     pub fn verify(&self, presented: &str) -> bool {
         // Normalise what the user typed: trim whitespace and case-fold to
         // uppercase (the token charset is case-insensitive by convention:
@@ -216,6 +218,8 @@ struct PendingPairing {
     is_valid:          bool,
     bound_to_sender:   bool,
     awaiting_confirm:  bool,
+    // Snapshot of the token budget, kept for logging/diagnostics.
+    #[allow(dead_code)]
     remaining_attempts: u32,
     seconds_remaining: u64,
 }
@@ -267,6 +271,10 @@ pub struct SharedBotState {
     pub(crate) pending_luks: Option<PendingLuks>,
     /// A foreign module waiting for the owner's verdict.
     pub(crate) pending_module: Option<PendingModule>,
+    /// Photos still expected for `/face register` (0 = not arming). While > 0,
+    /// incoming photo messages are consumed and hashed locally (never stored
+    /// as images — only pHash/wHash 64-bit values, per zero-token policy).
+    pub(crate) face_pending: u32,
 }
 
 /// A privileged control command that has been *armed* but not yet confirmed.
@@ -399,6 +407,8 @@ pub(crate) struct PendingLuks {
     /// Kernel boot_id of the decrypted boot (the dedupe key).
     pub boot_id: String,
     /// Photo taken by the initramfs hook, if a webcam was present.
+    // Kept as the record of which frame was sent; the photo goes out at ask time.
+    #[allow(dead_code)]
     pub photo: Option<std::path::PathBuf>,
     /// Only the paired chat that saw the ask may answer it.
     pub chat_id: i64,
@@ -548,6 +558,7 @@ impl SharedBotState {
             pending_login: None,
             pending_luks: None,
             pending_module: None,
+            face_pending: 0,
         }
     }
 
@@ -693,7 +704,19 @@ struct TgMessage {
     chat: TgChat,
     from: Option<TgUser>,
     text: Option<String>,
+    // Part of the Telegram wire format; deserialised but not consulted.
+    #[allow(dead_code)]
     date: i64,
+    /// Photos sent by the user (`/face register`). Sorted largest→smallest.
+    #[serde(default)]
+    photo: Vec<TgPhotoSize>,
+}
+
+#[derive(Deserialize, Clone)]
+struct TgPhotoSize {
+    file_id: String,
+    width:   u32,
+    height:  u32,
 }
 
 #[derive(Deserialize, Clone)]
@@ -723,6 +746,8 @@ struct SendMessageBody<'a> {
 pub struct TelegramBot {
     bot_token:     String,
     llm:           Arc<llm::RuntimeLlm>,
+    /// Startup default; each turn resolves its own via `effective_system_prompt`.
+    #[allow(dead_code)]
     system_prompt: String,
     max_tokens:    u32,
     state:         Arc<Mutex<SharedBotState>>,
@@ -873,7 +898,19 @@ impl TelegramBot {
                 self.handle_pairing(chat_id, text, username, sender_id);
             }
             Some(pid) if pid == chat_id => {
-                // Message from the paired user.
+                // Message from the paired user. A photo while a `/face register`
+                // is arming is consumed here (face enrollment); otherwise the
+                // message is treated as text (which is empty for a photo).
+                if !msg.photo.is_empty() {
+                    let wants = {
+                        let g = self.state.lock().expect("bot state mutex");
+                        g.face_pending > 0
+                    };
+                    if wants {
+                        self.enroll_face_photo(chat_id, msg);
+                        return;
+                    }
+                }
                 self.handle_paired_message(chat_id, text, username);
             }
             Some(_) => {
@@ -1032,7 +1069,7 @@ a few minutes).";
 
         // ── Step 1: ask for the token if nothing was presented ───────────────
         if text.is_empty() {
-            let minutes = (token.seconds_remaining + 59) / 60;
+            let minutes = token.seconds_remaining.div_ceil(60);
             let prompt = format!(
                 "🔑 *Pairing required.*\n\
                  Send me the pairing token from the daemon log.\n\
@@ -1205,6 +1242,7 @@ If you did NOT expect this, reply: **DENY**";
             "/undervolt"      => self.cmd_undervolt(chat_id),
             "/secureboot"     => self.cmd_secureboot(chat_id),
             "/battery"        => self.cmd_battery(chat_id),
+            "/face"           => self.cmd_face(chat_id, text),
             _ if text.trim().starts_with("/llm ") => {
                 let rest = &text.trim()["/llm ".len()..];
                 self.cmd_llm(chat_id, rest);
@@ -1547,7 +1585,7 @@ If you did NOT expect this, reply: **DENY**";
         //    A concrete `CONFIRM-XXXXXX` can never be chatter, so it wins over
         //    every word-based rule below (only an armed control carries one).
         let nonce_confirm = {
-            let mut guard = self.state.lock().expect("bot state mutex");
+            let guard = self.state.lock().expect("bot state mutex");
             let armed_here = |p: &PendingControl| p.chat_id == chat_id && !p.is_expired();
             match guard.pending_control.as_ref() {
                 Some(p) if armed_here(p) => {
@@ -1743,8 +1781,8 @@ If you did NOT expect this, reply: **DENY**";
                 }
             }
         }
-        if lower.starts_with("/cr0 wp ") {
-            let on = match &lower[8..] {
+        if let Some(arg) = lower.strip_prefix("/cr0 wp ") {
+            let on = match arg {
                 "on" => true,
                 "off" => false,
                 _ => {
@@ -2307,9 +2345,7 @@ PMU).";
             .next()
             .unwrap_or("")
             .to_lowercase();
-        let arg = rest
-            .splitn(2, |c: char| c.is_whitespace())
-            .nth(1)
+        let arg = rest.split_once(|c: char| c.is_whitespace()).map(|x| x.1)
             .unwrap_or("")
             .trim()
             .to_string();
@@ -2708,7 +2744,7 @@ PMU).";
             return;
         }
 
-        let backend = match llm::build_chain(&self.config, &[name.clone()], &self.llm_prefs()) {
+        let backend = match llm::build_chain(&self.config, std::slice::from_ref(&name), &self.llm_prefs()) {
             Ok(b) => b,
             Err(e) => {
                 let _ = self.send(chat_id, &format!("⚠️ Can't switch to `{name}`: {e:#}"));
@@ -2810,7 +2846,7 @@ PMU).";
             if e.mtp.is_some() {
                 lines.push_str(" ⚡mtp");
             }
-            lines.push_str("\n");
+            lines.push('\n');
         }
         lines.push_str("\nPick one: `/model <name>`\n");
         lines.push_str("Ready command: `/models <name>`\n");
@@ -2869,7 +2905,7 @@ PMU).";
             );
             return;
         }
-        let mut want = rest.trim();
+        let want = rest.trim();
         let path = std::path::Path::new(&self.config.general.settings_file);
 
         // Form: `/model <provider> m1,m2` — split on first whitespace.
@@ -3075,15 +3111,15 @@ PMU).";
 
     /// `/definehome` / `/detecthome` — bind or re-check "this is my PC".
     ///
-    /// * `/definehome`            → show this machine's fingerprint; with no
-    ///                              saved profile it defines THIS PC as home.
-    /// * `/definehome status`     → show the saved HOME profile + ring −3
-    ///                              firmware drift (silicon is stable, fw moves).
-    /// * `/definehome hal`        → the HAL / ring −3 coprocessor detail
-    ///                              (Intel ME via HECI/MKHI, AMD PSP, HECI bus,
-    ///                              TPM chips, chipset, hypervisor truth).
-    /// * `/definehome audit`      → bootkit auditor (alias of `/bootkit`).
-    /// * `/definehome delete`     → forget the saved profile (you changed PCs).
+    /// * `/definehome` — show this machine's fingerprint; with no saved
+    ///   profile it defines THIS PC as home.
+    /// * `/definehome status` — show the saved HOME profile + ring −3
+    ///   firmware drift (silicon is stable, fw moves).
+    /// * `/definehome hal` — the HAL / ring −3 coprocessor detail
+    ///   (Intel ME via HECI/MKHI, AMD PSP, HECI bus, TPM chips, chipset,
+    ///   hypervisor truth).
+    /// * `/definehome audit` — bootkit auditor (alias of `/bootkit`).
+    /// * `/definehome delete` — forget the saved profile (you changed PCs).
     fn cmd_definehome(&self, chat_id: i64, rest: &str) {
         use crate::detecthome;
 
@@ -3121,12 +3157,10 @@ PMU).";
                             profile.summary,
                         );
                         if !silicon_stable {
-                            msg.push_str(&format!(
-                                "\n\n⚠️ *The silicon changed!* The ring −3 tokens no longer \
+                            msg.push_str("\n\n⚠️ *The silicon changed!* The ring −3 tokens no longer \
                                  match the saved profile — this is NOT (just) a firmware \
                                  update. Review `/definehome`; if this is your new PC, run \
-                                 `/definehome delete` and re-define."
-                            ));
+                                 `/definehome delete` and re-define.");
                         } else if changed.is_empty() {
                             msg.push_str("\n\n✅ Firmware unchanged since capture.");
                         } else {
@@ -3429,9 +3463,193 @@ PMU).";
         }
     }
 
+    /// `/face register [N]` — enrobar el rostro del dueño: envía 1..N fotos y
+    /// sólo se guardan los hashes pHash/wHash de 64 bits (jamás la imagen).
+    fn cmd_face(&self, chat_id: i64, text: &str) {
+        let rest = text.trim().strip_prefix("/face").unwrap_or("").trim();
+        let mut it = rest.split_whitespace();
+        match it.next() {
+            Some("register") => {
+                let n = it
+                    .next()
+                    .and_then(|s| s.parse::<u32>().ok())
+                    .unwrap_or(3)
+                    .clamp(1, 20);
+                {
+                    let mut g = self.state.lock().expect("bot state mutex");
+                    g.face_pending = n;
+                }
+                let flag = if self.config.face.enabled { ": white_check_mark:" } else { "" };
+                let _ = self.send(
+                    chat_id,
+                    &format!(
+                        "Mándame las *{n}* fotos de tu rostro ahora (una por mensaje). \
+                         Guardaré los hashes perceptuales (pHash + wHash, 64 bits) y, si \
+                         el tool del initramfs está instalado, el vector facial 128-D para \
+                         que el arranque te reconozca antes de descifrar. Nunca guardo la \
+                         imagen.{}\nNota: las fotos se procesan en el momento y se borran.",
+                        flag,
+                    ),
+                );
+            }
+            Some("status") => {
+                let store = crate::fhash::FaceStore::load(std::path::Path::new(&self.config.face.path));
+                match store {
+                    Ok(s) => {
+                        let msg = if s.is_empty() {
+                            "No hay ningún rostro registrado. Usa `/face register`.".to_string()
+                        } else {
+                            let vecs = s.entries.iter().filter(|e| e.embedding.is_some()).count();
+                            let head: Vec<String> = s
+                                .entries
+                                .iter()
+                                .map(|e| format!("`p{:08x}` `w{:08x}`", e.p_hash, e.w_hash))
+                                .collect();
+                            format!(
+                                "{} enroll(s) registrados ({} con vector 128-D para el \
+                                 initramfs):\n{}",
+                                s.len(),
+                                vecs,
+                                head.join("\n")
+                            )
+                        };
+                        let _ = self.send(chat_id, &msg);
+                    }
+                    Err(e) => {
+                        let _ = self.send(chat_id, &format!("No pude leer el store de caras: {e:#}"));
+                    }
+                }
+            }
+            Some("forget") => {
+                if let Ok(mut store) =
+                    crate::fhash::FaceStore::load(std::path::Path::new(&self.config.face.path))
+                {
+                    store.clear();
+                    let _ = store.save();
+                    store.mirror_to_esp();
+                }
+                let _ = self.send(chat_id, "Rostros registrados borrados.");
+            }
+            Some("cancel") => {
+                self.state.lock().expect("bot state mutex").face_pending = 0;
+                let _ = self.send(chat_id, "Registro de rostro cancelado.");
+            }
+            _ => {
+                let _ = self.send(
+                    chat_id,
+                    "`/face register [N]` — registrar tu rostro (envía N fotos)\n\
+                     `/face status` — cuántos hashes hay guardados\n\
+                     `/face forget` — borrar todos los hashes\n\
+                     `/face cancel` — cancelar un registro en curso",
+                );
+            }
+        }
+    }
+
+    /// Consume one incoming photo while `/face register` is arming: compute the
+    /// two perceptual hashes locally and persist them. Never stores the image.
+    fn enroll_face_photo(&self, chat_id: i64, msg: &TgMessage) {
+        let cancel = |bot: &TelegramBot, chat_id: i64, why: &str| {
+            bot.state.lock().expect("bot state mutex").face_pending = 0;
+            let _ = bot.send(chat_id, &format!("Aborté el registro: {why}"));
+        };
+        let Some(photo) = msg.photo.iter().max_by_key(|p| p.width * p.height) else {
+            return cancel(self, chat_id, "sin foto descargable");
+        };
+        let bytes = match fetch_file_bytes(&self.bot_token, &photo.file_id) {
+            Ok(b) => b,
+            Err(e) => return cancel(self, chat_id, &format!("no pude descargar la foto: {e:#}")),
+        };
+        let img = match image::load_from_memory(&bytes) {
+            Ok(i) => i,
+            Err(e) => return cancel(self, chat_id, &format!("no pude decodificar la foto: {e:#}")),
+        };
+        let mut store = match crate::fhash::FaceStore::load(std::path::Path::new(&self.config.face.path))
+        {
+            Ok(s) => s,
+            Err(e) => return cancel(self, chat_id, &format!("store de caras ilegible: {e:#}")),
+        };
+        // 128-D embedding opcional: lo calcula el tool estático del initramfs
+        // (detect→align→embed). Si el tool falta o no hay cara, el enroll cae
+        // al veredicto por hashes y el pipeline NN se queda sin template.
+        let embedding = self.face_embedding(&bytes);
+        let (p, w) = store.add_image_with_embedding(&img, embedding);
+        if let Err(e) = store.save() {
+            return cancel(self, chat_id, &format!("no pude guardar los hashes: {e:#}"));
+        }
+        store.mirror_to_esp();
+        let remaining = {
+            let mut g = self.state.lock().expect("bot state mutex");
+            g.face_pending = g.face_pending.saturating_sub(1);
+            g.face_pending
+        };
+        log::info!("face register: +1 enroll p={p:08x} w={w:08x} ({} left)", remaining);
+        if remaining == 0 {
+            let _ = self.send(
+                chat_id,
+                "Rostro registrado. De aquí en adelante, al iniciar sesión compararé la \
+                 cámara contra estos hashes (pHash/wHash + Hamming). No guardo fotos. \
+                 Los templates faciales se espejan al ESP para que el initramfs te \
+                 reconozca en el arranque antes de descifrar (umbral cosine 0.5).",
+            );
+        } else {
+            let _ = self.send(chat_id, &format!("Recibida. Quedan *{remaining}* foto(s)."));
+        }
+    }
+
+    /// 128-D embedding de una foto vía el tool estático del initramfs
+    /// (`sysentinel-face --embed`), usado como template del veredicto NN.
+    /// `None` cuando el tool no está instalado, no hay cara o algo falló.
+    fn face_embedding(&self, bytes: &[u8]) -> Option<Vec<f32>> {
+        #[derive(serde::Deserialize)]
+        struct ToolOut {
+            faces: Vec<ToolFace>,
+        }
+        #[derive(serde::Deserialize)]
+        struct ToolFace {
+            embedding: Option<Vec<f32>>,
+        }
+        let tool = "/usr/libexec/sysentinel-face";
+        if !std::path::Path::new(tool).is_file() {
+            log::debug!("face: {tool} absent — no NN template for this enroll");
+            return None;
+        }
+        let tmp = std::env::temp_dir().join(format!("sysentinel-face-enroll-{}.jpg", std::process::id()));
+        let _ = std::fs::write(&tmp, bytes);
+        let out = std::process::Command::new(tool)
+            .arg("--embed")
+            .arg(&tmp)
+            .output()
+            .ok();
+        let _ = std::fs::remove_file(&tmp);
+        let out = out?;
+        if !out.status.success() {
+            log::warn!(
+                "face: {tool} failed ({}): {}",
+                out.status,
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+            return None;
+        }
+        let parsed: ToolOut = match serde_json::from_slice(&out.stdout) {
+            Ok(o) => o,
+            Err(e) => {
+                log::warn!("face: {tool} output unparseable: {e}");
+                return None;
+            }
+        };
+        match parsed.faces.into_iter().next().and_then(|f| f.embedding) {
+            Some(emb) if emb.len() == 128 => Some(emb),
+            _ => {
+                log::warn!("face: no usable embedding produced for the enrolled photo");
+                None
+            }
+        }
+    }
+
     /// `/login list` / `/login kill <pid>` — manual take-over of the ritual.
     fn cmd_login(&self, chat_id: i64, rest: &str) {
-        let mut it = rest.trim().split_whitespace();
+        let mut it = rest.split_whitespace();
         match it.next() {
             Some("list") => self.cmd_logins(chat_id),
             Some("kill") => {
@@ -3704,7 +3922,7 @@ pub fn send_photo(
         .unwrap_or_else(|| "evidence.jpg".to_string());
 
     const TG_LIMIT: usize = 1024;
-    let mut cap: String;
+    let cap: String;
     let caption: &str = if caption.len() <= TG_LIMIT {
         caption
     } else {
@@ -3732,6 +3950,92 @@ pub fn send_photo(
     anyhow::ensure!(
         resp.status() == 200,
         "Telegram sendPhoto returned non-200 status: {}",
+        resp.status()
+    );
+    Ok(())
+}
+
+/// Download a Telegram file by `file_id` (getFile → file path → bytes).
+fn fetch_file_bytes(bot_token: &str, file_id: &str) -> Result<Vec<u8>> {
+    use std::io::Read as _;
+    let url = format!("https://api.telegram.org/bot{bot_token}/getFile");
+    let meta = ureq::get(&url)
+        .query("file_id", file_id)
+        .timeout(Duration::from_secs(30))
+        .call()
+        .context("getFile request to Telegram")?
+        .into_string()
+        .context("reading getFile answer")?;
+    let v: serde_json::Value =
+        serde_json::from_str(&meta).context("parsing getFile answer")?;
+    anyhow::ensure!(v["ok"].as_bool().unwrap_or(false), "getFile failed: {v}");
+    let path = v["result"]["file_path"]
+        .as_str()
+        .context("getFile returned no file_path")?;
+    let dl = format!("https://api.telegram.org/file/bot{bot_token}/{path}");
+    let mut reader = ureq::get(&dl)
+        .timeout(Duration::from_secs(60))
+        .call()
+        .context("downloading Telegram file")?
+        .into_reader();
+    let mut buf = Vec::new();
+    reader.read_to_end(&mut buf).context("reading Telegram file body")?;
+    anyhow::ensure!(!buf.is_empty(), "downloaded file is empty");
+    Ok(buf)
+}
+
+/// Low-level Telegram `sendAudio` call — same hand-built multipart as
+/// [`send_photo`]. MIME is chosen from the file extension (oga/ogg, wav, mp3).
+/// Used by the evidence-delivery loop (first-network upload of the intruder
+/// audio); kept alive until that milestone lands.
+#[allow(dead_code)]
+pub fn send_audio(
+    bot_token: &str,
+    chat_id:   i64,
+    caption:   &str,
+    audio_path: &Path,
+) -> Result<()> {
+    let bytes = std::fs::read(audio_path)
+        .with_context(|| format!("reading audio {}", audio_path.display()))?;
+    let filename = audio_path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "evidence.oga".to_string());
+    let mime = match audio_path.extension().and_then(|e| e.to_str()) {
+        Some("oga" | "ogg" | "opus") => "audio/ogg",
+        Some("wav") => "audio/wav",
+        Some("mp3") => "audio/mpeg",
+        _ => "application/octet-stream",
+    };
+    const TG_LIMIT: usize = 1024;
+    let cap: String;
+    let caption: &str = if caption.len() <= TG_LIMIT {
+        caption
+    } else {
+        cap = caption.chars().take(TG_LIMIT).collect::<String>() + "…";
+        &cap
+    };
+
+    let boundary = format!("----sysentinel{:016x}", std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0));
+    let mut body: Vec<u8> = Vec::with_capacity(bytes.len() + 1024);
+    push_form_text(&mut body, &boundary, "chat_id", &chat_id.to_string());
+    push_form_text(&mut body, &boundary, "caption", caption);
+    push_form_text(&mut body, &boundary, "parse_mode", "Markdown");
+    push_form_file(&mut body, &boundary, "audio", &filename, mime, &bytes);
+    body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+
+    let url = format!("https://api.telegram.org/bot{bot_token}/sendAudio");
+    let resp = ureq::post(&url)
+        .timeout(Duration::from_secs(300))
+        .set("Content-Type", &format!("multipart/form-data; boundary={boundary}"))
+        .send(body.as_slice())
+        .context("sendAudio request to Telegram")?;
+    anyhow::ensure!(
+        resp.status() == 200,
+        "Telegram sendAudio returned non-200 status: {}",
         resp.status()
     );
     Ok(())
@@ -3897,12 +4201,12 @@ fn build_system_context(
     // CPU model + vendor — keeps the models from guessing the platform.
     if let Ok(raw) = std::fs::read_to_string("/proc/cpuinfo") {
         if let Some(line) = raw.lines().find(|l| l.starts_with("model name")) {
-            if let Some(name) = line.splitn(2, ':').nth(1) {
+            if let Some(name) = line.split_once(':').map(|x| x.1) {
                 ctx.push_str(&format!("CPU: {}\n", name.trim()));
             }
         }
         if let Some(line) = raw.lines().find(|l| l.starts_with("vendor_id")) {
-            if let Some(v) = line.splitn(2, ':').nth(1) {
+            if let Some(v) = line.split_once(':').map(|x| x.1) {
                 ctx.push_str(&format!("CPU vendor: {}\n", v.trim()));
             }
         }
@@ -4047,8 +4351,9 @@ fn gather_system_snapshot() -> Result<String> {
                     .and_then(|s| s.parse().ok()).unwrap_or(0);
             }
         }
-        if total_kb > 0 {
-            let used_pct = (total_kb - avail_kb) * 100 / total_kb;
+        if let Some(used_pct) = total_kb.checked_sub(avail_kb)
+            .and_then(|used| (used * 100).checked_div(total_kb))
+        {
             let avail_mb = avail_kb / 1024;
             let total_mb = total_kb / 1024;
             out.push_str(&format!("💾 Memory: {avail_mb} MB free / {total_mb} MB ({used_pct}% used)\n"));

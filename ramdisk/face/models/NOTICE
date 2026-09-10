@@ -1,0 +1,32 @@
+sysentinel — face models
+Copyright (c) 2026 sysentinel contributors
+
+The ONNX models compiled into `sysentinel-face` are distributed under the
+Apache License, Version 2.0 (full text in the adjacent LICENSE file, also at
+https://www.apache.org/licenses/LICENSE-2.0), with attribution as follows:
+
+--------------------------------------------------------------------
+SCRFD face detector
+--------------------------------------------------------------------
+Model:        scrfd_2.5g_bnkps.onnx
+Based on:     SCRFD — "SCRFD: Sample Rate Adaptable Face Detection"
+Authors:      Jiankang Deng, Jianzhu Guo, Tongliang Liu, Anbang Yao,
+              Song Zafeiriou
+Project:      InsightFace (https://github.com/deepinsight/insightface)
+Export:       RuteNL/SCRFD-face-detection-ONNX
+              (https://huggingface.co/RuteNL/SCRFD-face-detection-ONNX)
+License:      Apache-2.0
+
+--------------------------------------------------------------------
+MobileFaceNet face embedder (planned)
+--------------------------------------------------------------------
+Model:        mobilefacenet.onnx
+Based on:     MobileFaceNets — "MobileFaceNets: Efficient CNNs for Accurate
+              Real-Time Face Verification on Mobile Devices"
+Authors:      Sheng Chen, Yang Liu, Xiang Gao, Zhen Han
+Sources:      https://github.com/foamliu/MobileFaceNet
+              https://github.com/deepinsight/insightface
+License:      Apache-2.0
+
+Please keep this NOTICE with any redistribution of these models or of
+binaries that embed them.

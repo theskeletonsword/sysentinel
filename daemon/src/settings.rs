@@ -71,7 +71,8 @@ pub struct Settings {
     /// Stop a bogus `/exec` burst: max running background jobs at once.
     #[serde(default = "default_exec_max_jobs")] pub exec_max_jobs: u64,
     /// Ask the "¿fui yo?" question every boot after the initramfs LUKS
-    /// tripwire reports the disk was decrypted (evidence written pre-pivot).
+    /// tripwire reports the disk was decrypted (evidence captured before the
+    /// password prompt; post-decrypt fallback hook).
     #[serde(default = "default_true")] pub lukswatch: bool,
     /// Action when a LUKS-decrypt ask is denied (or times out unanswered):
     /// `poweroff` (ACPI, "a la buena"), `triplefault` (forced power-down), or

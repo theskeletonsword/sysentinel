@@ -12,6 +12,8 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use crate::llm;
+
 /// Snapshot of the primary battery.
 #[derive(Debug, Clone)]
 pub struct Battery {
@@ -61,7 +63,7 @@ impl Battery {
 /// Is there a battery at all? If yes ⇒ notebook/laptop; if no ⇒ desktop tower
 /// ("torre / pc de mesa") and battery alerts "no aplican".
 pub fn has_battery() -> bool {
-    find_power_supplies().iter().any(battery_in_dir)
+    find_power_supplies().iter().any(|d| battery_in_dir(d))
 }
 
 /// The battery most worth reporting. Multiple batteries: the most drained one
@@ -71,7 +73,7 @@ pub fn primary_battery() -> Option<Battery> {
     let mut bats: Vec<Battery> = dirs
         .iter()
         .filter(|d| battery_in_dir(d))
-        .filter_map(read_battery_from_dir)
+        .filter_map(|d| read_battery_from_dir(d))
         .collect();
     bats.sort_by_key(|b| b.percent.unwrap_or(101));
     bats.into_iter().next()
@@ -86,7 +88,7 @@ pub fn describe() -> String {
                 .status
                 .as_deref()
                 .map(translate_status)
-                .unwrap_or_else(|| "unknown".into());
+                .unwrap_or_else(|| "unknown");
             let full = b
                 .energy_full
                 .map(|wh| format!(" of {:.1} Wh", wh as f64 / 1_000_000.0))
@@ -119,6 +121,7 @@ pub fn run_battery_loop(
     config: &crate::config::Config,
     state: &Arc<Mutex<crate::bot::SharedBotState>>,
     settings: &Arc<Mutex<crate::settings::Settings>>,
+    llm: &dyn llm::LlmBackend,
     dry_run: bool,
 ) {
     if !has_battery() {
@@ -179,7 +182,7 @@ pub fn run_battery_loop(
             continue;
         };
 
-        let text = battery_alert_text(&b, band);
+        let text = speak_battery_persona(config, settings, llm, &b, band);
         if dry_run {
             log::info!("battery-watch (dry): {text}");
             continue;
@@ -187,6 +190,58 @@ pub fn run_battery_loop(
         let _ =
             crate::bot::send_message(&config.telegram.bot_token, chat_id, &text, Some("Markdown"));
     }
+}
+
+/// Passive drain alert → persona voice. Falls back to the canned line when
+/// the LLM is off or errors (a low-battery ping must never block on the LLM).
+fn speak_battery_persona(
+    config: &crate::config::Config,
+    settings: &Arc<Mutex<crate::settings::Settings>>,
+    llm: &dyn llm::LlmBackend,
+    b: &Battery,
+    band: i32,
+) -> String {
+    if !config.llm.llm_enabled() {
+        return battery_alert_text(b, band);
+    }
+    let persona = llm::resolved_persona(config);
+    let override_txt = {
+        let g = settings.lock().expect("settings mutex");
+        g.system_prompt_override.clone()
+    };
+    let sys_prompt = llm::effective_system_prompt(config, override_txt.as_deref());
+    let mut facts = format!(
+        "The battery is draining: {}% left ({})",
+        b.percent.unwrap_or(0),
+        b.name
+    );
+    if b.is_discharging() {
+        facts.push_str(&format!(", {} left", b.minutes_left_label()));
+    }
+    let directive = format!(
+        "These are live facts / things that just happened on this machine. You ARE \
+         the machine. The battery is running low — tell the user about it in YOUR \
+         voice, spontaneously, short and clear, NEVER a formatted log line, NEVER\n\
+         inventing anything beyond what's here.\n\
+         IMPORTANT: this is a PASSIVE notice — urgent, but it needs no confirmation\n\
+         and no drastic action from the user beyond plugging in.\n\
+         language: {}\ntone: {}\n\
+         Write in {}, with the persona above. Be brief (max 3 lines), no titles,\n\
+         no preamble:\n\n{}",
+        persona.language,
+        persona.tone,
+        persona.language,
+        facts
+    );
+    llm.explain(&llm::ExplainRequest {
+        system_prompt: &sys_prompt,
+        event_text: &directive,
+        max_tokens: config.llm.max_tokens,
+    })
+    .unwrap_or_else(|e| {
+        log::warn!("battery persona voice dropped ({e:#}); forwarding raw alert");
+        battery_alert_text(b, band)
+    })
 }
 
 fn battery_alert_text(b: &Battery, band: i32) -> String {
@@ -225,11 +280,11 @@ fn find_power_supplies() -> Vec<std::path::PathBuf> {
     rd.filter_map(|e| e.ok()).map(|e| e.path()).collect()
 }
 
-fn battery_in_dir(dir: &std::path::PathBuf) -> bool {
+fn battery_in_dir(dir: &std::path::Path) -> bool {
     read_trim(dir.join("type")).as_deref() == Some("Battery")
 }
 
-fn read_battery_from_dir(dir: &std::path::PathBuf) -> Option<Battery> {
+fn read_battery_from_dir(dir: &std::path::Path) -> Option<Battery> {
     let name = dir.file_name()?.to_string_lossy().into_owned();
     Some(Battery {
         name,

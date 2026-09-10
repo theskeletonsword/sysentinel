@@ -31,6 +31,7 @@ use std::time::Duration;
 use crate::bot::{self, PendingLogin, SharedBotState};
 use crate::camera::{self, CamResult};
 use crate::config::Config;
+use crate::llm;
 use crate::settings::Settings;
 
 // ── Glibc utmpx constants ─────────────────────────────────────────────────────
@@ -257,12 +258,34 @@ fn send_with_photo(
     if config.camera.enabled && !dry_run {
         match camera::capture(&config.camera, &shot_dir) {
             CamResult::Photo { path } => {
+                // Local face check (only when enrolled): pure perceptual
+                // hashing, no tokens, no stored images.
+                let face_line = if config.face.enabled {
+                    let thr = crate::fhash::FaceThresholds {
+                        p_owner: config.face.p_owner,
+                        w_owner: config.face.w_owner,
+                        p_ambiguous: config.face.p_ambiguous,
+                        w_ambiguous: config.face.w_ambiguous,
+                    };
+                    crate::fhash::verdict_text(&thr, std::path::Path::new(&config.face.path), &path)
+                } else {
+                    None
+                };
+                let fatal = match &face_line {
+                    Some(l) if l.contains("NO registrado") => l,
+                    _ => "",
+                };
+                let caption = if fatal.is_empty() {
+                    text.to_string()
+                } else {
+                    format!("{text}\n\n{fatal}")
+                };
                 if let Err(e) =
-                    bot::send_photo(&config.telegram.bot_token, chat_id, text, &path)
+                    bot::send_photo(&config.telegram.bot_token, chat_id, &caption, &path)
                 {
                     log::warn!("loginwatch photo alert failed: {e:#}; text only");
                     let _ = bot::send_message(
-                        &config.telegram.bot_token, chat_id, text, Some("Markdown"),
+                        &config.telegram.bot_token, chat_id, &caption, Some("Markdown"),
                     );
                 }
                 return;
@@ -278,6 +301,50 @@ fn send_with_photo(
     let _ = bot::send_message(&config.telegram.bot_token, chat_id, text, Some("Markdown"));
 }
 
+/// Speak a login-watcher fact through the persona — passive notices are told
+/// in the machine's own voice, never a canned template. Falls back to raw
+/// facts when the LLM is off or errors (backend "none" costs no calls).
+fn speak_login_persona(
+    config: &Config,
+    settings: &Arc<Mutex<Settings>>,
+    llm: &dyn llm::LlmBackend,
+    subject: &str,
+    facts: &str,
+) -> String {
+    if !config.llm.llm_enabled() {
+        return format!("{subject}: {facts}");
+    }
+    let persona = llm::resolved_persona(config);
+    let override_txt = {
+        let g = settings.lock().expect("settings mutex");
+        g.system_prompt_override.clone()
+    };
+    let sys_prompt = llm::effective_system_prompt(config, override_txt.as_deref());
+    let directive = format!(
+        "These are live facts / things that just happened on this machine. You ARE \
+         the machine. {subject} — this is a PASSIVE observation, NOT a catastrophe:\n\
+         do not panic, do not ask for confirmation or propose drastic actions; just\n\
+         tell the user about it in YOUR voice, spontaneously, in your own words, NEVER\n\
+         a formatted log line, NEVER inventing anything beyond what's here.\n\
+         language: {}\ntone: {}\n\
+         Write in {}, with the persona above. Be brief (max 4 lines), no titles,\n\
+         no preamble. Use only what's here:\n\n{}",
+        persona.language,
+        persona.tone,
+        persona.language,
+        facts
+    );
+    llm.explain(&llm::ExplainRequest {
+        system_prompt: &sys_prompt,
+        event_text: &directive,
+        max_tokens: config.llm.max_tokens,
+    })
+    .unwrap_or_else(|e| {
+        log::warn!("login persona voice dropped ({e:#}); forwarding raw facts");
+        format!("{subject}: {facts}")
+    })
+}
+
 /// Watches wtmp for new logins, arms a [`PendingLogin`] per login, and sweeps
 /// expired pending decisions (auto-close or keep, per settings). Also tails
 /// btmp and raises an intruder alert once a burst crosses the configured
@@ -286,6 +353,7 @@ pub fn run_login_loop(
     config: &Config,
     state: &Arc<Mutex<SharedBotState>>,
     settings: &Arc<Mutex<Settings>>,
+    llm: &dyn llm::LlmBackend,
     dry_run: bool,
 ) {
     let mut tailer = match RecordTailer::open("/var/log/wtmp") {
@@ -310,7 +378,7 @@ pub fn run_login_loop(
 
         if login_on {
             for ev in tailer.poll() {
-                announce_login(config, state, settings, &ev, dry_run);
+                announce_login(config, state, settings, llm, &ev, dry_run);
             }
 
             // Brute-force detection from btmp (failed attempts).
@@ -324,7 +392,7 @@ pub fn run_login_loop(
                         continue;
                     }
                     if fails.push(rec, threshold, window) {
-                        announce_fail_burst(config, state, dry_run, threshold, fails.window.back());
+                        announce_fail_burst(config, state, settings, llm, dry_run, threshold, fails.window.back());
                     }
                 }
             }
@@ -333,7 +401,7 @@ pub fn run_login_loop(
             let _ = tailer.poll();
         }
 
-        sweep_expired(config, state, timeout, auto_close, dry_run);
+        sweep_expired(config, state, settings, timeout, auto_close, llm, dry_run);
     }
 }
 
@@ -341,6 +409,7 @@ fn announce_login(
     config: &Config,
     state: &Arc<Mutex<SharedBotState>>,
     settings: &Arc<Mutex<Settings>>,
+    llm: &dyn llm::LlmBackend,
     ev: &LoginEvent,
     dry_run: bool,
 ) {
@@ -366,13 +435,21 @@ fn announce_login(
         if ev.host.is_empty() { "-" } else { &ev.host }
     );
 
-    let host_txt = if ev.host.is_empty() { String::new() } else { format!(" host=`{}`", ev.host) };
+    // Passive notice → persona voice. The verdict options stay appended so
+    // the yes/no flow keeps working.
+    let host_txt = if ev.host.is_empty() { "none".to_string() } else { ev.host.clone() };
+    let facts = format!(
+        "user={} channel={} ({} {}) tty={} pid={} host={}",
+        ev.user, ev.channel.label(), ev.channel.emoji(), ev.channel.label(), ev.line, ev.pid, host_txt
+    );
+    let lead = speak_login_persona(
+        config, settings, llm,
+        "a new login just landed on this machine",
+        &facts,
+    );
     let text = format!(
-        "{} *Login detectado* — `{}` via {}{}\n\
-         tty=`{}` pid={}\n\n\
-         ¿Fuiste tú? Responde *`si fui yo`* para dejarla, *`no`* para cerrar.\n\
-         ⏳ Sin respuesta en {timeout}s se cierra por default.",
-        ev.channel.emoji(), ev.user, ev.channel.label(), host_txt, ev.line, ev.pid
+        "{lead}\n\n¿Fuiste tú? Responde *`si fui yo`* para dejarla, *`no`* para cerrar.\n\
+         ⏳ Sin respuesta en {timeout}s se cierra por defecto."
     );
     if dry_run {
         log::info!("DRY RUN — loginwatch: {text}");
@@ -386,6 +463,8 @@ fn announce_login(
 fn announce_fail_burst(
     config: &Config,
     state: &Arc<Mutex<SharedBotState>>,
+    settings: &Arc<Mutex<Settings>>,
+    llm: &dyn llm::LlmBackend,
     dry_run: bool,
     threshold: usize,
     last: Option<&(std::time::Instant, libc::utmpx)>,
@@ -407,13 +486,20 @@ fn announce_fail_burst(
     let host = cstr(&rec.ut_host);
     let who = if user.is_empty() { "?" } else { &user };
     let when = time_label(rec.ut_tv.tv_sec as i64);
-    let text = format!(
-        "🚨 *Brute-force* — {} failed attempts in the window (last: `{}` via `{}`{})\n\
-         tsv={} ({})\n\n\
-         Webcam photo attached if available. Check who's at the keyboard.",
+    let facts = format!(
+        "{} failed login attempts crossed the threshold in the window. Last attempt: \
+         user={} tty={} host={} around {}.{}",
         threshold, who, line,
-        if host.is_empty() { String::new() } else { format!(" host=`{host}`") },
-        when, if user.is_empty() { "unknown user" } else { "user mismatch" },
+        if host.is_empty() { "none" } else { host.as_str() },
+        when, if user.is_empty() { " (unknown user)" } else { "" },
+    );
+    let lead = speak_login_persona(
+        config, settings, llm,
+        "someone keeps failing to log in — a brute-force burst",
+        &facts,
+    );
+    let text = format!(
+        "{lead}\n\nWebcam photo attached if available. Check who's at the keyboard."
     );
     log::warn!(
         "loginwatch: FAIL BURST — {n} failed attempts in window (user={user} line={line} host={host})",
@@ -465,8 +551,10 @@ pub fn arm_manual_kill(state: &Arc<Mutex<SharedBotState>>, chat_id: i64, ev: &Lo
 fn sweep_expired(
     config: &Config,
     state: &Arc<Mutex<SharedBotState>>,
+    settings: &Arc<Mutex<Settings>>,
     _timeout: u64,
     auto_close: bool,
+    llm: &dyn llm::LlmBackend,
     dry_run: bool,
 ) {
     let pending = {
@@ -491,12 +579,26 @@ fn sweep_expired(
             "loginwatch: timeout auto-close for {} pid={} closed={}",
             p.event.user, p.event.pid, closed
         );
-        let txt = format!(
-            "⏰ *Unconfirmed session* — `{}` ({}) was not confirmed in time.\n{} the session (pid={}).",
+        let facts = format!(
+            "Unconfirmed session: user={} channel={} pid={} was not approved within \
+             the timeout. I tried to close it — closed={}.",
             p.event.user,
             p.event.channel.label(),
-            if closed { "🗑️ Closed" } else { "⚠️ Could not close" },
             p.event.pid,
+            closed,
+        );
+        let lead = speak_login_persona(
+            config, settings,
+            llm, "an unconfirmed login session timed out",
+            &facts,
+        );
+        let txt = format!(
+            "{lead}\n{}",
+            if closed {
+                "🗑️ Session closed.".to_string()
+            } else {
+                format!("⚠️ Could not close it — `/login kill {}` to retry.", p.event.pid)
+            }
         );
         if dry_run {
             log::info!("DRY RUN — loginwatch timeout: {txt}");
@@ -508,10 +610,19 @@ fn sweep_expired(
             }
         }
     } else {
+        let facts = format!(
+            "Unconfirmed session: user={} channel={} pid={} timed out — I left it open \
+             because login_auto_close is disabled.",
+            p.event.user, p.event.channel.label(), p.event.pid,
+        );
+        let lead = speak_login_persona(
+            config, settings,
+            llm, "an unconfirmed login session was left open",
+            &facts,
+        );
         let txt = format!(
-            "⏰ No response about `{}` — session left open (`login_auto_close` off).\n\
-             Close with `/login kill {}` if it was an intruder.",
-            p.event.user, p.event.pid
+            "{lead}\nClose it yourself with `/login kill {}` if it was an intruder.",
+            p.event.pid,
         );
         log::warn!("loginwatch: timeout, auto_close off — left session by {} open", p.event.user);
         if dry_run {

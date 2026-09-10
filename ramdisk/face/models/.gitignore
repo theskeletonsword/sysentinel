@@ -1,0 +1,9 @@
+# Patterns here are relative to THIS directory, so they must NOT be prefixed
+# with `models/` — that would resolve to models/models/ and match nothing.
+#
+# The model weights live on Hugging Face; scripts/fetch-face-models.sh gets
+# them. Only the licence/attribution files are tracked.
+*.onnx
+*.pt
+!LICENSE
+!NOTICE

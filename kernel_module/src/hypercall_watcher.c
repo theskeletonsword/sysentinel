@@ -28,6 +28,16 @@
 //   loading `kvm` retries the attach.
 // - The probe runs in preempt-disabled / possibly-IRQ context, so it only
 //   copies into the ring — no allocation, no sleeping, no pr_* output.
+//
+// # Non-interference invariant (do not break)
+//
+// Hypercalls are INTERCEPTED AND REPORTED, never answered. The probe must
+// never modify regs, return an injected error, veto the guest, or terminate
+// the vCPU/VM/QEMU process in reaction to a hypercall. We cannot distinguish
+// a guest's own experiments from a VM-escape attempt, and a faulty veto is
+// worse than the thing it pretends to stop; the watcher is an audit log, not
+// a firewall. The only kernel action driven by guest activity elsewhere in
+// this module is `/proc/sysentinel_hypercalls` being drained by the daemon.
 
 #include <linux/kernel.h>
 #include <linux/kprobes.h>

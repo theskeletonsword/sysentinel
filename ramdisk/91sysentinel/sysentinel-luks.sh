@@ -1,5 +1,6 @@
 #!/bin/sh
 # SPDX-License-Identifier: MIT OR GPL-2.0-or-later
+# shellcheck disable=SC3043  # dracut runs these hooks under a shell with `local`.
 #
 # dracut pre-pivot hook (90) — post-decrypt intrusion webcam evidence.
 #
@@ -45,7 +46,7 @@ _wait_video() {
 
 # ── key=value marker so the daemon knows what happened ───────────────────────
 _write_marker() {
-    local dir="$1" boot_id="$2" photo="$3" cam="$4" ts="$5"
+    local dir="$1" boot_id="$2" photo="$3" cam="$4" ts="$5" face="$6" face_score="$7"
     mkdir -p "$dir" 2>/dev/null || return 1
     {
         echo "ok=1"
@@ -54,8 +55,20 @@ _write_marker() {
         echo "photo=$photo"
         echo "cam=$cam"
         echo "hostname=$(hostname 2>/dev/null | sed 's/[[:space:]]//g')"
+        echo "face=$face"
+        echo "face_score=$face_score"
     } > "$dir/luks_${boot_id}.txt" 2>/dev/null
     chmod 644 "$dir/luks_${boot_id}.txt" 2>/dev/null
+}
+
+# ── identify the face in a photo against the enrolled templates ──────────────
+# Templates are mirrored to <esp>/sysentinel/faces.json by the daemon, so the
+# initramfs can still name a suspect even when the disk is still encrypted.
+_identify() {
+    local photo="$1" db="$2"
+    [ -x /usr/libexec/sysentinel-face ] || { echo "none 0"; return 1; }
+    [ -r "$db" ] || { echo "none 0"; return 1; }
+    /usr/libexec/sysentinel-face --embed "$photo" --match "$db" --thresh 0.5 --brief 2>/dev/null | head -n1 | awk '{ n=$2; s=$3; if (n == "none") print "none 0"; else print n, s }'
 }
 
 # Is this device already mounted? prints its mountpoint ("" if not).
@@ -72,8 +85,13 @@ _is_ro() {
 }
 
 main() {
+    # The pre-prompt capture (sysentinel-precrypt.sh) already mirrored evidence
+    # to an ESP before the LUKS prompt — never re-capture the same boot.
+    [ -e /run/sysentinel-cam/.done ] && return 0
+
     local boot_id
-    boot_id=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || echo boot-$(awk '{print $1}' /proc/uptime 2>/dev/null))
+    boot_id=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null \
+        || echo "boot-$(awk '{print $1}' /proc/uptime 2>/dev/null)")
     _luks_boot || return 0
 
     local tmp=/run/sysentinel-cam mnt=/run/sysentinel-cam/mnt
@@ -93,17 +111,28 @@ main() {
     fi
 
     # Mirror onto every vfat ESP. Fedora's dracut mounts them from fstab
-    # already — reuse those mountpoints, remounting rw if needed.
-    local dev mp was_ro
+    # already — reuse those mountpoints, remounting rw if needed. Face
+    # identification runs once, against the first template set found.
+    local dev mp was_ro face=none face_score=0
     for dev in $(blkid -t TYPE=vfat -o device 2>/dev/null); do
         mp=$(_existing_mountpoint "$dev")
         if [ -n "$mp" ]; then
+            if [ "$photo" != none ] && [ "$face" = none ] && [ -r "$mp/sysentinel/faces.json" ]; then
+                read -r face face_score <<-EOF
+					$(_identify "$out" "$mp/sysentinel/faces.json")
+					EOF
+            fi
             _is_ro "$dev" && mount -o remount,rw "$dev" 2>/dev/null && was_ro=1 || was_ro=0
-            _write_marker "$mp/sysentinel/luks" "$boot_id" "$photo" "$cam" "$ts"
+            _write_marker "$mp/sysentinel/luks" "$boot_id" "$photo" "$cam" "$ts" "$face" "$face_score"
             [ "$photo" != none ] && cp "$out" "$mp/sysentinel/luks/$photo" 2>/dev/null || true
             [ "$was_ro" = 1 ] && mount -o remount,ro "$dev" 2>/dev/null || true
         elif mount -o rw "$dev" "$mnt" 2>/dev/null; then
-            _write_marker "$mnt/sysentinel/luks" "$boot_id" "$photo" "$cam" "$ts"
+            if [ "$photo" != none ] && [ "$face" = none ] && [ -r "$mnt/sysentinel/faces.json" ]; then
+                read -r face face_score <<-EOF
+					$(_identify "$out" "$mnt/sysentinel/faces.json")
+					EOF
+            fi
+            _write_marker "$mnt/sysentinel/luks" "$boot_id" "$photo" "$cam" "$ts" "$face" "$face_score"
             [ "$photo" != none ] && cp "$out" "$mnt/sysentinel/luks/$photo" 2>/dev/null || true
             umount "$mnt" 2>/dev/null || true
         fi
@@ -113,7 +142,7 @@ main() {
     if [ "$photo" != none ] && [ -d /sysroot ]; then
         mkdir -p /sysroot/var/lib/sysentinel/luks-evidence 2>/dev/null || true
         cp "$out" /sysroot/var/lib/sysentinel/luks-evidence/"$photo" 2>/dev/null || true
-        _write_marker /sysroot/var/lib/sysentinel/luks-evidence "$boot_id" "$photo" "$cam" "$ts" || true
+        _write_marker /sysroot/var/lib/sysentinel/luks-evidence "$boot_id" "$photo" "$cam" "$ts" "$face" "$face_score" || true
     fi
 
     rm -rf "$tmp"

@@ -1,0 +1,40 @@
+# SPDX-License-Identifier: MIT OR GPL-2.0-or-later
+#
+# sysentinel-face — on-device face detection/embedding for the initramfs.
+#
+# Pure-Rust neural inference via tract (no FFI, no C++ runtime). The ONNX
+# model is compiled INTO the binary with include_bytes!, so a single static
+# musl executable runs on a bare ramdisk with zero extra files:
+#
+#   sysentinel-face --info      print the embedded model's inputs/outputs
+#   sysentinel-face --selfcheck run a zero input and print every output shape
+#
+# The embedded model (`models/scrfd_2.5g_bnkps.onnx`, Apache-2.0) is the
+# SCRFD face detector (bbox + 5 landmarks at strides 8/16/32). Download/own
+# the file before building: run scripts/fetch-face-models.sh.
+#
+# Size note: tract pulls a large graph-compiler dependency tree; that is why
+# this lives in its own crate (the V4L2 cam tool stays tiny).
+
+[package]
+name        = "sysentinel-face"
+version     = "0.1.0"
+edition     = "2021"
+license     = "MIT OR GPL-2.0-or-later"
+description = "Tract-based face detector/embedder for the sysentinel initramfs (static musl)"
+publish     = false
+
+[[bin]]
+name = "sysentinel-face"
+path = "src/main.rs"
+
+[dependencies]
+# The inference engine: 100% Rust, reads ONNX, compiles to internal typed
+# graphs. Current stable line (0.23.x) per crates.io.
+tract-onnx = "0.23"
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Image decode for the future --in/--out pipeline (selfcheck — the smoke test —
+# does not need it yet).
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }

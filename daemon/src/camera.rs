@@ -37,7 +37,21 @@ pub fn capture(cfg: &CameraConfig, dest_dir: &Path) -> CamResult {
     let out = dest_dir.join(&name);
     let cam = cfg.tool_path.trim();
 
-    match run_tool_with_output(cam, &["--out", out.to_str().unwrap_or_default(), "--timeout", &cfg.timeout.to_string()], cfg.timeout.saturating_add(5)) {
+    // Honour the configured capture resolution: `sysentinel-cam` takes the
+    // request as a hint and falls back to the camera's nearest supported mode.
+    let (w, h, t) = (
+        cfg.width.to_string(),
+        cfg.height.to_string(),
+        cfg.timeout.to_string(),
+    );
+    let args = [
+        "--out", out.to_str().unwrap_or_default(),
+        "--width", &w,
+        "--height", &h,
+        "--timeout", &t,
+    ];
+
+    match run_tool_with_output(cam, &args, cfg.timeout.saturating_add(5)) {
         Ok(Some((0, _))) if out.is_file() => {
             log::info!("camera: {name} captured ({})", out.display());
             CamResult::Photo { path: out }

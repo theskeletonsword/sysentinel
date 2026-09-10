@@ -36,6 +36,8 @@ pub struct Config {
     pub pmu:      PmuConfig,
     #[serde(default)]
     pub camera:   CameraConfig,
+    #[serde(default)]
+    pub face:     FaceConfig,
 }
 
 // ── [general] ────────────────────────────────────────────────────────────────
@@ -355,7 +357,9 @@ pub struct CameraConfig {
     /// Installed by scripts/install-dracut.sh.
     #[serde(default = "default_cam_tool")]
     pub tool_path: String,
-    /// Where the initramfs hook mirrors LUKS evidence (markers + photos).
+    /// Where the initramfs hook mirrors LUKS evidence (markers + photos). The
+    /// capture now starts BEFORE the LUKS password prompt (pre-pivot hook is
+    /// the fallback), but this dir plus the vfat ESPs are always scanned.
     /// The daemon scans this dir and dedupes by boot_id.
     #[serde(default = "default_luks_evidence")]
     pub evidence_dir: String,
@@ -393,6 +397,44 @@ impl Default for CameraConfig {
             width: 640,
             height: 480,
             timeout: 10,
+        }
+    }
+}
+
+// ── [face] ───────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct FaceConfig {
+    /// Compare a webcam frame at login against the registered owner-face
+    /// hashes. Pure local perceptual hashing (pHash + wHash, 64 bits each) —
+    /// no photos retained, no LLM tokens.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Where the owner-face hashes live (JSON, mode 0600). Populated by
+    /// `/face register`; may hold several enrollments.
+    #[serde(default = "default_face_path")]
+    pub path: String,
+    /// Hamming thresholds over the 64-bit hashes. Under `*_owner` the probe is
+    /// the owner; under `*_ambiguous` it's a possible owner; above that it's an
+    /// unknown face (potential intruder).
+    #[serde(default = "default_p_owner")] pub p_owner: u32,
+    #[serde(default = "default_w_owner")] pub w_owner: u32,
+    #[serde(default = "default_p_amb")]   pub p_ambiguous: u32,
+    #[serde(default = "default_w_amb")]   pub w_ambiguous: u32,
+}
+
+fn default_face_path() -> String { "/var/lib/sysentinel/faces.json".to_string() }
+fn default_p_owner()  -> u32 { 14 }
+fn default_w_owner()  -> u32 { 15 }
+fn default_p_amb()    -> u32 { 20 }
+fn default_w_amb()    -> u32 { 22 }
+
+impl Default for FaceConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            path: default_face_path(),
+            p_owner: 14, w_owner: 15, p_ambiguous: 20, w_ambiguous: 22,
         }
     }
 }

@@ -2,6 +2,14 @@
 //!
 //! Hypercall watcher — what did the VM just ask the hypervisor?
 //!
+//! INTERCEPT ONLY, ACT NEVER, SAY IT IN YOUR VOICE: this loop reports guest
+//! hypercalls to Telegram through the persona — the same conversational way
+//! OOM / dmesg / SELinux alerts are told, never a cold log dump — and takes
+//! no further action. It must not terminate, stop, or "fix" a VM on
+//! bad-looking hypercalls — we cannot tell a guest experimenting from one
+//! attempting a VM escape, and a wrong assumed veto is itself an outage.
+//! (The kernel side holds the same invariant: the kprobe modifies nothing.)
+//!
 //! # Primary source: kernel module
 //!
 //! `sysentinel_metrics` kprobes the exported KVM symbol
@@ -28,6 +36,7 @@ use std::time::{Duration, Instant};
 
 use crate::bot::{self, SharedBotState};
 use crate::config::Config;
+use crate::llm;
 use crate::settings::Settings;
 
 /// Human name for the Linux KVM hypercall numbers (arch/x86 KVM_HC_*).
@@ -199,7 +208,7 @@ fn parse_trace_line(line: &str) -> Option<HcRecord> {
     let task_head = &line[..line.find('[').unwrap_or(0)];
     let pid = task_head
         .split('-')
-        .last()
+        .next_back()
         .and_then(|p| p.trim().parse::<i64>().ok())
         .unwrap_or(-1);
 
@@ -240,11 +249,14 @@ fn parse_trace_hex(s: &str) -> Option<u64> {
 // ── Main loop ─────────────────────────────────────────────────────────────────
 
 /// Polls the module node (primary) or the KVM tracepoint (ring-3, Secure Boot
-/// fallback) and sends a compact digest to Telegram when `hypercall` is on.
+/// fallback) and tells the user the digest **in the persona's voice** — the
+/// same conversational treatment OOM / dmesg / login alerts get, because a
+/// hypercall report is passive and never needs a confirmation gate.
 pub fn run_hypercall_loop(
     config: &Config,
     state: &Arc<Mutex<SharedBotState>>,
     settings: &Arc<Mutex<Settings>>,
+    llm: &dyn llm::LlmBackend,
     dry_run: bool,
 ) {
     let mut fallback = TracefsFallback { root: None, last_tip: Instant::now() };
@@ -314,14 +326,17 @@ pub fn run_hypercall_loop(
             g.paired_chat_id.or(config.telegram.chat_id).filter(|&id| id != 0)
         };
 
-        let mut text = format!("🛰️ The guest asked the hypervisor something ({} hypercall{})\n", records.len(), if records.len() == 1 { "" } else { "s" });
+        let mut facts = format!("The guest asked the hypervisor something ({} hypercall{})\n", records.len(), if records.len() == 1 { "" } else { "s" });
         for r in records.iter().take(12) {
-            text.push_str(&r.describe());
-            text.push('\n');
+            facts.push_str(&r.describe());
+            facts.push('\n');
         }
         if records.len() > 12 {
-            text.push_str(&format!("  … and {} more", records.len() - 12));
+            facts.push_str(&format!("  … and {} more", records.len() - 12));
         }
+
+        // Passive notice → the persona's voice, never a canned template.
+        let text = speak_hypercall_persona(config, settings, llm, &facts);
 
         if dry_run {
             log::info!("DRY RUN — hyperwatch: {text}");
@@ -337,4 +352,49 @@ pub fn run_hypercall_loop(
         }
         last_send = now;
     }
+}
+
+/// Speak a hypercall report through the persona. Falls back to the raw facts
+/// when the LLM is off or errors — a passive notice must never block on the
+/// LLM, and with backend "none" it never spends a call.
+fn speak_hypercall_persona(
+    config: &Config,
+    settings: &Arc<Mutex<Settings>>,
+    llm: &dyn llm::LlmBackend,
+    facts: &str,
+) -> String {
+    if !config.llm.llm_enabled() {
+        return facts.to_string();
+    }
+    let persona = llm::resolved_persona(config);
+    let override_txt = {
+        let g = settings.lock().expect("settings mutex");
+        g.system_prompt_override.clone()
+    };
+    let sys_prompt = llm::effective_system_prompt(config, override_txt.as_deref());
+    let directive = format!(
+        "These are live facts / things that just happened on this machine. You ARE \
+         the machine. A running VM poked the hypervisor — tell the user about it in \
+         YOUR voice, spontaneously, in your own words, NEVER a formatted log line, \
+         NEVER inventing anything beyond what's here.\n\
+         IMPORTANT: this is a passive observation. Do NOT ask for confirmation or \
+         propose stopping/shutting down the VM — it is not your role to act on it; \
+         just inform.\n\
+         language: {}\ntone: {}\n\
+         Write in {}, with the persona above. Be brief (max 4 lines), no titles, \
+         no preamble. Use only what's here:\n\n{}",
+        persona.language,
+        persona.tone,
+        persona.language,
+        facts
+    );
+    llm.explain(&llm::ExplainRequest {
+        system_prompt: &sys_prompt,
+        event_text: &directive,
+        max_tokens: config.llm.max_tokens,
+    })
+    .unwrap_or_else(|e| {
+        log::warn!("hyperwatch persona voice dropped ({e:#}); forwarding raw facts");
+        facts.to_string()
+    })
 }

@@ -42,6 +42,7 @@ mod classify;
 mod config;
 mod detecthome;
 mod dmesg;
+mod fhash;
 mod hal;
 mod hwdiag;
 mod hwinfo;
@@ -244,9 +245,10 @@ fn main() -> Result<()> {
         let state3 = Arc::clone(&shared_state);
         let st3    = Arc::clone(&settings);
         let dry3   = args.dry_run;
+        let llm3: Arc<llm::RuntimeLlm> = Arc::clone(&llm_backend);
         thread::Builder::new()
             .name("login-watch".to_string())
-            .spawn(move || loginwatch::run_login_loop(&cfg3, &state3, &st3, dry3))
+            .spawn(move || loginwatch::run_login_loop(&cfg3, &state3, &st3, llm3.as_ref(), dry3))
             .context("spawning login watcher thread")?;
         log::info!("login-watch: wtmp watcher thread started");
     }
@@ -257,9 +259,10 @@ fn main() -> Result<()> {
         let state3 = Arc::clone(&shared_state);
         let st3    = Arc::clone(&settings);
         let dry3   = args.dry_run;
+        let llm3: Arc<llm::RuntimeLlm> = Arc::clone(&llm_backend);
         thread::Builder::new()
             .name("luks-watch".to_string())
-            .spawn(move || luks::run_luks_loop(&cfg3, &state3, &st3, dry3))
+            .spawn(move || luks::run_luks_loop(&cfg3, &state3, &st3, llm3.as_ref(), dry3))
             .context("spawning LUKS watcher thread")?;
         log::info!("luks-watch: evidence watcher thread started");
     }
@@ -270,9 +273,10 @@ fn main() -> Result<()> {
         let state4 = Arc::clone(&shared_state);
         let st4    = Arc::clone(&settings);
         let dry4   = args.dry_run;
+        let llm4: Arc<llm::RuntimeLlm> = Arc::clone(&llm_backend);
         thread::Builder::new()
             .name("hypercall-watch".to_string())
-            .spawn(move || hyperwatch::run_hypercall_loop(&cfg4, &state4, &st4, dry4))
+            .spawn(move || hyperwatch::run_hypercall_loop(&cfg4, &state4, &st4, llm4.as_ref(), dry4))
             .context("spawning hypercall watcher thread")?;
         log::info!("hypercall-watch: guest hypercall watcher thread started");
     }
@@ -299,9 +303,10 @@ fn main() -> Result<()> {
         let state6 = Arc::clone(&shared_state);
         let st6    = Arc::clone(&settings);
         let dry6   = args.dry_run;
+        let llm6: Arc<llm::RuntimeLlm> = Arc::clone(&llm_backend);
         thread::Builder::new()
             .name("battery-watch".to_string())
-            .spawn(move || battery::run_battery_loop(&cfg6, &state6, &st6, dry6))
+            .spawn(move || battery::run_battery_loop(&cfg6, &state6, &st6, llm6.as_ref(), dry6))
             .context("spawning battery watcher thread")?;
         log::info!("battery-watch: battery watcher thread started");
     }

@@ -2,10 +2,11 @@
 //!
 //! LUKS tripwire follow-up ("¿fui yo?").
 //!
-//! When the initramfs hook (`ramdisk/91sysentinel/sysentinel-luks.sh`)
-//! detects that a LUKS device was decrypted **before** the owner answered,
-//! it screenshots the environment, mirrors evidence into the boot ESP(s) and
-//! into `/var/lib/sysentinel/luks-evidence/`, and writes a marker file:
+//! When the initramfs hook (`ramdisk/91sysentinel/`) captures a LUKS boot —
+//! primarily the pre-prompt hook that starts **before** the password prompt,
+//! with a post-decrypt `sysentinel-luks.sh` fallback — it screenshots the
+//! environment, mirrors evidence into the boot ESP(s) and into
+//! `/var/lib/sysentinel/luks-evidence/`, and writes a marker file:
 //!
 //! ```text
 //! luks_<kernel boot_id>.txt
@@ -25,6 +26,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::bot::{PendingLuks, SharedBotState};
 use crate::config::Config;
+use crate::llm;
 use crate::settings::Settings;
 
 /// Longest an unanswered "¿fui yo?" stays armed before the deny action runs.
@@ -71,7 +73,7 @@ fn collect_markers(config: &Config) -> Vec<(PathBuf, PathBuf)> {
             }
         }
     }
-    out.sort_by(|a, b| b.1.mtime_s().cmp(&a.1.mtime_s()));
+    out.sort_by_key(|e| std::cmp::Reverse(e.1.mtime_s()));
     out
 }
 
@@ -255,6 +257,7 @@ pub fn run_luks_loop(
     config: &Config,
     state: &Arc<Mutex<SharedBotState>>,
     settings: &Arc<Mutex<Settings>>,
+    llm: &dyn llm::LlmBackend,
     dry_run: bool,
 ) {
     let mut ticks = 0u64;
@@ -264,10 +267,10 @@ pub fn run_luks_loop(
         sweep_expired(config, state, settings, dry_run);
         // Scan for new markers every 5 s, and only after an early settle
         // delay (evidence dirs may still be flushing mounts at boot time).
-        if ticks < 30 || ticks % 5 != 0 {
+        if ticks < 30 || !ticks.is_multiple_of(5) {
             continue;
         }
-        scan_for_markers(config, state, settings, dry_run);
+        scan_for_markers(config, state, settings, llm, dry_run);
     }
 }
 
@@ -275,6 +278,7 @@ fn scan_for_markers(
     config: &Config,
     state: &Arc<Mutex<SharedBotState>>,
     settings: &Arc<Mutex<Settings>>,
+    llm: &dyn llm::LlmBackend,
     dry_run: bool,
 ) {
     let current_boot = std::fs::read_to_string("/proc/sys/kernel/random/boot_id")
@@ -337,16 +341,20 @@ fn scan_for_markers(
         let host = marker.host.clone().unwrap_or_else(|| "?".to_string());
         let ts = marker
             .ts
-            .map(|t| format_timestamp(t))
+            .map(format_timestamp)
             .unwrap_or_else(|| "?.?".to_string());
         let cam = marker.cam.clone().unwrap_or_else(|| "none".to_string());
         let boot = if boot_id.len() > 12 { &boot_id[..12] } else { &boot_id };
 
+        // Passive-ish ask → persona voice; the deny options stay appended.
+        let facts = format!(
+            "A LUKS boot was decrypted (ts {ts}, host `{host}`). boot_id `{boot}`, \
+             camera used: `{cam}`. A photo may be attached."
+        );
+        let lead = speak_luks_persona(config, settings, llm, &facts);
         let caption = format!(
-            "🚨 Is it me?\n\nA LUKS boot was decrypted (ts {ts}, host `{host}`).\n\
-             boot_id `{boot}`, camera: `{cam}`.\n\n\
-             If it **wasn't** you (or this doesn't ring a bell), reply `no` — I'll apply the \
-             deny action and the evidence stays archived for you.",
+            "{lead}\n\nIf it **wasn't** you (or this doesn't ring a bell), reply `no` — \
+             I'll apply the deny action and the evidence stays archived for you."
         );
 
         if dry_run {
@@ -376,6 +384,50 @@ fn scan_for_markers(
         );
         return;
     }
+}
+
+/// Speak a LUKS-tripwire ask through the persona — the "is it me?" question
+/// in the machine's own voice. Falls back to raw facts when the LLM is off or
+/// errors (the ask must always go out).
+fn speak_luks_persona(
+    config: &Config,
+    settings: &Arc<Mutex<Settings>>,
+    llm: &dyn llm::LlmBackend,
+    facts: &str,
+) -> String {
+    if !config.llm.llm_enabled() {
+        return format!("🚨 Is it me?\n\n{facts}");
+    }
+    let persona = llm::resolved_persona(config);
+    let override_txt = {
+        let g = settings.lock().expect("settings mutex");
+        g.system_prompt_override.clone()
+    };
+    let sys_prompt = llm::effective_system_prompt(config, override_txt.as_deref());
+    let directive = format!(
+        "These are live facts / things that just happened on this machine. You ARE \
+         the machine. The disk was decrypted at a boot that may or may not have been \
+         the owner. Ask them, in YOUR voice, calmly and briefly, whether it was them —\n\
+         NEVER a formatted log line, NEVER inventing anything beyond what's here.\n\
+         IMPORTANT: this is a PASSIVE question, not a panic — the user is safe and the\n\
+         evidence is archived. Your message is an ask, so end with a plain question.\n\
+         language: {}\ntone: {}\n\
+         Write in {}, with the persona above. Be brief (max 3 lines), no titles,\n\
+         no preamble:\n\n{}",
+        persona.language,
+        persona.tone,
+        persona.language,
+        facts
+    );
+    llm.explain(&llm::ExplainRequest {
+        system_prompt: &sys_prompt,
+        event_text: &directive,
+        max_tokens: config.llm.max_tokens,
+    })
+    .unwrap_or_else(|e| {
+        log::warn!("luks persona voice dropped ({e:#}); forwarding raw ask");
+        format!("🚨 Is it me?\n\n{facts}")
+    })
 }
 
 /// Unpaired chat. Never auto-deny the *current* boot (the owner is clearly

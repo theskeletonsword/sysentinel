@@ -36,15 +36,26 @@ use std::time::Duration;
 
 // ── V4L2 ABI constants (verified against /usr/include/linux/videodev2.h
 //    on the host kernel; the ioctl request numbers encode the struct sizes) ──
+//
+// The request-number ABI differs between libc flavours: glibc's ioctl(2)
+// takes the request as `unsigned long`, musl's as `int`. The values are
+// 32-bit V4L2 _IOC encodings either way, so we carry them as c_ulong and cast
+// to the target's request type at the call site.
 
-const REQ_QUERYCAP: libc::c_ulong = 0x8068_5600;
-const REQ_S_FMT:    libc::c_ulong = 0xc0d0_5605;
-const REQ_REQBUFS:  libc::c_ulong = 0xc014_5608;
-const REQ_QUERYBUF: libc::c_ulong = 0xc058_5609;
-const REQ_QBUF:     libc::c_ulong = 0xc058_560f;
-const REQ_DQBUF:    libc::c_ulong = 0xc058_5611;
-const REQ_STREAMON: libc::c_ulong = 0x4004_5612;
-const REQ_STREAMOFF: libc::c_ulong = 0x4004_5613;
+const REQ_QUERYCAP: IoctlReq = 0x8068_5600u64 as IoctlReq;
+const REQ_S_FMT:    IoctlReq = 0xc0d0_5605u64 as IoctlReq;
+const REQ_REQBUFS:  IoctlReq = 0xc014_5608u64 as IoctlReq;
+const REQ_QUERYBUF: IoctlReq = 0xc058_5609u64 as IoctlReq;
+const REQ_QBUF:     IoctlReq = 0xc058_560fu64 as IoctlReq;
+const REQ_DQBUF:    IoctlReq = 0xc058_5611u64 as IoctlReq;
+const REQ_STREAMON: IoctlReq = 0x4004_5612u64 as IoctlReq;
+const REQ_STREAMOFF: IoctlReq = 0x4004_5613u64 as IoctlReq;
+
+/// The `request` parameter type of ioctl(2) on this libc flavour.
+#[cfg(target_env = "musl")]
+type IoctlReq = libc::c_int;
+#[cfg(not(target_env = "musl"))]
+type IoctlReq = libc::c_ulong;
 
 const V4L2_CAP_VIDEO_CAPTURE: u32 = 0x0000_0001;
 const V4L2_BUF_TYPE_VIDEO_CAPTURE: u32 = 1;
@@ -229,7 +240,7 @@ fn video_devices() -> Vec<PathBuf> {
             .filter(|p| {
                 p.file_name()
                     .and_then(|n| n.to_str())
-                    .map_or(false, |n| n.starts_with("video"))
+                    .is_some_and(|n| n.starts_with("video"))
             })
             .collect(),
         Err(_) => vec![],
@@ -320,7 +331,7 @@ struct Frame {
     pixelformat: u32,
 }
 
-fn ioctl_ptr<T>(fd: RawFd, req: libc::c_ulong, data: &mut T) -> std::io::Result<()> {
+fn ioctl_ptr<T>(fd: RawFd, req: IoctlReq, data: &mut T) -> std::io::Result<()> {
     let rc = unsafe { libc::ioctl(fd, req, data as *mut _ as *mut libc::c_void) };
     if rc < 0 {
         Err(std::io::Error::last_os_error())
@@ -412,7 +423,7 @@ fn grab_frame(fd: RawFd, timeout_secs: u64) -> std::io::Result<Frame> {
     let mut on: libc::c_int = V4L2_BUF_TYPE_VIDEO_CAPTURE as libc::c_int;
     if ioctl_ptr(fd, REQ_STREAMON, &mut on).is_err() {
         unmap(map, length);
-        return Err(std::io::Error::new(std::io::ErrorKind::Other, "streamon failed"));
+        return Err(std::io::Error::other("streamon failed"));
     }
 
     // Wait for data with a hard deadline (select + POLLIN).
@@ -441,7 +452,7 @@ fn grab_frame(fd: RawFd, timeout_secs: u64) -> std::io::Result<Frame> {
         }
         if pfd.revents & libc::POLLIN == 0 {
             if pfd.revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0 {
-                break Err(std::io::Error::new(std::io::ErrorKind::Other, "device error"));
+                break Err(std::io::Error::other("device error"));
             }
             continue;
         }
