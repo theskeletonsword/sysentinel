@@ -1614,6 +1614,17 @@ If you did NOT expect this, reply: **DENY**";
                 armed
             };
             if let Some(p) = control {
+                // Record what actually backed this. Today that is always a
+                // typed code, which is replayable by anyone the owner said it
+                // to — the audit trail should say so rather than logging a
+                // bare "confirmed". A phone-backed confirmation will land here
+                // with a stronger method and no other change.
+                let proof = crate::confirm::Confirmation::one_time_code();
+                log::warn!(
+                    "telegram: control {:?} confirmed (chat={chat_id}) — {}",
+                    p.kind,
+                    proof.audit_line()
+                );
                 self.execute_control(chat_id, p);
                 return true;
             }
@@ -1812,6 +1823,17 @@ If you did NOT expect this, reply: **DENY**";
                 armed
             };
             if let Some(p) = control {
+                // Record what actually backed this. Today that is always a
+                // typed code, which is replayable by anyone the owner said it
+                // to — the audit trail should say so rather than logging a
+                // bare "confirmed". A phone-backed confirmation will land here
+                // with a stronger method and no other change.
+                let proof = crate::confirm::Confirmation::one_time_code();
+                log::warn!(
+                    "telegram: control {:?} confirmed (chat={chat_id}) — {}",
+                    p.kind,
+                    proof.audit_line()
+                );
                 self.execute_control(chat_id, p);
                 return true;
             }

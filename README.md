@@ -9,6 +9,7 @@
 > | Directory | Licence | Copying it into a proprietary/Apache-only product |
 > |---|---|---|
 > | `daemon/` | **Apache-2.0** | ✅ fine |
+> | `gui/` | **Apache-2.0** | ✅ fine |
 > | `scripts/` | **MIT OR GPL-2.0-or-later** | ✅ fine — take the MIT option |
 > | `ramdisk/` | **MIT OR GPL-2.0-or-later** | ✅ fine — take the MIT option |
 > | **`kernel_module/`** | **MIT OR GPL-2.0-or-later** | ⛔ **the built `.ko` is GPL — see below** |
