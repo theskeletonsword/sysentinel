@@ -269,6 +269,9 @@ pub struct SharedBotState {
     /// Resolved by `si fui yo` / `no`, or by `luks_timeout` via the deny
     /// action (poweroff / triplefault / none).
     pub(crate) pending_luks: Option<PendingLuks>,
+    /// Newly attached devices the owner has been asked about but not yet
+    /// answered for. Empty most of the time.
+    pub(crate) pending_devices: Vec<String>,
     /// A foreign module waiting for the owner's verdict.
     pub(crate) pending_module: Option<PendingModule>,
     /// Photos still expected for `/face register` (0 = not arming). While > 0,
@@ -557,6 +560,7 @@ impl SharedBotState {
             pending_selinux: None,
             pending_login: None,
             pending_luks: None,
+            pending_devices: Vec::new(),
             pending_module: None,
             face_pending: 0,
         }
@@ -1667,6 +1671,63 @@ If you did NOT expect this, reply: **DENY**";
                 }
             }
         }
+        // ── "¿conectaste algo?" ──────────────────────────────────────────────
+        // Asked before it is treated as an intrusion, because the likeliest
+        // explanation for a new disk is that the owner plugged it in.
+        let pending_devices = {
+            let g = self.state.lock().expect("bot state mutex");
+            g.pending_devices.clone()
+        };
+        if !pending_devices.is_empty() {
+            let question = format!(
+                "Did you attach this hardware yourself? {}",
+                pending_devices.join("; ")
+            );
+            if let Some(yes) = self.llm_yes_no(&question, text) {
+                {
+                    let mut g = self.state.lock().expect("bot state mutex");
+                    g.pending_devices.clear();
+                }
+                if yes {
+                    // "It was me" and "accept as normal" are the same act: the
+                    // baseline is exactly the set the owner vouches for.
+                    let base = crate::presence::default_baseline_path(&self.config.face.path);
+                    let msg = match crate::presence::record_baseline(&base) {
+                        Ok(n) => format!(
+                            "✅ Vale, eras tú. Lo acepto como normal y no vuelvo a \
+                             preguntar por ello (línea base: {n} dispositivos)."
+                        ),
+                        Err(e) => format!(
+                            "✅ Vale, eras tú — pero no pude guardar la línea base: {e}\n\
+                             Te volveré a preguntar la próxima vez."
+                        ),
+                    };
+                    log::info!("telegram: owner vouched for the new hardware (chat={chat_id})");
+                    let _ = self.send_markdown(chat_id, &msg);
+                } else {
+                    log::error!(
+                        "telegram: owner did NOT attach this hardware: {}",
+                        pending_devices.join("; ")
+                    );
+                    let _ = self.send_markdown(
+                        chat_id,
+                        &format!(
+                            "🚨 Entendido: *no* fuiste tú.\n\nNo lo acepto en la línea \
+                             base, así que sigue marcado como ajeno:\n{}\n\nSi quieres \
+                             que corte algo, dímelo — no hago nada destructivo por mi \
+                             cuenta.",
+                            pending_devices
+                                .iter()
+                                .map(|d| format!("• `{d}`"))
+                                .collect::<Vec<_>>()
+                                .join("\n")
+                        ),
+                    );
+                }
+                return true;
+            }
+        }
+
         if has_luks_pending {
             let question = {
                 let guard = self.state.lock().expect("bot state mutex");

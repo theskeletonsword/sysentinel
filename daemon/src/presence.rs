@@ -352,6 +352,70 @@ fn storage_fingerprints() -> BTreeSet<String> {
         .collect()
 }
 
+/// Describe a newly attached disk by what is actually on it. "A disk was
+/// attached" is a weak alert; "a LUKS container was attached" is not.
+///
+/// Requires privilege to read the device head, so it degrades to the bare
+/// fingerprint rather than failing.
+fn describe_storage(fingerprint: &str) -> String {
+    let Some(name) = fingerprint.split_whitespace().next() else {
+        return fingerprint.to_string();
+    };
+    match crate::fsprobe::probe_block(name) {
+        Some(kind) => {
+            let mut s = format!("{fingerprint} — {}", kind.label());
+            if let Some(note) = kind.note() {
+                s.push_str(&format!(" ({note})"));
+            }
+            // The two facts that change what attaching it means.
+            if kind.is_encrypted() {
+                s.push_str(" [cerrado: no se puede saber qué lleva dentro]");
+            } else if kind.is_mountable_filesystem() {
+                s.push_str(" [montable ya mismo: se puede copiar a él sin más]");
+            }
+            s
+        }
+        None => fingerprint.to_string(),
+    }
+}
+
+/// USB devices exposing a still-image / MTP interface — a phone or camera in
+/// file-transfer mode.
+///
+/// These never appear as block devices, so the storage scan cannot see them: an
+/// Android phone in MTP mode is a USB device that speaks a file protocol, not a
+/// disk the kernel exposes. Missing that would leave the most convenient way to
+/// walk data out of a room entirely unwatched.
+///
+/// USB interface class `06` is Still Image Capture, which is what PTP and MTP
+/// both present (USB-IF class codes; MTP is PTP with extensions).
+fn mtp_fingerprints() -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    let Ok(entries) = fs::read_dir("/sys/bus/usb/devices") else {
+        return out;
+    };
+    for e in entries.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        let Some((parent, _)) = name.split_once(':') else { continue };
+        if fs::read_to_string(e.path().join("bInterfaceClass"))
+            .unwrap_or_default()
+            .trim()
+            != "06"
+        {
+            continue;
+        }
+        let base = Path::new("/sys/bus/usb/devices").join(parent);
+        let vendor = fs::read_to_string(base.join("idVendor")).unwrap_or_default().trim().to_string();
+        let product = fs::read_to_string(base.join("product")).unwrap_or_default().trim().to_string();
+        if vendor.is_empty() {
+            continue;
+        }
+        let product = if product.is_empty() { "?".to_string() } else { product };
+        out.insert(format!("USB/{vendor}:{product}"));
+    }
+    out
+}
+
 /// Raw I3C devices. The input layer has no I3C bus id, so an I3C peripheral is
 /// tracked here by its own bus rather than being missed entirely.
 fn i3c_fingerprints() -> BTreeSet<String> {
@@ -385,6 +449,9 @@ pub struct Circumstance {
     pub new_keyboards: Vec<String>,
     /// Newly appeared storage. Somebody is copying, not browsing.
     pub new_storage: Vec<String>,
+    /// Newly appeared phones or cameras in file-transfer mode. Not disks, and
+    /// just as good for carrying data out.
+    pub new_mtp: Vec<String>,
     /// Running on battery rather than mains.
     pub on_battery: Option<bool>,
     /// DMI chassis type, as a word where one is known.
@@ -418,6 +485,14 @@ impl Circumstance {
             out.push(format!(
                 "⚠️ teclado(s) que no estaban antes: {} — alguien trajo su forma de escribir",
                 self.new_keyboards.join(", ")
+            ));
+        }
+
+        if !self.new_mtp.is_empty() {
+            out.push(format!(
+                "⚠️ teléfono o cámara en modo transferencia: {} — no es un disco, pero \
+                 se lleva archivos igual de bien",
+                self.new_mtp.join(", ")
             ));
         }
 
@@ -470,12 +545,15 @@ impl Circumstance {
         let storage = storage_fingerprints();
         let new_keyboards = new_devices.iter().filter(|f| keyboards.contains(*f)).cloned().collect();
         let new_storage = new_devices.iter().filter(|f| storage.contains(*f)).cloned().collect();
+        let mtp = mtp_fingerprints();
+        let new_mtp = new_devices.iter().filter(|f| mtp.contains(*f)).cloned().collect();
 
         Circumstance {
             new_devices,
             missing_devices,
             new_keyboards,
             new_storage,
+            new_mtp,
             on_battery: on_battery(),
             chassis: chassis_label(),
             baseline_missing,
@@ -709,6 +787,11 @@ pub fn run_device_loop(
                 fresh.push(("almacenamiento", d));
             }
         }
+        for d in &c.new_mtp {
+            if !announced.contains(d) {
+                fresh.push(("teléfono/cámara (MTP)", d));
+            }
+        }
         if fresh.is_empty() {
             continue;
         }
@@ -718,16 +801,19 @@ pub fn run_device_loop(
 
         let facts = fresh
             .iter()
-            .map(|(kind, f)| format!("- {kind} nuevo: {f}"))
+            .map(|(kind, f)| match *kind {
+                "almacenamiento" => format!("- {kind} nuevo: {}", describe_storage(f)),
+                _ => format!("- {kind} nuevo: {f}"),
+            })
             .collect::<Vec<_>>()
             .join("\n");
         let facts = format!(
             "Hardware que no estaba en la línea base aceptada por el dueño:\n{facts}\n\
-             Un teclado nuevo es una forma de escribir que antes no existía; un disco \
-             nuevo en una máquina desatendida es una copia, no una visita."
+             Puede que lo haya conectado el propio dueño: esto es una PREGUNTA, no una \
+             acusación. Pregúntale si fue él, en tu voz, y termina con una pregunta clara."
         );
 
-        log::warn!("device-watch: new capability attached:\n{facts}");
+        log::warn!("device-watch: new capability attached, asking the owner:\n{facts}");
         if dry_run {
             continue;
         }
@@ -741,7 +827,17 @@ pub fn run_device_loop(
             continue;
         };
 
-        let text = speak(config, settings, llm, "🔌 Hardware nuevo", &facts);
+        // Park the question so a plain "sí" from the owner is understood as
+        // "I plugged that in" — and accepted into the baseline.
+        {
+            let mut g = state.lock().expect("bot state mutex");
+            g.pending_devices = fresh.iter().map(|(_, f)| (*f).clone()).collect();
+        }
+
+        let text = speak(config, settings, llm, "🔌 ¿Conectaste algo?", &facts);
+        let text = format!(
+            "{text}\n\n_Responde *sí* si fuiste tú (lo acepto como normal) o *no* si no._"
+        );
         if let Err(e) = crate::bot::send_message(
             &config.telegram.bot_token,
             chat_id,

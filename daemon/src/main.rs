@@ -45,6 +45,7 @@ mod detecthome;
 mod dmesg;
 mod facenn;
 mod fhash;
+mod fsprobe;
 mod hal;
 mod hwdiag;
 mod hwinfo;
