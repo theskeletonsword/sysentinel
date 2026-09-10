@@ -85,7 +85,33 @@ context_file = "/var/lib/sysentinel/context.txt"
 # like DeepSeek.
 context_max_entries = 15
 
-# ── [llm] ────────────────────────────────────────────────────────────────────
+# ── # ── TLS saliente ─────────────────────────────────────────────────────────────
+# Las llamadas al LLM son lo único que este daemon sigue mandando al servidor de
+# otra persona, y llevan tu API key en una cabecera y, en el cuerpo, lo que
+# acaba de pasar en la máquina. Dos cosas:
+#
+# 1. Se exige https:// en todos los base_url, al cargar la config Y antes de
+#    cada petición (un fichero se puede editar después de validarlo). Un
+#    http:// mandaba la key en claro y nada avisaba. `llama` queda exento a
+#    propósito: suele ser un llama.cpp en loopback y ahí no sale nada.
+#
+# 2. tls_pins fija la CLAVE PÚBLICA del servidor (SPKI), no el certificado.
+#    Los proveedores rotan certificados a menudo conservando la clave, así que
+#    fijar el certificado se rompe un martes sin motivo de seguridad — y un pin
+#    que se rompe se borra, que es peor que no fijar nada.
+#
+#    Es aditivo: la cadena se valida igual y el pin se comprueba encima. Sin
+#    pins, HTTPS normal, que confía en las 100+ CA del almacén. Con pins, solo
+#    en la clave que nombres. Opcional porque un pin caducado es una caída.
+#
+#    Sácalo así:
+#      openssl s_client -connect api.anthropic.com:443 </dev/null 2>/dev/null \
+#        | openssl x509 -pubkey -noout | openssl pkey -pubin -outform der \
+#        | openssl dgst -sha256 -binary | openssl enc -base64
+#
+# tls_pins = ["sha256/yzfNb1bRcNF+H1Fts441Vj0MIuuxepdWKmqKJ/bVV6U="]
+
+[llm] ────────────────────────────────────────────────────────────────────
 
 [llm]
 # Ordered fallback chain of LLM backends. Tried in order — if one fails (API

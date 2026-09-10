@@ -28,6 +28,7 @@ mod facenn;
 mod fhash;
 mod fsprobe;
 mod hal;
+mod httpsec;
 mod hwdiag;
 mod hwinfo;
 mod hyperwatch;
@@ -194,6 +195,13 @@ fn main() -> Result<()> {
         if let Some(note) = channel::exposure_note() {
             log::warn!("channel exposure — {note}");
         }
+    }
+
+    // Outbound TLS, before anything can make a request.
+    if let Err(e) = httpsec::init(&config.llm.tls_pins) {
+        // A bad pin must not start: it would fail on the first LLM call and
+        // look exactly like the provider being down.
+        anyhow::bail!("outbound TLS could not be configured: {e:#}");
     }
 
     // ── Firmware status (log at startup) ─────────────────────────────────────

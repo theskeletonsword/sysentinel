@@ -102,7 +102,12 @@ impl LlmBackend for GeminiBackend {
             },
         };
 
-        let response: GenerateContentResponse = ureq::post(&url)
+        // Re-checked here, not only at config load: a file can be edited
+        // after it was validated, and this is the request that carries the
+        // API key.
+        crate::httpsec::require_https(&url)?;
+        let response: GenerateContentResponse = crate::httpsec::shared()
+            .post(&url)
             .timeout(self.timeout)
             .set("Content-Type", "application/json")
             .send_json(&body)

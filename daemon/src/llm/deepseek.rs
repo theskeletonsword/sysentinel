@@ -76,7 +76,12 @@ impl LlmBackend for DeepSeekBackend {
             max_tokens: request.max_tokens.max(self.max_tokens),
         };
 
-        let response: ChatResponse = ureq::post(&url)
+        // Re-checked here, not only at config load: a file can be edited
+        // after it was validated, and this is the request that carries the
+        // API key.
+        crate::httpsec::require_https(&url)?;
+        let response: ChatResponse = crate::httpsec::shared()
+            .post(&url)
             .timeout(self.timeout)
             .set("Authorization", &format!("Bearer {}", self.api_key))
             .set("Content-Type", "application/json")

@@ -108,6 +108,20 @@ fn default_false()   -> bool   { false }
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct LlmConfig {
+    /// Certificate pins for LLM endpoints, as `sha256/<base64 of the SPKI>`.
+    ///
+    /// Empty means ordinary HTTPS with public CA validation, which trusts every
+    /// CA in the store. A pin narrows that to a key you name. Additive: the
+    /// chain still has to validate first.
+    ///
+    /// Get one with:
+    ///   openssl s_client -connect api.anthropic.com:443 </dev/null 2>/dev/null \
+    ///     | openssl x509 -pubkey -noout | openssl pkey -pubin -outform der \
+    ///     | openssl dgst -sha256 -binary | openssl enc -base64
+    ///
+    /// A stale pin is an outage, so this is opt-in.
+    #[serde(default)]
+    pub tls_pins: Vec<String>,
     /// Ordered fallback chain of LLM backends: `"openai"`, `"anthropic"`,
     /// `"deepseek"`, `"gemini"`, `"llama"` (llama.cpp HTTP server), `"local"`
     /// or `"none"`. Accepts either a single string (`backend = "deepseek"`)
@@ -491,6 +505,26 @@ impl Config {
     }
 
     fn validate(&self) -> Result<()> {
+        // Every provider URL must be https. A plain-HTTP endpoint would send
+        // the API key, and everything this daemon tells the model, in the clear
+        // — and nothing used to say so.
+        for (name, url) in [
+            ("openai", self.llm.openai.as_ref().map(|p| &p.base_url)),
+            ("anthropic", self.llm.anthropic.as_ref().map(|p| &p.base_url)),
+            ("deepseek", self.llm.deepseek.as_ref().map(|p| &p.base_url)),
+            ("gemini", self.llm.gemini.as_ref().map(|p| &p.base_url)),
+            // `llama` is normally a local llama.cpp on loopback, where plain
+            // HTTP is the usual setup and nothing leaves the machine. It is
+            // exempt on purpose rather than by omission.
+        ] {
+            if let Some(url) = url {
+                if !url.trim().is_empty() {
+                    crate::httpsec::require_https(url)
+                        .with_context(|| format!("llm.{name}.base_url"))?;
+                }
+            }
+        }
+
         // The phone channel needs both halves or it cannot start, and a
         // watchdog that cannot reach anyone is the state worth refusing early
         // rather than discovering when something happens.

@@ -65,7 +65,12 @@ impl LlmBackend for AnthropicBackend {
             }],
         };
 
-        let response: MessagesResponse = ureq::post(&url)
+        // Re-checked here, not only at config load: a file can be edited
+        // after it was validated, and this is the request that carries the
+        // API key.
+        crate::httpsec::require_https(&url)?;
+        let response: MessagesResponse = crate::httpsec::shared()
+            .post(&url)
             .timeout(self.timeout)
             .set("x-api-key", &self.api_key)
             .set("anthropic-version", "2023-06-01")
