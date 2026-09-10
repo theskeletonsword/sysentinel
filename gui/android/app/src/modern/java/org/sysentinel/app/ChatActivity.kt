@@ -3,7 +3,10 @@ package org.sysentinel.app
 
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import com.journeyapps.barcodescanner.ScanContract
+import com.journeyapps.barcodescanner.ScanOptions
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -189,7 +192,29 @@ private fun PairingScreen(pairing: Pairing, onDone: () -> Unit) {
     var host by remember { mutableStateOf(pairing.host) }
     var port by remember { mutableStateOf(pairing.port.toString()) }
     var key by remember { mutableStateOf(pairing.keyHex) }
+    var scanError by remember { mutableStateOf<String?>(null) }
     val keyLooksRight = PhoneLink.parseKey(key) != null
+
+    // Scanning fills all three fields at once. Typing 64 hex characters on a
+    // phone is how people end up pairing once with a weak key and never
+    // rotating it.
+    val scanner = rememberLauncherForActivityResult(ScanContract()) { result ->
+        val raw = result.contents
+        if (raw == null) {
+            scanError = null // cancelled, not failed
+            return@rememberLauncherForActivityResult
+        }
+        val parsed = PairingUri.parse(raw)
+        if (parsed == null) {
+            scanError = "Ese QR no es de sysentinel, o le falta algo. " +
+                "Si el equipo escucha en 0.0.0.0, cámbialo por la IP concreta."
+        } else {
+            host = parsed.host
+            port = parsed.port.toString()
+            key = parsed.keyHex
+            scanError = null
+        }
+    }
 
     Column(
         Modifier.background(Ground).fillMaxSize().padding(20.dp),
@@ -201,6 +226,23 @@ private fun PairingScreen(pairing: Pairing, onDone: () -> Unit) {
                 "Tienen que verse en la misma red, o a través de tu VPN.",
             color = Color(0xFF6B7C8F),
             fontSize = 12.sp,
+        )
+        Button(onClick = {
+            scanner.launch(
+                ScanOptions()
+                    .setDesiredBarcodeFormats(ScanOptions.QR_CODE)
+                    .setPrompt("Apunta al QR que muestra el equipo")
+                    .setBeepEnabled(false)
+                    .setOrientationLocked(false)
+            )
+        }) { Text("Escanear el QR del equipo") }
+        scanError?.let {
+            Text(it, color = Color(0xFFF87171), fontSize = 12.sp)
+        }
+        Text(
+            "…o escríbelo a mano:",
+            color = Color(0xFF6B7C8F),
+            fontSize = 11.sp,
         )
         OutlinedTextField(
             value = host,

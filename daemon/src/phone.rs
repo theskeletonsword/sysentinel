@@ -394,6 +394,29 @@ pub fn start(
         }
     }
 
+    // Nothing paired yet: show the QR rather than making anyone transcribe 64
+    // hex characters. Printed to stderr, not the log, so it survives a log
+    // level that would swallow it and does not end up in a log file where the
+    // key would outlive the pairing.
+    let profile = crate::phonehome::profile_path(&config.phone.queue_path);
+    if crate::phonehome::load(&profile).is_none() {
+        let uri = pairing_uri(&bind, &key_hex);
+        eprintln!("\n  Empareja tu teléfono — escanea esto con la app:\n");
+        match pairing_qr(&uri) {
+            Ok(qr) => eprintln!("{qr}"),
+            Err(e) => log::warn!("phone: cannot draw the pairing QR: {e}"),
+        }
+        eprintln!("  {uri}\n");
+        if bind.starts_with("0.0.0.0") || bind.starts_with("[::]") {
+            eprintln!(
+                "  ⚠ `bind` es una dirección de escucha, no un destino. El QR lleva esa cadena tal cual, así que el teléfono no sabrá a dónde marcar: pon la IP concreta por la que te ve el móvil.\n"
+            );
+        }
+        eprintln!(
+            "  Quien vea esta pantalla puede leer la clave. Después del primer emparejamiento deja de bastar: el equipo exige además la firma del teléfono que registró.\n"
+        );
+    }
+
     let listener_queue = Arc::clone(&queue);
     let bind_for_thread = bind.clone();
     let profile = crate::phonehome::profile_path(&config.phone.queue_path);
@@ -419,6 +442,68 @@ fn parse_key(hex: &str) -> Result<[u8; 32]> {
             .map_err(|_| anyhow::anyhow!("phone: pairing_key is not hexadecimal"))?;
     }
     Ok(key)
+}
+
+/// The pairing URI the app scans.
+///
+/// Everything the handset needs and nothing it does not: where to connect and
+/// the key to seal the first frame with.
+pub fn pairing_uri(bind: &str, key_hex: &str) -> String {
+    // `bind` may be 0.0.0.0; that is a listen address, not somewhere to dial,
+    // so it is left as-is and the operator is told to fix it. Guessing an
+    // interface here would produce a QR that silently does not work.
+    format!("sysentinel://pair?addr={bind}&key={key_hex}")
+}
+
+/// Render the pairing URI as a QR code for a terminal.
+///
+/// # Why a QR and not "type these 64 characters"
+///
+/// Because people mistype 64 hex characters, and a pairing that is painful is
+/// one that gets done once with a weak key and never rotated.
+///
+/// # What it costs
+///
+/// The QR carries the key in the clear. Whoever can see the screen can read it
+/// — a photograph across a room is enough. That is the same trust boundary as
+/// reading it out loud, and it is why this is printed only when asked for,
+/// and why a bound handset's signature is required afterwards: a copied
+/// pairing key on its own no longer opens anything, because the daemon refuses
+/// any handset but the one whose key it recorded. See `identify_handset`.
+pub fn pairing_qr(uri: &str) -> Result<String> {
+    use qrcode::{EcLevel, QrCode};
+    let code = QrCode::with_error_correction_level(uri, EcLevel::M)
+        .map_err(|e| anyhow::anyhow!("phone: cannot encode the pairing QR: {e}"))?;
+    // Half-block glyphs: two QR rows per text row, so the square stays square
+    // in a terminal whose cells are twice as tall as they are wide.
+    let w = code.width();
+    let m: Vec<bool> = code
+        .to_colors()
+        .into_iter()
+        .map(|c| c == qrcode::Color::Dark)
+        .collect();
+    let dark = |x: usize, y: usize| -> bool { y < w && x < w && m[y * w + x] };
+
+    let quiet = 2;
+    let mut out = String::new();
+    let mut y = 0;
+    while y < w + quiet * 2 {
+        for x in 0..w + quiet * 2 {
+            let top = dark(x.wrapping_sub(quiet), y.wrapping_sub(quiet));
+            let bottom = dark(x.wrapping_sub(quiet), (y + 1).wrapping_sub(quiet));
+            // Inverted: terminals are usually dark, and a QR needs light
+            // modules to be the *background*.
+            out.push(match (top, bottom) {
+                (true, true) => ' ',
+                (true, false) => '\u{2584}',
+                (false, true) => '\u{2580}',
+                (false, false) => '\u{2588}',
+            });
+        }
+        out.push('\n');
+        y += 2;
+    }
+    Ok(out)
 }
 
 /// Mint a fresh pairing key for the owner to copy into the app.
@@ -497,6 +582,14 @@ fn serve(
         &ToPhone::Welcome { host, queued, challenge: challenge.to_vec() },
     )?;
 
+    // Whether this connection has proved which handset it is.
+    //
+    // The pairing key gets a client onto the channel, and a pairing key can
+    // leak — photographed off a screen, read out of a log, restored from a
+    // backup. So once a handset is bound, holding the key is not enough: every
+    // command is gated on a signature from that handset's secure element.
+    let mut identified = crate::phonehome::load(profile_path).is_none();
+
     loop {
         let frame = match read_frame(&mut stream) {
             Ok(f) => f,
@@ -504,6 +597,22 @@ fn serve(
         };
         let plain = open(key, &frame).context("frame did not authenticate")?;
         let msg: FromPhone = serde_json::from_slice(&plain)?;
+
+        // Refuse everything until the handset has proved itself. Without this
+        // gate a client could simply never send `identify` and go straight to
+        // issuing commands, which would make the device key decorative.
+        if !identified && !matches!(msg, FromPhone::Identify { .. }) {
+            respond(
+                &mut stream,
+                key,
+                &ToPhone::Error {
+                    message: "identifícate primero: este equipo ya tiene un teléfono \
+                              emparejado y exige su firma"
+                        .to_string(),
+                },
+            )?;
+            continue;
+        }
 
         let reply = match msg {
             FromPhone::Fetch => {
@@ -524,7 +633,7 @@ fn serve(
                 ToPhone::Ok
             }
             FromPhone::Identify { public_key, signature, backing, model, manufacturer } => {
-                identify_handset(
+                let answer = identify_handset(
                     profile_path,
                     &challenge,
                     &public_key,
@@ -532,7 +641,22 @@ fn serve(
                     &backing,
                     &model,
                     &manufacturer,
-                )
+                );
+                // Only "this is the handset I know" — or a first pairing —
+                // opens the door. A different device is refused outright rather
+                // than merely noted: reporting it while letting the commands
+                // through would leave the check decorative.
+                identified = matches!(
+                    &answer,
+                    ToPhone::Identity { verdict, .. }
+                        if verdict == "same_device" || verdict == "paired"
+                );
+                if !identified {
+                    respond(&mut stream, key, &answer)?;
+                    log::error!("phone: refusing this connection — the handset did not prove itself");
+                    return Ok(());
+                }
+                answer
             }
             FromPhone::Hello { .. } => ToPhone::Error {
                 message: "already said hello".to_string(),
@@ -863,5 +987,18 @@ mod tests {
             challenge: vec![0u8; 32],
         };
         assert!(serde_json::to_string(&w).unwrap().contains("\"queued\":3"));
+    }
+}
+
+#[cfg(test)]
+mod qr_check {
+    #[test]
+    fn the_pairing_qr_renders() {
+        let uri = super::pairing_uri(
+            "10.0.0.5:8443",
+            "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
+        );
+        println!("{}", super::pairing_qr(&uri).unwrap());
+        println!("{uri}");
     }
 }

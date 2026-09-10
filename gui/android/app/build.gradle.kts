@@ -105,11 +105,19 @@ android {
 }
 
 dependencies {
+    testImplementation("junit:junit:4.13.2")
+
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.appcompat:appcompat:1.7.0")
     implementation("androidx.biometric:biometric:1.1.0")
     implementation("androidx.recyclerview:recyclerview:1.3.2")
     implementation("com.google.android.material:material:1.12.0")
+
+    // QR scanning for pairing. ZXing rather than ML Kit on purpose: ML Kit
+    // pulls in Google Play Services, and depending on a third party to pair a
+    // channel whose whole point is having no third party would be absurd.
+    // Apache-2.0, self-contained, works offline.
+    implementation("com.journeyapps:zxing-android-embedded:4.3.0")
 
     // The Compose compiler plugin applies to the whole project, so its runtime
     // has to be on every variant's classpath even where no @Composable is

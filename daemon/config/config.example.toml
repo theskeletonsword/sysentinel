@@ -336,8 +336,21 @@ timeout = 10
 
 [phone]
 enabled = false
-# bind = "10.0.0.5:8443"        # o "0.0.0.0:8443" si sabes lo que haces
-# pairing_key = "…64 hex…"      # arranca sin ella y el log te genera una
+# bind: la dirección por la que el TELÉFONO te ve. No pongas 0.0.0.0 aquí: es
+# una dirección de escucha, no un destino, y el QR la lleva tal cual — el móvil
+# no sabría a dónde marcar. El daemon te avisa si lo detecta.
+# bind = "10.0.0.5:8443"
+# pairing_key: arranca sin ella y el daemon te genera una.
+# pairing_key = "…64 hex…"
+#
+# EMPAREJAR: sin teléfono registrado, el daemon dibuja un QR en la consola al
+# arrancar. Escanéalo desde la app y listo — nadie teclea 64 hexadecimales.
+# `/pair` lo vuelve a mostrar (en la consola del equipo, nunca por el canal:
+# mandar la clave por el canal que esa clave abre sería justo al revés).
+#
+# Quien vea esa pantalla puede leer la clave. Por eso deja de bastar en cuanto
+# hay un teléfono registrado: a partir de ahí el equipo exige además la firma
+# de ESE móvil, y rechaza la conexión de cualquier otro.
 queue_capacity = 500
 queue_path = "/var/lib/sysentinel/phone-queue.json"
 

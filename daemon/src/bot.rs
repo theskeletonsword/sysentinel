@@ -640,6 +640,7 @@ impl TelegramBot {
             "/models"         => self.cmd_models(chat_id, ""),
             "/resetcontext"   => self.cmd_reset_context(chat_id),
             "/unpair"         => self.cmd_unpair(chat_id, username),
+            "/pair"           => self.cmd_pair(chat_id),
             "/definehome"     => self.cmd_definehome(chat_id, ""),
             "/detecthome"     => self.cmd_definehome(chat_id, ""),
             "/bootkit"        => self.cmd_bootkit(chat_id),
@@ -1656,7 +1657,8 @@ impl TelegramBot {
   1️⃣3️⃣  /model /models — pick the model (API vision / local gguf)\n\
   1️⃣4️⃣  /resetcontext — clear the conversation history (context.txt)\n\
   1️⃣5️⃣  /help — full command list\n\
-  1️⃣6️⃣  /unpair — disconnect this chat\n\
+  1️⃣6️⃣  /unpair — forget the paired handset\n\
+  1️⃣7️⃣  /pair — show the pairing QR on the machine's console\n\
 \n\
 🗣 Ask me about anything in plain language. I mirror my mood from the \
 machine's live state (load, memory, temperature, PMU).\n\
@@ -2582,6 +2584,37 @@ PMU).";
     ///
     /// The equivalent of the old `/unpair`: there is no chat id to clear any
     /// more, only the recorded device key.
+    /// `/pair` — show the QR again, for pairing a replacement handset.
+    ///
+    /// Only useful after `/unpair`: while a handset is bound, the daemon
+    /// refuses any other, so a QR on its own opens nothing.
+    fn cmd_pair(&self, chat_id: i64) {
+        let (Some(bind), Some(key)) =
+            (&self.config.phone.bind, &self.config.phone.pairing_key)
+        else {
+            let _ = self.send(chat_id, "El canal del teléfono no está configurado.");
+            return;
+        };
+        let uri = crate::phone::pairing_uri(bind, key);
+        match crate::phone::pairing_qr(&uri) {
+            Ok(qr) => {
+                // Printed on the machine, never sent: putting a pairing key
+                // through the very channel it would let someone impersonate is
+                // exactly backwards.
+                eprintln!("\n{qr}\n  {uri}\n");
+                let _ = self.send(
+                    chat_id,
+                    "📋 El QR de emparejamiento está en la consola del equipo.\n\n\
+                     No te lo mando por aquí a propósito: mandar la clave por el \
+                     canal que esa clave abre es justo al revés.",
+                );
+            }
+            Err(e) => {
+                let _ = self.send(chat_id, &format!("❌ No pude dibujar el QR: {e}"));
+            }
+        }
+    }
+
     fn cmd_unpair(&self, chat_id: i64, _username: &str) {
         let path = crate::phonehome::profile_path(&self.config.phone.queue_path);
         match std::fs::remove_file(&path) {
