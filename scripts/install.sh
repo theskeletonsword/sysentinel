@@ -38,6 +38,20 @@ if ! getent group sysentinel >/dev/null 2>&1; then
     groupadd --system sysentinel
 fi
 
+echo "==> Configuring kernel-module control channel (write_gid)"
+SYSENTINEL_GID="$(id -g sysentinel)"
+MODPROBE_CONF=/etc/modprobe.d/sysentinel.conf
+if [[ -f "$MODPROBE_CONF" ]] && grep -q '^options sysentinel_metrics write_gid=' "$MODPROBE_CONF"; then
+    echo "    $MODPROBE_CONF already has a write_gid option, skipping."
+else
+    echo "options sysentinel_metrics write_gid=$SYSENTINEL_GID" > "$MODPROBE_CONF"
+    echo "    Wrote options sysentinel_metrics write_gid=$SYSENTINEL_GID to $MODPROBE_CONF"
+fi
+if [[ -f /etc/modprobe.d/sysentinel ]] || [[ -f /etc/modprobe.conf ]]; then
+    echo "    NOTE: a stray /etc/modprobe.d/sysentinel or /etc/modprobe.conf exists —"
+    echo "    check it is not overriding the write_gid option."
+fi
+
 echo "==> Installing config"
 mkdir -p /etc/sysentinel
 if [[ ! -f /etc/sysentinel/config.toml ]]; then
@@ -81,13 +95,13 @@ echo "  4. Build + load the kernel module for live Intel ME firmware,"
 echo "     AMD PSP detection, CR register reads, and the privileged"
 echo "     control channel (/proc/sysentinel_metrics):"
 echo "     cd kernel_module && make && sudo make modules_install"
-echo "     # root-only control by default. To let the 'sysentinel' service"
-echo "     # user send control commands, pass its GID:"
-echo "     sudo modprobe sysentinel_metrics write_gid=\$(id -g sysentinel)"
+echo "     # /etc/modprobe.d/sysentinel.conf already sets write_gid so the"
+echo "     # 'sysentinel' service user can send control commands; load with:"
+echo "     sudo modprobe sysentinel_metrics"
 echo "     cat /proc/sysentinel_metrics"
 echo "     # The broadcast: echo restart | sudo tee /proc/sysentinel_metrics"
 echo ""
 echo "  IMPORTANT: the module is currently LOADED from a previous install."
-echo "  To switch to the new /proc interface you MUST reload it:"
+echo "  To pick up the new write_gid (and /proc interface) reload it:"
 echo "     sudo rmmod sysentinel_metrics && sudo modprobe sysentinel_metrics"
 echo "════════════════════════════════════════════════════════════"
