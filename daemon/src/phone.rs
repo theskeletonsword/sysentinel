@@ -658,6 +658,43 @@ mod tests {
         assert_eq!(open(&key, &seal(&key, b"prueba").unwrap()).unwrap(), b"prueba");
     }
 
+    /// Cross-language check against the JVM's `javax.crypto`, which is what the
+    /// Android client uses.
+    ///
+    /// Two implementations agreeing about AEAD is not something to assume: a
+    /// mismatched tag length or nonce convention produces code that works
+    /// perfectly on each side and never once interoperates. Driven by
+    /// `scripts/phone-interop-check.sh`, which runs the Java half.
+    #[test]
+    fn frames_interoperate_with_the_jvm() {
+        let key = [0x42u8; 32];
+
+        // Hand a frame to the JVM to open.
+        if let Ok(path) = std::env::var("SYSENTINEL_INTEROP_OUT") {
+            let sealed = seal(&key, b"desde rust").unwrap();
+            let hex: String = sealed.iter().map(|b| format!("{b:02x}")).collect();
+            std::fs::write(&path, hex).unwrap();
+        }
+
+        // Open one the JVM produced.
+        if let Ok(path) = std::env::var("SYSENTINEL_INTEROP_IN") {
+            let hex = std::fs::read_to_string(&path).unwrap();
+            let bytes: Vec<u8> = hex
+                .trim()
+                .as_bytes()
+                .chunks(2)
+                .map(|c| u8::from_str_radix(std::str::from_utf8(c).unwrap(), 16).unwrap())
+                .collect();
+            let opened = open(&key, &bytes).expect("the JVM's frame must authenticate");
+            assert_eq!(
+                String::from_utf8(opened).unwrap(),
+                "desde java",
+                "the JVM sealed something other than what we expect"
+            );
+            println!("interop: opened the JVM's frame");
+        }
+    }
+
     #[test]
     fn the_protocol_round_trips() {
         let hello = FromPhone::Hello { app_version: "0.1.0".into() };

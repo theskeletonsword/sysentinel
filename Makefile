@@ -34,11 +34,15 @@ check:
 	fi
 	shellcheck -S warning $$(git ls-files '*.sh')
 	./scripts/licence-map-check.sh
+	@# Two AEAD implementations agreeing is not something to assume.
+	./scripts/phone-interop-check.sh
 
 # Verify the per-directory licence map: SPDX header on every file matching its
 # directory, real licence texts present, MODULE_LICENSE idents consistent.
 licence-map:
 	./scripts/licence-map-check.sh
+	@# Two AEAD implementations agreeing is not something to assume.
+	./scripts/phone-interop-check.sh
 
 # Provenance check for the Apache-2.0 daemon: report every word sequence it
 # shares with a GPL reference tree, so each one can be read and explained.

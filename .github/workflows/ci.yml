@@ -85,6 +85,22 @@ jobs:
       - name: build (release)
         run: cargo build --manifest-path gui/linux/Cargo.toml --release
 
+  interop:
+    name: phone frame interop
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      # The daemon seals a frame and the JVM opens it, and vice versa. A
+      # mismatched tag length or nonce convention would otherwise give two
+      # halves that each pass their own tests and never interoperate.
+      - name: rust <-> jvm frames
+        run: ./scripts/phone-interop-check.sh
+
   licences:
     name: licence map
     runs-on: ubuntu-latest

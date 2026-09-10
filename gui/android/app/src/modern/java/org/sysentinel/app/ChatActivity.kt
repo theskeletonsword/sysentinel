@@ -40,16 +40,26 @@ import java.util.Locale
  */
 class ChatActivity : ComponentActivity() {
 
+    private lateinit var engine: ChatEngine
+    private lateinit var pairing: Pairing
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
         val identity = DeviceIdentity.ensureKey()
+        pairing = Pairing(this)
+        engine = ChatEngine(pairing, BuildConfig.VERSION_NAME)
 
         setContent {
             MaterialTheme(colorScheme = darkColorScheme(primary = Accent)) {
-                ChatScreen(identity)
+                ChatScreen(identity, engine, pairing)
             }
         }
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        engine.stop()
     }
 }
 
@@ -59,25 +69,50 @@ private val Mine = Color(0xFF17313D)
 private val Theirs = Color(0xFF161C24)
 
 @Composable
-private fun ChatScreen(identity: DeviceIdentity.Identity) {
+private fun ChatScreen(
+    identity: DeviceIdentity.Identity,
+    engine: ChatEngine,
+    pairing: Pairing,
+) {
     var draft by remember { mutableStateOf("") }
-    val messages = remember {
-        mutableStateListOf(
-            Message(
-                "Estoy despierta. Los P-cores van a IPC 3.13 y no hay nada raro por acá.",
-                fromMe = false,
-            ),
-        )
-    }
+    var status by remember { mutableStateOf("conectando…") }
+    var statusOk by remember { mutableStateOf(false) }
+    var showPairing by remember { mutableStateOf(!pairing.isPaired) }
+    val messages = remember { mutableStateListOf<Message>() }
     val listState = rememberLazyListState()
+
+    val listener = remember {
+        object : ChatEngine.Listener {
+            override fun onMessages(m: List<Message>) { messages.addAll(m) }
+            override fun onStatus(text: String, ok: Boolean) {
+                status = text; statusOk = ok
+            }
+        }
+    }
+
+    // Poll while the screen is open. Never pushed to: see the class docs.
+    LaunchedEffect(showPairing) {
+        if (!showPairing) {
+            engine.start(listener)
+            while (true) {
+                kotlinx.coroutines.delay(15_000)
+                engine.refresh(listener)
+            }
+        }
+    }
 
     LaunchedEffect(messages.size) {
         if (messages.isNotEmpty()) listState.animateScrollToItem(messages.lastIndex)
     }
 
+    if (showPairing) {
+        PairingScreen(pairing) { showPairing = false }
+        return
+    }
+
     Scaffold(
         containerColor = Ground,
-        topBar = { IdentityBar(identity) },
+        topBar = { IdentityBar(identity, status, statusOk) },
         bottomBar = {
             Composer(
                 draft = draft,
@@ -85,6 +120,7 @@ private fun ChatScreen(identity: DeviceIdentity.Identity) {
                 onSend = {
                     if (draft.isNotBlank()) {
                         messages.add(Message(draft, fromMe = true))
+                        engine.send(draft, listener)
                         draft = ""
                     }
                 },
@@ -110,7 +146,11 @@ private fun ChatScreen(identity: DeviceIdentity.Identity) {
  * it could. A phone with no secure element says so plainly.
  */
 @Composable
-private fun IdentityBar(identity: DeviceIdentity.Identity) {
+private fun IdentityBar(
+    identity: DeviceIdentity.Identity,
+    status: String,
+    statusOk: Boolean,
+) {
     val (label, colour) = when (identity.backing) {
         DeviceIdentity.Backing.STRONGBOX ->
             "Elemento seguro dedicado · huella" to Color(0xFF4ADE80)
@@ -130,6 +170,71 @@ private fun IdentityBar(identity: DeviceIdentity.Identity) {
             color = Color(0xFF6B7C8F),
             fontSize = 10.sp,
         )
+        Text(
+            status,
+            color = if (statusOk) Color(0xFF4ADE80) else Color(0xFFF87171),
+            fontSize = 11.sp,
+        )
+    }
+}
+
+/**
+ * Pairing: the machine's address and the key it printed.
+ *
+ * There is no discovery and no relay to look anyone up through — that absence
+ * is the feature. The key is carried across by hand, once.
+ */
+@Composable
+private fun PairingScreen(pairing: Pairing, onDone: () -> Unit) {
+    var host by remember { mutableStateOf(pairing.host) }
+    var port by remember { mutableStateOf(pairing.port.toString()) }
+    var key by remember { mutableStateOf(pairing.keyHex) }
+    val keyLooksRight = PhoneLink.parseKey(key) != null
+
+    Column(
+        Modifier.background(Ground).fillMaxSize().padding(20.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Text("Emparejar", color = Accent, fontSize = 22.sp)
+        Text(
+            "Conexión directa con tu equipo: no hay relay ni servidor de por medio. " +
+                "Tienen que verse en la misma red, o a través de tu VPN.",
+            color = Color(0xFF6B7C8F),
+            fontSize = 12.sp,
+        )
+        OutlinedTextField(
+            value = host,
+            onValueChange = { host = it },
+            label = { Text("Equipo (IP o nombre)") },
+            singleLine = true,
+        )
+        OutlinedTextField(
+            value = port,
+            onValueChange = { port = it.filter { c -> c.isDigit() } },
+            label = { Text("Puerto") },
+            singleLine = true,
+        )
+        OutlinedTextField(
+            value = key,
+            onValueChange = { key = it },
+            label = { Text("Clave de emparejamiento (64 hex)") },
+            supportingText = {
+                Text(
+                    if (keyLooksRight) "formato correcto"
+                    else "faltan caracteres: son 64 hexadecimales",
+                    color = if (keyLooksRight) Color(0xFF4ADE80) else Color(0xFF6B7C8F),
+                )
+            },
+        )
+        Button(
+            onClick = {
+                pairing.host = host
+                pairing.port = port.toIntOrNull() ?: 8443
+                pairing.keyHex = key
+                onDone()
+            },
+            enabled = keyLooksRight && host.isNotBlank(),
+        ) { Text("Guardar y conectar") }
     }
 }
 

@@ -11,4 +11,8 @@ data class Message(
      * fingerprint, not a typed code — see [DeviceIdentity].
      */
     val awaitingConfirmation: Boolean = false,
+    /** The daemon's queue id, so receipt can be acknowledged. Zero for local. */
+    val serverId: Long = 0L,
+    /** Evidence the daemon attached, as a path on the watched machine. */
+    val photoPath: String? = null,
 )

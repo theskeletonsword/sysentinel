@@ -32,20 +32,37 @@ class ChatActivity : AppCompatActivity() {
 
     private val messages = ArrayList<Message>()
     private lateinit var adapter: BubbleAdapter
+    private lateinit var engine: ChatEngine
+    private lateinit var pairing: Pairing
+    private lateinit var identityView: TextView
+
+    /** Same engine as the modern flavour, so the two cannot drift apart. */
+    private val listener = object : ChatEngine.Listener {
+        override fun onMessages(m: List<Message>) {
+            messages.addAll(m)
+            adapter.notifyDataSetChanged()
+        }
+        override fun onStatus(text: String, ok: Boolean) {
+            identityView.text = "$statusPrefix · $text"
+            identityView.setTextColor(
+                if (ok) 0xFF4ADE80.toInt() else 0xFFF87171.toInt()
+            )
+        }
+    }
+
+    private var statusPrefix = ""
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_chat)
 
         val identity = DeviceIdentity.ensureKey()
-        findViewById<TextView>(R.id.identity).text = describe(identity)
+        pairing = Pairing(this)
+        engine = ChatEngine(pairing, BuildConfig.VERSION_NAME)
 
-        messages.add(
-            Message(
-                "Estoy despierta. Sin novedades por acá.",
-                fromMe = false,
-            )
-        )
+        identityView = findViewById(R.id.identity)
+        statusPrefix = describe(identity)
+        identityView.text = statusPrefix
 
         val list = findViewById<ListView>(R.id.messages)
         adapter = BubbleAdapter(this, messages)
@@ -57,9 +74,39 @@ class ChatActivity : AppCompatActivity() {
             if (text.isNotBlank()) {
                 messages.add(Message(text, fromMe = true))
                 adapter.notifyDataSetChanged()
+                engine.send(text, listener)
                 draft.setText("")
             }
         }
+
+        if (!pairing.isPaired) {
+            // No pairing screen on this face: the key is long and typing it on
+            // an old handset is miserable. Set it once on a desktop with adb:
+            //   adb shell am start -n org.sysentinel.app/.ChatActivity \
+            //     -e host 10.0.0.5 -e port 8443 -e key <64 hex>
+            applyPairingFromIntent()
+        }
+    }
+
+    /** Accept pairing details from the launch intent, for adb setup. */
+    private fun applyPairingFromIntent() {
+        val host = intent?.getStringExtra("host")
+        val key = intent?.getStringExtra("key")
+        if (!host.isNullOrBlank() && PhoneLink.parseKey(key ?: "") != null) {
+            pairing.host = host
+            pairing.port = intent?.getStringExtra("port")?.toIntOrNull() ?: 8443
+            pairing.keyHex = key!!
+        }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        engine.start(listener)
+    }
+
+    override fun onStop() {
+        super.onStop()
+        engine.stop()
     }
 
     /** Says what this handset can prove, in the same words the modern one uses. */
