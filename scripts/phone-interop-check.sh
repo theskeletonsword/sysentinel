@@ -50,6 +50,22 @@ public class Interop {
         }
         System.out.println("interop: opened Rust's frame");
 
+        // The device key: generate an EC P-256 pair the way the Keystore does,
+        // sign the challenge, and let Rust verify it. Two ECDSA stacks agreeing
+        // on the ASN.1 signature encoding is exactly as unsafe to assume as two
+        // AEAD stacks agreeing on a tag.
+        java.security.KeyPairGenerator kpg =
+            java.security.KeyPairGenerator.getInstance("EC");
+        kpg.initialize(new java.security.spec.ECGenParameterSpec("secp256r1"));
+        java.security.KeyPair kp = kpg.generateKeyPair();
+        byte[] challenge = fromHex(Files.readString(Path.of(a[2])).trim());
+        java.security.Signature sig = java.security.Signature.getInstance("SHA256withECDSA");
+        sig.initSign(kp.getPrivate());
+        sig.update(challenge);
+        Files.writeString(Path.of(a[3]), toHex(kp.getPublic().getEncoded()));
+        Files.writeString(Path.of(a[4]), toHex(sig.sign()));
+        System.out.println("interop: signed the challenge with an EC P-256 key");
+
         // Seal one for Rust.
         byte[] n2 = new byte[NONCE];
         new SecureRandom().nextBytes(n2);
@@ -84,11 +100,17 @@ SYSENTINEL_INTEROP_OUT="$work/from_rust.hex" \
 
 echo "==> jvm opens it, and seals a reply"
 javac -d "$work" "$work/Interop.java"
-java -cp "$work" Interop "$work/from_rust.hex" "$work/from_java.hex"
+# A challenge for the JVM to sign, as the daemon would issue.
+printf '%s' "$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')" > "$work/challenge.hex"
+java -cp "$work" Interop "$work/from_rust.hex" "$work/from_java.hex" \
+    "$work/challenge.hex" "$work/pubkey.hex" "$work/sig.hex"
 
-echo "==> rust opens the jvm's reply"
+echo "==> rust opens the jvm's reply, and verifies its signature"
 SYSENTINEL_INTEROP_IN="$work/from_java.hex" \
+SYSENTINEL_INTEROP_CHALLENGE="$work/challenge.hex" \
+SYSENTINEL_INTEROP_PUBKEY="$work/pubkey.hex" \
+SYSENTINEL_INTEROP_SIG="$work/sig.hex" \
     cargo test --manifest-path daemon/Cargo.toml \
     phone::tests::frames_interoperate_with_the_jvm -- --nocapture 2>&1 | grep -E "interop:|test result"
 
-echo "phone-interop: OK — both sides open each other's frames"
+echo "phone-interop: OK — frames and device-key signatures cross both languages"

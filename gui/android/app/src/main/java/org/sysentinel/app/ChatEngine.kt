@@ -44,12 +44,23 @@ class ChatEngine(private val pairing: Pairing, private val appVersion: String) {
                 val l = pairing.link() ?: throw PhoneLinkException("emparejamiento incompleto")
                 val welcome = l.connect(appVersion)
                 link = l
-                post(listener) {
-                    it.onStatus(
-                        "Conectado a ${welcome.host}" +
-                            if (welcome.queued > 0) " · ${welcome.queued} esperando" else "",
-                        true,
-                    )
+
+                // Prove which handset this is before anything else. The pairing
+                // key got us onto the channel; this answers the question it
+                // cannot — whether the phone at this end is the one the owner
+                // paired, or a different one holding a copy of the secret.
+                val identity = proveIdentity(l, welcome.challenge)
+                post(listener) { it.onStatus(statusLine(welcome, identity), identity == null || identity.verdict != "different_device") }
+                if (identity?.verdict == "different_device") {
+                    // Do not go quiet about it: this is the case the device key
+                    // exists to catch.
+                    post(listener) {
+                        it.onMessages(listOf(Message(
+                            "⚠️ El equipo dice que este NO es el teléfono con el que " +
+                                "emparejaste.\n\n${identity.detail}",
+                            fromMe = false,
+                        )))
+                    }
                 }
                 drain(listener, l)
             } catch (e: Exception) {
@@ -89,6 +100,42 @@ class ChatEngine(private val pairing: Pairing, private val appVersion: String) {
 
     fun stop() {
         io.execute { link?.close(); link = null }
+    }
+
+    /**
+     * Sign the daemon's challenge with the device key.
+     *
+     * Returns `null` on a handset with no hardware-backed key at all, which is
+     * not fatal — the channel still works, it simply proves less, and the
+     * daemon's ladder grades it for what it is.
+     */
+    private fun proveIdentity(l: PhoneLink, challenge: ByteArray): PhoneLink.Identity? {
+        if (challenge.isEmpty()) return null
+        val pub = DeviceIdentity.devicePublicKey() ?: return null
+        val sig = DeviceIdentity.signChallenge(challenge) ?: return null
+        return try {
+            l.identify(
+                publicKey = pub,
+                signature = sig,
+                backing = DeviceIdentity.deviceKeyBacking(),
+                model = android.os.Build.MODEL,
+                manufacturer = android.os.Build.MANUFACTURER,
+            )
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    private fun statusLine(w: PhoneLink.Welcome, id: PhoneLink.Identity?): String {
+        val base = "Conectado a ${w.host}" +
+            if (w.queued > 0) " · ${w.queued} esperando" else ""
+        return when (id?.verdict) {
+            "same_device" -> "$base · teléfono reconocido"
+            "paired" -> "$base · teléfono registrado como tuyo"
+            "different_device" -> "$base · ⚠️ TELÉFONO DISTINTO"
+            "rejected" -> "$base · la firma no verificó"
+            else -> "$base · sin clave de dispositivo"
+        }
     }
 
     /**

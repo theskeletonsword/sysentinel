@@ -88,7 +88,10 @@ class PhoneLink(
     private var output: DataOutputStream? = null
 
     /** What the daemon said when it accepted us. */
-    data class Welcome(val host: String, val queued: Int)
+    data class Welcome(val host: String, val queued: Int, val challenge: ByteArray)
+
+    /** The daemon's answer to "is this still your phone?". */
+    data class Identity(val verdict: String, val detail: String)
 
     /**
      * Connect and authenticate.
@@ -129,7 +132,50 @@ class PhoneLink(
         return Welcome(
             host = reply.optString("host", host),
             queued = reply.optInt("queued", 0),
+            challenge = jsonBytes(reply.optJSONArray("challenge")),
         )
+    }
+
+    /**
+     * Prove this is the paired handset by signing the welcome challenge.
+     *
+     * The pairing key already got us onto the channel, but a secret can be
+     * copied — someone with the config file and this app's storage could speak
+     * as the owner. The device key cannot be copied, because its private half
+     * never leaves this handset's hardware. So this is the question the pairing
+     * key cannot answer: not "does someone know the secret" but "is this the
+     * same physical phone".
+     */
+    fun identify(
+        publicKey: ByteArray,
+        signature: ByteArray,
+        backing: String,
+        model: String,
+        manufacturer: String,
+    ): Identity {
+        val req = JSONObject()
+            .put("op", "identify")
+            .put("public_key", bytesJson(publicKey))
+            .put("signature", bytesJson(signature))
+            .put("backing", backing)
+            .put("model", model)
+            .put("manufacturer", manufacturer)
+        val reply = exchange(req)
+        if (reply.optString("op") == "error") {
+            throw PhoneLinkException(reply.optString("message", "error del daemon"))
+        }
+        return Identity(
+            verdict = reply.optString("verdict", "unknown"),
+            detail = reply.optString("detail", ""),
+        )
+    }
+
+    private fun bytesJson(b: ByteArray): JSONArray =
+        JSONArray().apply { b.forEach { put(it.toInt() and 0xff) } }
+
+    private fun jsonBytes(a: JSONArray?): ByteArray {
+        if (a == null) return ByteArray(0)
+        return ByteArray(a.length()) { i -> a.getInt(i).toByte() }
     }
 
     /** Everything the daemon has been holding for us. */

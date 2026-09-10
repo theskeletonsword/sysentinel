@@ -7,6 +7,10 @@ import android.security.keystore.KeyProperties
 import android.util.Log
 import java.io.File
 import java.security.KeyStore
+import java.security.KeyPairGenerator
+import java.security.PrivateKey
+import java.security.Signature
+import java.security.spec.ECGenParameterSpec
 import javax.crypto.KeyGenerator
 
 /**
@@ -187,4 +191,95 @@ object DeviceIdentity {
     /** Random per-exchange challenge, so an attestation cannot be replayed. */
     private fun freshChallenge(): ByteArray =
         ByteArray(32).also { java.security.SecureRandom().nextBytes(it) }
+
+    // ── The device key: "this handset", not "a handset like it" ──────────────
+    //
+    // The daemon binds a PC by things that are per-unit — board and chassis
+    // serials, the ring -3 silicon contract. Almost nothing a phone reports
+    // about itself is per-unit: two Pixel 8s agree on MODEL, MANUFACTURER,
+    // BOARD and the build fingerprint, and Android deliberately stopped handing
+    // out per-device identifiers years ago.
+    //
+    // What *is* per-unit is a key generated inside this handset's TEE or secure
+    // element, which cannot be read out of it. A friend's identical phone does
+    // not have it, and copying this app's storage does not produce it.
+
+    private const val SIGN_ALIAS = "sysentinel-device-key"
+
+    /**
+     * The device signing key, created on first use inside the strongest
+     * available backing.
+     *
+     * Deliberately **not** bound to a biometric. This answers "which handset is
+     * this", which the daemon needs on every connection including ones the
+     * owner is not watching; requiring a fingerprint to say your own name would
+     * make an unattended reconnect impossible. Confirming a destructive
+     * operation is a separate question and a separate key — that one does
+     * require the finger.
+     */
+    fun deviceSigningKey(): PrivateKey? {
+        val ks = KeyStore.getInstance(KEYSTORE).apply { load(null) }
+        (ks.getKey(SIGN_ALIAS, null) as? PrivateKey)?.let { return it }
+
+        for (strongBox in listOf(true, false)) {
+            if (strongBox && Build.VERSION.SDK_INT < Build.VERSION_CODES.P) continue
+            try {
+                val gen = KeyPairGenerator.getInstance(
+                    KeyProperties.KEY_ALGORITHM_EC, KEYSTORE,
+                )
+                gen.initialize(
+                    KeyGenParameterSpec.Builder(SIGN_ALIAS, KeyProperties.PURPOSE_SIGN)
+                        .setAlgorithmParameterSpec(ECGenParameterSpec("secp256r1"))
+                        .setDigests(KeyProperties.DIGEST_SHA256)
+                        .apply {
+                            setAttestationChallenge(freshChallenge())
+                            if (strongBox && Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                                setIsStrongBoxBacked(true)
+                            }
+                        }
+                        .build()
+                )
+                gen.generateKeyPair()
+                Log.i(TAG, "device key created (strongBox=$strongBox)")
+                return ks.getKey(SIGN_ALIAS, null) as? PrivateKey
+            } catch (e: Exception) {
+                Log.i(TAG, "device key refused (strongBox=$strongBox): ${e.message}")
+            }
+        }
+        Log.e(TAG, "no hardware-backed device key on this handset")
+        return null
+    }
+
+    /** SubjectPublicKeyInfo DER of the device key — what the daemon records. */
+    fun devicePublicKey(): ByteArray? {
+        val ks = KeyStore.getInstance(KEYSTORE).apply { load(null) }
+        return ks.getCertificate(SIGN_ALIAS)?.publicKey?.encoded
+    }
+
+    /**
+     * Sign the daemon's challenge.
+     *
+     * This is the step that makes the public key worth anything: the key itself
+     * travels, so anyone could present it. Only this handset can sign with it.
+     */
+    fun signChallenge(challenge: ByteArray): ByteArray? {
+        val key = deviceSigningKey() ?: return null
+        return try {
+            Signature.getInstance("SHA256withECDSA").run {
+                initSign(key)
+                update(challenge)
+                sign()
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "cannot sign the challenge: ${e.message}")
+            null
+        }
+    }
+
+    /** How the device key is backed, for the audit line. A claim, not a proof. */
+    fun deviceKeyBacking(): String = when {
+        devicePublicKey() == null -> "none"
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.P -> "tee_or_strongbox"
+        else -> "tee"
+    }
 }

@@ -64,6 +64,7 @@ mod memory;
 mod mood;
 mod modulewatch;
 mod phone;
+mod phonehome;
 mod pmu;
 mod presence;
 mod procinfo;

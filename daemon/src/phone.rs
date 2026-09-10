@@ -258,8 +258,28 @@ fn write_frame(stream: &mut TcpStream, frame: &[u8]) -> Result<()> {
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum FromPhone {
     /// First frame on every connection. Sealing it correctly *is* the
-    /// authentication — a peer without the paired key cannot produce one.
+    /// channel authentication — a peer without the paired key cannot produce
+    /// one. It says nothing about *which handset* is on the other end; that is
+    /// what [`FromPhone::Identify`] answers.
     Hello { app_version: String },
+    /// Prove this is the paired handset by signing the challenge from
+    /// [`ToPhone::Welcome`] with the device key.
+    ///
+    /// The pairing key proves somebody knows a secret, and a secret can be
+    /// copied. This proves a specific piece of hardware is present, because the
+    /// private half never leaves it. See `phonehome.rs`.
+    Identify {
+        /// SubjectPublicKeyInfo DER of the device signing key.
+        public_key: Vec<u8>,
+        /// Signature over the welcome challenge.
+        signature: Vec<u8>,
+        /// What the phone says backed the key. A claim, graded elsewhere.
+        backing: String,
+        /// Context for the audit line. Never used to decide identity: a
+        /// friend's identical handset matches on every one of these.
+        model: String,
+        manufacturer: String,
+    },
     /// Give me everything still waiting.
     Fetch,
     /// I have everything up to `id`; stop keeping it.
@@ -272,7 +292,16 @@ pub enum FromPhone {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum ToPhone {
-    Welcome { host: String, queued: usize },
+    Welcome {
+        host: String,
+        queued: usize,
+        /// Fresh per connection, for the handset to sign. Random and never
+        /// reused, so a recorded signature cannot be replayed by something
+        /// holding no key at all.
+        challenge: Vec<u8>,
+    },
+    /// The answer to "is this still my phone?".
+    Identity { verdict: String, detail: String },
     Alerts { alerts: Vec<QueuedAlert> },
     Ok,
     Error { message: String },
@@ -364,10 +393,11 @@ pub fn start(config: &crate::config::Config) -> Result<PhoneChannel> {
 
     let listener_queue = Arc::clone(&queue);
     let bind_for_thread = bind.clone();
+    let profile = crate::phonehome::profile_path(&config.phone.queue_path);
     std::thread::Builder::new()
         .name("phone".to_string())
         .spawn(move || {
-            run_phone_loop(&bind_for_thread, key, listener_queue, |text| {
+            run_phone_loop(&bind_for_thread, key, listener_queue, profile, |text| {
                 // Conversation is wired separately; until then the phone gets
                 // an honest placeholder rather than silence.
                 format!("(sin modelo conectado todavía) dijiste: {text}")
@@ -407,6 +437,7 @@ pub fn run_phone_loop(
     bind: &str,
     key: [u8; 32],
     queue: Arc<Mutex<AlertQueue>>,
+    profile_path: PathBuf,
     llm_answer: impl Fn(&str) -> String + Send + Sync + 'static,
 ) {
     let listener = match TcpListener::bind(bind) {
@@ -421,7 +452,7 @@ pub fn run_phone_loop(
     for stream in listener.incoming() {
         match stream {
             Ok(s) => {
-                if let Err(e) = serve(s, &key, &queue, &llm_answer) {
+                if let Err(e) = serve(s, &key, &queue, &profile_path, &llm_answer) {
                     // Deliberately terse: a peer that fails to authenticate is
                     // told nothing and logged at debug, so a port scan does not
                     // fill the log or learn that it found the right protocol.
@@ -437,6 +468,7 @@ fn serve(
     mut stream: TcpStream,
     key: &[u8; 32],
     queue: &Arc<Mutex<AlertQueue>>,
+    profile_path: &Path,
     llm_answer: &(impl Fn(&str) -> String + Send + Sync),
 ) -> Result<()> {
     stream.set_read_timeout(Some(IO_TIMEOUT))?;
@@ -457,7 +489,14 @@ fn serve(
         .unwrap_or_default()
         .trim()
         .to_string();
-    respond(&mut stream, key, &ToPhone::Welcome { host, queued })?;
+    // The challenge the handset must sign to prove it is the paired one.
+    // Held for this connection only.
+    let challenge = crate::phonehome::fresh_challenge()?;
+    respond(
+        &mut stream,
+        key,
+        &ToPhone::Welcome { host, queued, challenge: challenge.to_vec() },
+    )?;
 
     loop {
         let frame = match read_frame(&mut stream) {
@@ -485,6 +524,17 @@ fn serve(
                     photo: None,
                 }],
             },
+            FromPhone::Identify { public_key, signature, backing, model, manufacturer } => {
+                identify_handset(
+                    profile_path,
+                    &challenge,
+                    &public_key,
+                    &signature,
+                    &backing,
+                    &model,
+                    &manufacturer,
+                )
+            }
             FromPhone::Hello { .. } => ToPhone::Error {
                 message: "already said hello".to_string(),
             },
@@ -497,6 +547,79 @@ fn respond(stream: &mut TcpStream, key: &[u8; 32], msg: &ToPhone) -> Result<()> 
     let json = serde_json::to_vec(msg)?;
     let sealed = seal(key, &json)?;
     write_frame(stream, &sealed)
+}
+
+/// Decide whether the handset on the line is the paired one, and record it the
+/// first time — the phone's `/definehome`.
+///
+/// A first pairing is accepted and remembered. A later connection with a
+/// different device key is *reported*, not silently accepted and not silently
+/// re-bound: re-pairing is the owner's decision, and quietly adopting whatever
+/// handset turns up would give away the only thing this check buys.
+#[allow(clippy::too_many_arguments)]
+fn identify_handset(
+    profile_path: &Path,
+    challenge: &[u8],
+    public_key: &[u8],
+    signature: &[u8],
+    backing: &str,
+    model: &str,
+    manufacturer: &str,
+) -> ToPhone {
+    use crate::phonehome::{self, PhoneVerdict};
+
+    // Signing comes first: a public key travels, so presenting one proves
+    // nothing at all until it is used.
+    if !phonehome::verify_challenge(public_key, challenge, signature) {
+        log::warn!("phone: a client presented a device key it could not sign with");
+        return ToPhone::Identity {
+            verdict: "rejected".to_string(),
+            detail: "la firma del desafío no verifica: quien está al otro lado no \
+                     tiene la clave privada de ese dispositivo"
+                .to_string(),
+        };
+    }
+
+    let saved = phonehome::load(profile_path);
+    match phonehome::identify(saved.as_ref(), public_key) {
+        PhoneVerdict::SameDevice => {
+            let detail = saved.map(|p| p.describe()).unwrap_or_default();
+            log::info!("phone: paired handset confirmed — {detail}");
+            ToPhone::Identity { verdict: "same_device".to_string(), detail }
+        }
+        PhoneVerdict::NotPaired => {
+            let profile = phonehome::PhoneProfile {
+                public_key_der: public_key.to_vec(),
+                claimed_backing: backing.to_string(),
+                // Verified separately once attestation parsing lands; recorded
+                // as unproven so a later upgrade shows up as a change.
+                attestation_verified: false,
+                model: model.to_string(),
+                manufacturer: manufacturer.to_string(),
+                paired_at_unix: now_unix(),
+            };
+            let detail = profile.describe();
+            match phonehome::save(profile_path, &profile) {
+                Ok(()) => {
+                    log::warn!("phone: HOME HANDSET DEFINED — {detail}");
+                    ToPhone::Identity { verdict: "paired".to_string(), detail }
+                }
+                Err(e) => ToPhone::Error {
+                    message: format!("no pude guardar el perfil del teléfono: {e}"),
+                },
+            }
+        }
+        PhoneVerdict::DifferentDevice => {
+            log::error!(
+                "phone: a DIFFERENT handset answered with a valid pairing key — \
+                 the pairing secret may have been copied"
+            );
+            ToPhone::Identity {
+                verdict: "different_device".to_string(),
+                detail: PhoneVerdict::DifferentDevice.describe().to_string(),
+            }
+        }
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -693,6 +816,36 @@ mod tests {
             );
             println!("interop: opened the JVM's frame");
         }
+
+        // And the device key: a signature the JVM produced with an EC P-256
+        // Keystore-shaped key must verify here. Two ECDSA stacks agreeing on
+        // the ASN.1 encoding is as unsafe to assume as two AEAD stacks
+        // agreeing on a tag length.
+        if let (Ok(c), Ok(pk), Ok(sg)) = (
+            std::env::var("SYSENTINEL_INTEROP_CHALLENGE"),
+            std::env::var("SYSENTINEL_INTEROP_PUBKEY"),
+            std::env::var("SYSENTINEL_INTEROP_SIG"),
+        ) {
+            let unhex = |p: &str| -> Vec<u8> {
+                std::fs::read_to_string(p)
+                    .unwrap()
+                    .trim()
+                    .as_bytes()
+                    .chunks(2)
+                    .map(|c| u8::from_str_radix(std::str::from_utf8(c).unwrap(), 16).unwrap())
+                    .collect()
+            };
+            let challenge = unhex(&c);
+            let pubkey = unhex(&pk);
+            let sig = unhex(&sg);
+            assert!(
+                crate::phonehome::verify_challenge(&pubkey, &challenge, &sig),
+                "the JVM's ECDSA signature must verify here"
+            );
+            // And it must not verify against something else.
+            assert!(!crate::phonehome::verify_challenge(&pubkey, b"otro desafio", &sig));
+            println!("interop: verified the JVM's device-key signature");
+        }
     }
 
     #[test]
@@ -705,7 +858,11 @@ mod tests {
         let ack = serde_json::from_str::<FromPhone>(r#"{"op":"ack","id":7}"#).unwrap();
         assert_eq!(ack, FromPhone::Ack { id: 7 });
 
-        let w = ToPhone::Welcome { host: "laptop".into(), queued: 3 };
+        let w = ToPhone::Welcome {
+            host: "laptop".into(),
+            queued: 3,
+            challenge: vec![0u8; 32],
+        };
         assert!(serde_json::to_string(&w).unwrap().contains("\"queued\":3"));
     }
 }
