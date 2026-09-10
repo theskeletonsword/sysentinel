@@ -119,7 +119,9 @@ const REARM_PCT: i32 = 25;
 /// loop stays silent — battery alerts "no aplican".
 pub fn run_battery_loop(
     config: &crate::config::Config,
-    state: &Arc<Mutex<crate::bot::SharedBotState>>,
+    // Unused since alerts go through `channel`, which resolves its own
+    // destination; kept so every watcher keeps the same signature.
+    _state: &Arc<Mutex<crate::bot::SharedBotState>>,
     settings: &Arc<Mutex<crate::settings::Settings>>,
     llm: &dyn llm::LlmBackend,
     dry_run: bool,
@@ -172,23 +174,18 @@ pub fn run_battery_loop(
         }
         armed = band;
 
-        let chat_id = {
-            let g = state.lock().expect("bot state mutex");
-            g.paired_chat_id
-                .or(config.telegram.chat_id)
-                .filter(|&id| id != 0)
-        };
-        let Some(chat_id) = chat_id else {
+        // No chat id to look up: the channel resolves its own destination, so
+        // a watcher never has to know which transport is carrying this.
+        if crate::channel::is_deaf() {
             continue;
-        };
+        }
 
         let text = speak_battery_persona(config, settings, llm, &b, band);
         if dry_run {
             log::info!("battery-watch (dry): {text}");
             continue;
         }
-        let _ =
-            crate::bot::send_message(&config.telegram.bot_token, chat_id, &text, Some("Markdown"));
+        crate::channel::notify(&text);
     }
 }
 

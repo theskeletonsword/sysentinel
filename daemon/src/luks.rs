@@ -373,11 +373,11 @@ fn scan_for_markers(
             ));
         }
 
-        let _ = if let Some(ph) = &photo {
-            crate::bot::send_photo(&config.telegram.bot_token, chat_id, &caption, ph)
+        if let Some(ph) = &photo {
+            crate::channel::notify_photo(&caption, ph);
         } else {
-            crate::bot::send_message(&config.telegram.bot_token, chat_id, &caption, Some("Markdown"))
-        };
+            crate::channel::notify(&caption);
+        }
         log::warn!(
             "luks: asked owner about decrypt boot {boot_id} (photo={})",
             photo.is_some()

@@ -335,6 +335,20 @@ w_ambiguous  = 22
 # Seconds to wait for a frame while a format is being tried.
 timeout = 10
 
+# ── Sobre Telegram como canal ────────────────────────────────────────────────
+# Poner `enabled = false` arriba apaga el canal por completo: sin token en uso,
+# sin long-poll, y sin un endpoint que un desconocido pueda alcanzar.
+#
+# Antes de hacerlo: comprueba que te queda ALGÚN canal. Un vigilante sin forma
+# de avisar no es un sistema endurecido, es uno que observa y nunca puede
+# contarlo. El daemon avisa en el log si se queda sordo, y también dice qué
+# expone cada canal vivo (el bot de Telegram es alcanzable por cualquiera que
+# lo encuentre, el token es una credencial al portador, y el tráfico cruza
+# servidores que no son tuyos).
+#
+# El destino es la app del teléfono, que puede guardar una clave que esta
+# máquina no alcanza y no necesita a un tercero para entregar un mensaje.
+
 # ── [ipc] ────────────────────────────────────────────────────────────────────
 # Local control socket for the desktop GUI, so you don't have to type into a
 # chat window in front of colleagues.

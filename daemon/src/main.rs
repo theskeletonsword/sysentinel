@@ -38,6 +38,7 @@ mod bot;
 mod battery;
 mod bootkit_audit;
 mod camera;
+mod channel;
 mod classify;
 mod config;
 mod confirm;
@@ -128,6 +129,31 @@ fn main() -> Result<()> {
     let persisted_id = bot::load_paired_chat_id(&config);
     let shared_state: Arc<Mutex<SharedBotState>> =
         Arc::new(Mutex::new(SharedBotState::new(persisted_id)));
+
+    // ── How this daemon reaches its owner ─────────────────────────────────────
+    // Registered once; every watcher then says "reach the owner" without
+    // knowing or caring which transport carries it. That is what makes the
+    // transport replaceable: swapping Telegram for the phone app is a change
+    // here, not across seven watchers.
+    {
+        let telegram = channel::TelegramChannel::new(&config, Arc::clone(&shared_state));
+        channel::init(channel::Channels::new(vec![Box::new(telegram)]));
+
+        if channel::is_deaf() {
+            log::warn!(
+                "no channel can reach you: this daemon will watch and never be able \
+                 to report. Pair a channel, or the alerts go nowhere."
+            );
+        } else {
+            log::info!("channels ready: {}", channel::ready_names().join(", "));
+        }
+        // Say out loud what the live channels expose, rather than leaving it
+        // implied. A bot endpoint strangers can reach is a real property of
+        // this setup and the owner should be reminded of it, not surprised.
+        if let Some(note) = channel::exposure_note() {
+            log::warn!("channel exposure — {note}");
+        }
+    }
 
     // Notification preferences (/settings) — shared with the bot and watchers.
     let settings: Arc<Mutex<settings::Settings>> = Arc::new(Mutex::new(

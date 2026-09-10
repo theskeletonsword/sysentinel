@@ -818,14 +818,10 @@ pub fn run_device_loop(
             continue;
         }
 
-        let chat_id = {
-            let g = state.lock().expect("bot state mutex");
-            g.paired_chat_id
-        };
-        let Some(chat_id) = chat_id else {
-            log::warn!("device-watch: nobody paired — alert not delivered");
+        if crate::channel::is_deaf() {
+            log::warn!("device-watch: no channel can reach the owner — question not asked");
             continue;
-        };
+        }
 
         // Park the question so a plain "sí" from the owner is understood as
         // "I plugged that in" — and accepted into the baseline.
@@ -838,13 +834,8 @@ pub fn run_device_loop(
         let text = format!(
             "{text}\n\n_Responde *sí* si fuiste tú (lo acepto como normal) o *no* si no._"
         );
-        if let Err(e) = crate::bot::send_message(
-            &config.telegram.bot_token,
-            chat_id,
-            &text,
-            Some("Markdown"),
-        ) {
-            log::warn!("device-watch: alert failed: {e:#}");
+        if crate::channel::notify(&text) == 0 {
+            log::warn!("device-watch: nobody could be reached with this question");
         }
     }
 }

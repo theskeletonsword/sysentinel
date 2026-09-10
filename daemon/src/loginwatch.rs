@@ -28,7 +28,7 @@ use std::os::unix::fs::MetadataExt;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use crate::bot::{self, PendingLogin, SharedBotState};
+use crate::bot::{PendingLogin, SharedBotState};
 use crate::camera::{self, CamResult};
 use crate::config::Config;
 use crate::llm;
@@ -246,7 +246,9 @@ impl FailureTracker {
 /// configured; plain text otherwise.
 fn send_with_photo(
     config: &Config,
-    chat_id: i64,
+    // Kept for signature parity across the watchers; alerts now go through
+    // `channel`, which resolves its own destination.
+    _chat_id: i64,
     text: &str,
     dry_run: bool,
 ) {
@@ -286,14 +288,9 @@ fn send_with_photo(
                 } else {
                     format!("{text}\n\n{fatal}")
                 };
-                if let Err(e) =
-                    bot::send_photo(&config.telegram.bot_token, chat_id, &caption, &path)
-                {
-                    log::warn!("loginwatch photo alert failed: {e:#}; text only");
-                    let _ = bot::send_message(
-                        &config.telegram.bot_token, chat_id, &caption, Some("Markdown"),
-                    );
-                }
+                // The channel already falls back to the caption alone when a
+                // transport cannot carry an image.
+                crate::channel::notify_photo(&caption, &path);
                 return;
             }
             CamResult::NoWebcam => {
@@ -304,7 +301,7 @@ fn send_with_photo(
             }
         }
     }
-    let _ = bot::send_message(&config.telegram.bot_token, chat_id, text, Some("Markdown"));
+    crate::channel::notify(text);
 }
 
 /// Speak a login-watcher fact through the persona — passive notices are told
@@ -610,10 +607,8 @@ fn sweep_expired(
             log::info!("DRY RUN — loginwatch timeout: {txt}");
             return;
         }
-        if let Some(chat_id) = chat_id {
-            if let Err(e) = bot::send_message(&config.telegram.bot_token, chat_id, &txt, Some("Markdown")) {
-                log::error!("loginwatch timeout alert failed: {e:#}");
-            }
+        if crate::channel::notify(&txt) == 0 {
+            log::error!("loginwatch: no channel could carry the timeout alert");
         }
     } else {
         let facts = format!(
@@ -635,9 +630,7 @@ fn sweep_expired(
             log::info!("DRY RUN — loginwatch timeout (keep): {txt}");
             return;
         }
-        if let Some(chat_id) = chat_id {
-            let _ = bot::send_message(&config.telegram.bot_token, chat_id, &txt, Some("Markdown"));
-        }
+        crate::channel::notify(&txt);
     }
 }
 

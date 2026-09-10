@@ -319,8 +319,8 @@ fn announce_foreign(
         log::info!("DRY RUN — module-watch announce: {text}");
         return;
     }
-    if let Err(e) = crate::bot::send_message(&config.telegram.bot_token, chat_id, &text, Some("Markdown")) {
-        log::error!("module-watch announce failed: {e:#}");
+    if crate::channel::notify(&text) == 0 {
+        log::error!("module-watch: nobody could be reached with this announce");
     }
 }
 
