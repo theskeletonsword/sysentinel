@@ -419,7 +419,7 @@ mod live_pin {
 
         // The right pin: the handshake completes, so any HTTP status at all is
         // a pass — 404 and 401 both mean TLS worked.
-        let good = super::agent(&[pin.clone()]).unwrap();
+        let good = super::agent(std::slice::from_ref(&pin)).unwrap();
         match good.get(&url).call() {
             Ok(_) => println!("pinned handshake: ok"),
             Err(ureq::Error::Status(code, _)) => println!("pinned handshake: ok (HTTP {code})"),
