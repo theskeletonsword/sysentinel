@@ -67,44 +67,6 @@ undervolted = false
 # talk Chilean Spanish, the alerts will too. Costs one small LLM call per event.
 chatty_alerts = true
 
-# ── [telegram] ───────────────────────────────────────────────────────────────
-
-[telegram]
-# Create a bot via Telegram's @BotFather and paste its token here.
-bot_token   = "REPLACE_WITH_YOUR_BOT_TOKEN"
-
-# Paired Telegram chat ID. Leave as 0 (or omit) to use the pairing-token flow:
-# the daemon prints a "SYN-XXXXX" token in the log; send that token to your bot
-# in Telegram to pair. The chat_id is then saved automatically to state_file.
-#
-# To find your chat_id manually after sending a message to your bot:
-#   curl "https://api.telegram.org/bot<TOKEN>/getUpdates"
-chat_id     = 0
-
-# Enable outbound Telegram alerting at all.
-enabled     = true
-
-# Enable the interactive bot (getUpdates long-poll, pairing flow, AI chat).
-# When false, the daemon sends outbound alerts only (no listener thread).
-interactive = true
-
-# Where to persist the paired chat_id between restarts. Mode 0600.
-state_file  = "/var/lib/sysentinel/state.json"
-
-# ── REQUIRED FOR SECURE PAIRING ───────────────────────────────────────────────
-# Your Telegram user id (get it from @userinfobot in Telegram).
-#
-# The pairing token is BOUND to this id: it only works when sent FROM this exact
-# Telegram account. If someone else opens your bot and even has the token, access
-# is denied. The token itself is stored as an Argon2id hash with a random salt
-# (from /dev/urandom), never in plaintext.
-#
-# Replace 123456789 below with YOUR id from @userinfobot:
-telegram_id  = 0
-#
-# Leave it at 0 (or omit it) and the daemon will REFUSE to generate a pairing
-# token — safer than issuing an unbound one.
-#
 # ── [memory] ─────────────────────────────────────────────────────────────────
 
 [memory]

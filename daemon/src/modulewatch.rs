@@ -294,7 +294,7 @@ fn announce_foreign(
 ) {
     let chat_id = {
         let g = state.lock().expect("bot state mutex");
-        g.paired_chat_id.or(config.telegram.chat_id).filter(|&id| id != 0)
+        g.paired_chat_id
     };
     let Some(chat_id) = chat_id else {
         log::info!("module-watch: foreign module, not paired → logged only");

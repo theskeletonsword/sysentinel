@@ -40,7 +40,6 @@
 //! watching with no way to speak.
 
 use std::path::Path;
-use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
 
@@ -208,66 +207,6 @@ pub fn exposure_note() -> Option<String> {
     CHANNELS.get().and_then(|c| c.exposure_note())
 }
 
-// ── Telegram ──────────────────────────────────────────────────────────────────
-
-/// Telegram, behind the trait like anything else.
-///
-/// Kept because it is out of band, works on every phone and needs no
-/// infrastructure — and marked as third-party-reachable, because it is.
-pub struct TelegramChannel {
-    token: String,
-    enabled: bool,
-    state: Arc<Mutex<crate::bot::SharedBotState>>,
-}
-
-impl TelegramChannel {
-    pub fn new(
-        config: &crate::config::Config,
-        state: Arc<Mutex<crate::bot::SharedBotState>>,
-    ) -> Self {
-        TelegramChannel {
-            token: config.telegram.bot_token.clone(),
-            enabled: config.telegram.enabled,
-            state,
-        }
-    }
-
-    /// The paired chat, or `None` when pairing has not happened.
-    fn chat_id(&self) -> Option<i64> {
-        self.state.lock().expect("bot state mutex").paired_chat_id
-    }
-}
-
-impl Notifier for TelegramChannel {
-    fn name(&self) -> &'static str {
-        "telegram"
-    }
-
-    fn ready(&self) -> bool {
-        self.enabled && !self.token.is_empty() && self.chat_id().is_some()
-    }
-
-    fn third_party_reachable(&self) -> bool {
-        // The bot can be messaged by anyone who finds it, the token is a bearer
-        // credential, and the traffic crosses servers the owner does not run.
-        true
-    }
-
-    fn send_text(&self, text: &str) -> Result<()> {
-        let chat = self
-            .chat_id()
-            .ok_or_else(|| anyhow::anyhow!("telegram not paired"))?;
-        crate::bot::send_message(&self.token, chat, text, Some("Markdown"))
-    }
-
-    fn send_photo(&self, caption: &str, photo: &Path) -> Result<()> {
-        let chat = self
-            .chat_id()
-            .ok_or_else(|| anyhow::anyhow!("telegram not paired"))?;
-        crate::bot::send_photo(&self.token, chat, caption, photo)
-    }
-}
-
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -360,30 +299,4 @@ mod tests {
         assert_eq!(c.notify_photo("intruso", Path::new("/nonexistent.jpg")), 1);
     }
 
-    #[test]
-    fn telegram_admits_what_it_exposes() {
-        // Not a judgement, a property: the bot is reachable by strangers and
-        // the traffic crosses servers the owner does not run.
-        let state = Arc::new(Mutex::new(crate::bot::SharedBotState::new(None)));
-        let cfg: crate::config::Config = toml::from_str(
-            r#"
-            [general]
-            [persona]
-            tone = "casual"
-            emotions = true
-            language = "Spanish"
-            [telegram]
-            bot_token = "t"
-            [llm]
-            model = "m"
-            "#,
-        )
-        .unwrap();
-        let tg = TelegramChannel::new(&cfg, state.clone());
-        assert!(tg.third_party_reachable());
-        // Unpaired means not ready, however well configured.
-        assert!(!tg.ready());
-        state.lock().expect("state").paired_chat_id = Some(42);
-        assert!(tg.ready());
-    }
 }

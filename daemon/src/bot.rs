@@ -1,48 +1,29 @@
 // SPDX-License-Identifier: Apache-2.0
+//! The command layer: everything the owner can ask for or order.
 //!
-//! Interactive Telegram bot — pairing, whitelist, and conversational AI.
+//! `/status`, `/definehome`, `/exec`, `/settings`, `/face`, the bootkit audit,
+//! and the ARM → confirm ritual that guards anything destructive.
 //!
-//! # Architecture
+//! # It owns no transport
 //!
-//! This module runs a long-polling `getUpdates` loop in a dedicated thread.
-//! It shares [`SharedBotState`] with the main kmsg-watcher thread via
-//! `Arc<Mutex<SharedBotState>>`.
+//! This used to be a Telegram bot: it long-polled `getUpdates`, held a bot
+//! token, and answered by POSTing to api.telegram.org. All of that is gone.
+//! What is left never learned what carried it — every reply funnels through
+//! [`TelegramBot::send`], which hands the text to `channel`, and every command
+//! arrives through [`TelegramBot::handle_owner_text`], which the phone calls.
 //!
-//! ## Pairing flow
+//! The struct still carries the old name so that renaming it can be its own
+//! mechanical commit rather than noise inside the removal.
 //!
-//! 1. On daemon start a random, one-time **pairing token** is generated and
-//!    printed to the daemon's log (visible via `journalctl -u sysentinel`).
-//!    Format: `SYN-XXXXX` (5 uppercase alphanumeric characters, ~32-bit entropy).
-//! 2. The user opens Telegram, sends that token to the bot.
-//! 3. The bot validates: correct token AND within the 5-minute window.
-//! 4. On success: the sender's `chat_id` is saved to the state file
-//!    (`/var/lib/sysentinel/state.json`), the token is invalidated immediately,
-//!    and a confirmation message is sent.
-//! 5. From this point on, only messages from the paired `chat_id` are processed.
-//!    Any other sender receives a "not paired" reply.
+//! # And it no longer asks who you are
 //!
-//! ## Interactive chat
-//!
-//! Once paired, any free-form message to the bot is forwarded to the configured
-//! LLM backend together with:
-//! - The configured persona system prompt.
-//! - A live snapshot of the system (uptime, memory, recent kernel alerts,
-//!   Intel ME / AMD PSP firmware version).
-//!
-//! Special commands (always start with `/`):
-//! - `/status`   — short system snapshot.
-//! - `/alerts`   — last N kernel alerts caught by the kmsg watcher.
-//! - `/firmware` — Intel ME / AMD PSP firmware status.
-//! - `/help`     — command list.
-//! - `/unpair`   — remove this chat_id from the whitelist (re-pairing required).
-//!
-//! ## Security properties
-//!
-//! - One paired `chat_id` per daemon instance (no multi-user support).
-//! - Pairing token has 5-minute hard expiry; expired tokens are rejected.
-//! - Token is invalidated immediately on first successful use.
-//! - State file is written with mode 0600 (owner-read-only).
-//! - No inbound commands are accepted before pairing is complete.
+//! The pairing token, its Argon2id hash, the five-minute window, the attempt
+//! counter, the per-user whitelist and the "type YES to confirm" step have all
+//! been deleted. Every one of them existed to answer "is this really the
+//! owner?" on a transport where any stranger could send a message. On the phone
+//! channel nobody can: arriving here already required opening a frame with the
+//! pairing key *and* signing a challenge with a key that cannot leave the
+//! paired handset's secure element. See `phone.rs` and `phonehome.rs`.
 
 use crate::config::Config;
 use crate::kernel_snap;
@@ -52,194 +33,24 @@ use crate::memory::MemoryStore;
 use crate::selinux::{self, AvcDenial};
 use crate::settings::Settings;
 use crate::loginwatch;
-use anyhow::{Context, Result};
-use argon2::{
-    Argon2, PasswordHash, PasswordHasher, PasswordVerifier,
-};
-use password_hash::{rand_core::OsRng, SaltString};
-use serde::{Deserialize, Serialize};
+use anyhow::Result;
+use std::io::Read;
 use std::collections::{HashSet, VecDeque};
-use std::io::{Read, Write as IoWrite};
-use std::os::unix::fs::OpenOptionsExt;
-use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
 
-// ── Pairing state ─────────────────────────────────────────────────────────────
+// The pairing state lived here: a one-time token, its Argon2id hash, the
+// five-minute window, the attempt counter, the "type YES" confirmation. It was
+// all machinery for deciding whether a stranger on a public transport was the
+// owner. The phone answers that with a key its hardware holds, on every
+// connection, so none of it has anywhere to plug in any more.
 
-/// A one-time pairing token with a hard 5-minute expiry, **bound to a single
-/// Telegram user id**.
-///
-/// The token is meaningless on its own: it only succeeds when presented by the
-/// user whose `from.id` equals [`PairingToken::target_user_id`]. This is the
-/// core binding that stops a third party who merely copies the printed token
-/// from pairing their own chat and hijacking the daemon.
-///
-/// # Token hardening (Argon2id)
-///
-/// The plaintext token is generated from `/dev/urandom` and shown **once** in
-/// the daemon log. What the daemon keeps in memory is the Argon2id hash of the
-/// token with a random salt (`SaltString::generate(&mut OsRng)` — OsRng reads
-/// `/dev/urandom` on Linux). The bot verifies a presented token by re-hashing
-/// it with the stored salt and comparing against the hash. A token that leaks
-/// from a memory/state dump therefore cannot be brute-forced or replayed.
-///
-/// # Binding enforcement — two independent layers
-///
-/// 1. The bot rejects any sender whose `from.id` differs from
-///    `target_user_id` (in `handle_pairing`).
-/// 2. As a belt-and-braces measure, the configured `telegram_id` whitelist in
-///    `[telegram]` is applied globally in `handle_message`, so a foreign user
-///    never even reaches pairing logic.
-pub struct PairingToken {
-    /// Plaintext token, held in memory ONLY so it can be logged/announced
-    /// once at startup. Never persisted anywhere.
-    pub token:          String,
-    /// Argon2id PHC hash of the token (`$argon2id$v=19$m=19456,t=2,p=1$…$…`).
-    /// The only representation the daemon keeps for verification.
-    pub token_hash:     String,
-    /// The Telegram user id (`from.id`) this token is bound to.
-    pub target_user_id: i64,
-    pub expires_at:     Instant,
-    /// We asked this user for an explicit identity confirmation ("YES")
-    /// after they presented the correct token. Only `true` unlocks the
-    /// final pairing step.
-    pub awaiting_confirm: bool,
-    /// Consecutive invalid token attempts. Burn the token after
-    /// [`PairingToken::MAX_FAILED_ATTEMPTS`] to stop brute-forcing.
-    pub failed_attempts:  u32,
-}
+// ── Shared state ──────────────────────────────────────────────────────────────
 
-impl PairingToken {
-    const TTL: Duration = Duration::from_secs(5 * 60); // exactly 5 minutes
-    /// Burn the token after this many invalid attempts.
-    const MAX_FAILED_ATTEMPTS: u32 = 5;
-
-    /// Generate a fresh token bound to `target_user_id`.
-    /// Randomness comes from `/dev/urandom`: directly for the token characters,
-    /// and via `OsRng` for the Argon2id salt. 8 bytes → 8 unambiguous chars
-    /// from a 32-symbol alphabet (~40 bits of entropy), one-time use.
-    pub fn generate(target_user_id: i64) -> Self {
-        let mut bytes = [0u8; 8];
-        let mut f = std::fs::File::open("/dev/urandom")
-            .expect("opening /dev/urandom for token generation");
-        f.read_exact(&mut bytes).expect("reading /dev/urandom");
-        // Unambiguous charset: no 0/O, 1/I/L, no lowercase.
-        const CHARSET: &[u8] = b"ABCDEFGHJKMNPQRSTUVWXYZ23456789";
-        let token: String = bytes.iter()
-            .map(|b| CHARSET[(*b as usize) % CHARSET.len()] as char)
-            .collect();
-        let token = format!("SYN-{token}");
-
-        // Argon2id hash with a fresh random salt (~16 bytes from OsRng).
-        let salt = SaltString::generate(&mut OsRng);
-        let hash = Argon2::default()
-            .hash_password(token.as_bytes(), &salt)
-            .expect("Argon2id hashing cannot fail with valid parameters")
-            .to_string();
-
-        Self {
-            token,
-            token_hash: hash,
-            target_user_id,
-            expires_at: Instant::now() + Self::TTL,
-            awaiting_confirm: false,
-            failed_attempts: 0,
-        }
-    }
-
-    /// Constant-ish Argon2id verification of a presented token against the
-    /// stored hash. A correct token returns `true`, anything else `false`.
-    /// This is what "no lien pueden romper el token" means in practice: the
-    /// stored blob is a salted PHC hash, not the shared secret.
-    // Covered by the pairing unit tests; the live path verifies via `check_token`.
-    #[allow(dead_code)]
-    pub fn verify(&self, presented: &str) -> bool {
-        // Normalise what the user typed: trim whitespace and case-fold to
-        // uppercase (the token charset is case-insensitive by convention:
-        // A-Z, 2-9). This absorbs copy/paste noise without weakening anything,
-        // because the token alphabet has no ambiguous chars.
-        let presented = presented.trim().to_uppercase();
-
-        let Ok(parsed) = PasswordHash::new(&self.token_hash) else {
-            log::error!("stored pairing-token hash is not a valid PHC string");
-            return false;
-        };
-
-        // SAFETY-NOTE: `PasswordVerifier`'s `verify_password` times out to a
-        // constant length whether the hash parses or the password mismatches,
-        // defeating timing-based token guessing.
-        match Argon2::default().verify_password(presented.as_bytes(), &parsed) {
-            Ok(()) => true,
-            Err(_) => false,
-        }
-    }
-
-    /// Record one invalid token attempt. Returns `true` if the token must be
-    /// burned (attempt limit reached) so the daemon logs it loudly.
-    pub fn record_failure(&mut self) -> bool {
-        self.failed_attempts += 1;
-        self.failed_attempts >= Self::MAX_FAILED_ATTEMPTS
-    }
-
-    pub fn remaining_attempts(&self) -> u32 {
-        Self::MAX_FAILED_ATTEMPTS.saturating_sub(self.failed_attempts)
-    }
-
-    /// Immediately make the token unusable (used on burn / over-limit).
-    pub fn burn(&mut self) {
-        self.expires_at = Instant::now() - Duration::from_secs(1);
-    }
-
-    pub fn is_valid(&self) -> bool {
-        Instant::now() < self.expires_at
-    }
-
-    /// True when `sender_id` is the exact user this token was minted for.
-    pub fn matches_user(&self, sender_id: i64) -> bool {
-        self.target_user_id == sender_id
-    }
-
-    pub fn seconds_remaining(&self) -> u64 {
-        self.expires_at
-            .checked_duration_since(Instant::now())
-            .unwrap_or(Duration::ZERO)
-            .as_secs()
-    }
-}
-
-// ── Shared bot state ──────────────────────────────────────────────────────────
-
-/// Snapshot of the pending pairing token, copied out of the mutex so it can
-/// be verified without holding the lock during Argon2 evaluation.
-#[derive(Clone)]
-struct PendingPairing {
-    hash:              String,
-    is_valid:          bool,
-    bound_to_sender:   bool,
-    awaiting_confirm:  bool,
-    // Snapshot of the token budget, kept for logging/diagnostics.
-    #[allow(dead_code)]
-    remaining_attempts: u32,
-    seconds_remaining: u64,
-}
-
-impl PendingPairing {
-    /// Argon2id verification against the stored hash.
-    fn verify(&self, presented: &str) -> bool {
-        let Ok(parsed) = PasswordHash::new(&self.hash) else {
-            return false;
-        };
-        Argon2::default().verify_password(presented.as_bytes(), &parsed).is_ok()
-    }
-}
-
-/// State shared between the kmsg-watcher thread and the Telegram bot thread.
+/// State shared between the watcher threads and the command layer.
 pub struct SharedBotState {
-    /// Paired Telegram chat ID, or `None` before pairing.
+    /// Vestigial. Every watcher used to look this up to decide whether anyone
+    /// was reachable; that question now belongs to `channel::is_deaf()`.
     pub paired_chat_id: Option<i64>,
-    /// Current pending pairing token (if any).
-    pub pairing_token:  Option<PairingToken>,
     /// Circular buffer of the last N kernel alert summaries for context.
     pub recent_alerts:  VecDeque<String>,
     /// Raw classified kmsg events (short summaries) since the last *proactive*
@@ -325,8 +136,7 @@ fn fresh_confirm_nonce() -> String {
     let mut bytes = [0u8; 6];
     if std::fs::File::open("/dev/urandom")
         .and_then(|mut f| {
-            use std::io::Read;
-            f.read_exact(&mut bytes)
+                        f.read_exact(&mut bytes)
         })
         .is_err()
     {
@@ -549,7 +359,6 @@ impl SharedBotState {
     pub fn new(paired_chat_id: Option<i64>) -> Self {
         Self {
             paired_chat_id,
-            pairing_token: None,
             recent_alerts: VecDeque::with_capacity(Self::MAX_ALERTS),
             recent_kmsg: VecDeque::with_capacity(Self::MAX_KMSG),
             pending_control: None,
@@ -650,105 +459,13 @@ impl SharedBotState {
 
 // ── Persisted state ───────────────────────────────────────────────────────────
 
-/// Persisted state written to `/var/lib/sysentinel/state.json`.
-#[derive(Debug, Serialize, Deserialize, Default)]
-struct PersistedState {
-    paired_chat_id: Option<i64>,
-}
-
-impl PersistedState {
-    fn path(config: &Config) -> PathBuf {
-        PathBuf::from(&config.telegram.state_file)
-    }
-
-    fn load(config: &Config) -> Option<Self> {
-        let path = Self::path(config);
-        let raw  = std::fs::read_to_string(&path).ok()?;
-        serde_json::from_str(&raw)
-            .map_err(|e| log::warn!("failed to parse state file {}: {e:#}", path.display()))
-            .ok()
-    }
-
-    fn save(&self, config: &Config) -> Result<()> {
-        let path = Self::path(config);
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("creating state directory {}", parent.display()))?;
-        }
-        let json = serde_json::to_string_pretty(self)?;
-        // mode 0600: only the owner can read the chat_id.
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&path)
-            .with_context(|| format!("writing state file {}", path.display()))?;
-        file.write_all(json.as_bytes())?;
-        Ok(())
-    }
-}
-
-// ── Telegram API types ────────────────────────────────────────────────────────
-
-#[derive(Deserialize)]
-struct TgResponse<T> {
-    ok:     bool,
-    result: Option<T>,
-}
-
-#[derive(Deserialize, Clone)]
-struct TgUpdate {
-    update_id: i64,
-    message:   Option<TgMessage>,
-}
-
-#[derive(Deserialize, Clone)]
-struct TgMessage {
-    chat: TgChat,
-    from: Option<TgUser>,
-    text: Option<String>,
-    // Part of the Telegram wire format; deserialised but not consulted.
-    #[allow(dead_code)]
-    date: i64,
-    /// Photos sent by the user (`/face register`). Sorted largest→smallest.
-    #[serde(default)]
-    photo: Vec<TgPhotoSize>,
-}
-
-#[derive(Deserialize, Clone)]
-struct TgPhotoSize {
-    file_id: String,
-    width:   u32,
-    height:  u32,
-}
-
-#[derive(Deserialize, Clone)]
-struct TgChat {
-    id: i64,
-}
-
-#[derive(Deserialize, Clone)]
-struct TgUser {
-    id:         i64,
-    first_name: String,
-    username:   Option<String>,
-}
-
-#[derive(Serialize)]
-struct SendMessageBody<'a> {
-    chat_id:                  i64,
-    text:                     &'a str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    parse_mode:               Option<&'a str>,
-    disable_web_page_preview: bool,
-}
-
-// ── Telegram bot runner ───────────────────────────────────────────────────────
+// `PersistedState` lived here. Its whole content was a Telegram chat id, and
+// there is nothing left to remember: the phone identifies itself by a key its
+// hardware holds, every time it connects, so pairing is not something the
+// daemon has to write down and trust on the next boot.
 
 /// Runs the interactive Telegram bot loop.
 pub struct TelegramBot {
-    bot_token:     String,
     llm:           Arc<llm::RuntimeLlm>,
     /// Startup default; each turn resolves its own via `effective_system_prompt`.
     #[allow(dead_code)]
@@ -769,7 +486,6 @@ impl TelegramBot {
         settings:      Arc<Mutex<Settings>>,
     ) -> Self {
         let max_tokens = config.llm.max_tokens;
-        let bot_token  = config.telegram.bot_token.clone();
         // `/settings context_entries` (persisted) overrides the config value.
         let context_entries = {
             let s = settings.lock().expect("settings mutex");
@@ -784,7 +500,7 @@ impl TelegramBot {
             &config.memory.context_file,
             context_entries,
         );
-        Self { bot_token, llm, system_prompt, max_tokens, state, settings, config, memory }
+        Self { llm, system_prompt, max_tokens, state, settings, config, memory }
     }
 
     /// The `n_ctx` (llama.cpp context length) currently in effect; 0 = don't
@@ -814,366 +530,52 @@ impl TelegramBot {
         }
     }
 
-    /// The main loop. Blocks forever; run in a dedicated `std::thread::spawn`.
-    pub fn run(self) {
-        log::info!("telegram bot: starting getUpdates long-poll loop");
-        let mut offset: i64 = 0;
-
-        loop {
-            match self.poll_updates(offset) {
-                Ok(updates) => {
-                    for update in updates {
-                        offset = offset.max(update.update_id + 1);
-                        if let Some(msg) = update.message {
-                            self.handle_message(&msg);
-                        }
-                    }
-                }
-                Err(e) => {
-                    log::error!("telegram getUpdates failed: {e:#}; retrying in 10s");
-                    std::thread::sleep(Duration::from_secs(10));
-                }
-            }
+    /// Handle one line from the owner, whatever carried it.
+    ///
+    /// This is what the phone's `say` op calls. There is no polling loop any
+    /// more: nothing reaches out to a third party's API, and nothing waits for
+    /// strangers to message it. The phone connects to us, proves which handset
+    /// it is, and what it says arrives here.
+    pub fn handle_owner_text(&self, text: &str) {
+        let text = text.trim();
+        if !text.is_empty() {
+            self.dispatch(text);
         }
     }
 
-    fn api_url(&self, method: &str) -> String {
-        format!("https://api.telegram.org/bot{}/{method}", self.bot_token)
+    /// Dispatch one command or message from the owner.
+    ///
+    /// # How identity is established now
+    ///
+    /// The pairing token, the per-user whitelist and the "already paired to
+    /// another device" branch all lived here and are all gone. They existed to
+    /// answer "is this really the owner?" over a transport where anyone could
+    /// send a message. On this one nobody can: reaching this function already
+    /// required opening a frame with the pairing key **and** signing a
+    /// challenge with a key that cannot leave the paired handset's secure
+    /// element. See `phone.rs` and `phonehome.rs`.
+    ///
+    /// That is strictly stronger than what it replaces. A chat id is an
+    /// identifier a third party assigns and routes; a device key is hardware
+    /// that either is present or is not.
+    fn dispatch(&self, text: &str) {
+        self.handle_paired_message(0, text, "owner");
     }
 
-    /// Long-poll for new updates. Times out after 30 seconds (Telegram
-    /// standard); returns an empty vec on timeout or no new messages.
-    fn poll_updates(&self, offset: i64) -> Result<Vec<TgUpdate>> {
-        #[derive(Serialize)]
-        struct Params { offset: i64, timeout: u64, limit: u8 }
-
-        let resp: TgResponse<Vec<TgUpdate>> = ureq::post(&self.api_url("getUpdates"))
-            .timeout(Duration::from_secs(35)) // slightly more than telegram timeout
-            .send_json(&Params { offset, timeout: 30, limit: 10 })
-            .context("Telegram getUpdates request")?
-            .into_json()
-            .context("parsing Telegram getUpdates response")?;
-
-        if !resp.ok {
-            anyhow::bail!("Telegram API returned ok=false for getUpdates");
-        }
-        Ok(resp.result.unwrap_or_default())
-    }
-
-    /// Dispatch a received message.
-    ///
-    /// # Security: user-level whitelist
-    ///
-    /// When `config.telegram.telegram_id` is set, **any** message whose
-    /// `from.id` does not match is rejected here, before pairing logic runs.
-    /// This means a third party who obtains the pairing token still cannot
-    /// hack the bot: the token is only accepted from the authorised user.
-    fn handle_message(&self, msg: &TgMessage) {
-        let chat_id  = msg.chat.id;
-        let text     = msg.text.as_deref().unwrap_or("").trim();
-        let username = msg.from.as_ref()
-            .map(|u| u.username.as_deref().unwrap_or(&u.first_name))
-            .unwrap_or("unknown");
-
-        log::debug!("telegram: message from chat_id={chat_id} user={username}: {:?}", text);
-
-        // ── Enforce the per-user whitelist BEFORE anything else ──────────────
-        if let Some(allowed) = self.config.telegram.telegram_id {
-            let sender_id = msg.from.as_ref().map(|u| u.id);
-            if sender_id != Some(allowed) {
-                log::warn!(
-                    "telegram: DENIED — user '{username}' (id={:?}, chat={chat_id}) is not \
-                     the authorised user (id={allowed}); ignoring message",
-                    sender_id,
-                );
-                // Do NOT reveal that a token exists, that the bot is paired,
-                // or any other detail. Minimal, uninformative reply.
-                let _ = self.send(chat_id, "⛔ Access denied.");
-                return;
-            }
-        }
-
-        let paired_id = self.state.lock().expect("bot state mutex").paired_chat_id;
-
-        match paired_id {
-            None => {
-                // Not paired yet — only accept a valid pairing token.
-                let sender_id = msg.from.as_ref().map(|u| u.id);
-                self.handle_pairing(chat_id, text, username, sender_id);
-            }
-            Some(pid) if pid == chat_id => {
-                // Message from the paired user. A photo while a `/face register`
-                // is arming is consumed here (face enrollment); otherwise the
-                // message is treated as text (which is empty for a photo).
-                if !msg.photo.is_empty() {
-                    let wants = {
-                        let g = self.state.lock().expect("bot state mutex");
-                        g.face_pending > 0
-                    };
-                    if wants {
-                        self.enroll_face_photo(chat_id, msg);
-                        return;
-                    }
-                }
-                self.handle_paired_message(chat_id, text, username);
-            }
-            Some(_) => {
-                // Message from a stranger on a *different* chat, but from the
-                // authorised user — brief, uninformative rejection.
-                let _ = self.send(chat_id, "⛔ This bot is already paired to another device.");
-            }
-        }
-    }
-
-    /// Handle a message when no pairing has occurred yet.
-    ///
-    /// # Challenge–response, token→user binding
-    ///
-    /// The bot *asks* the user to present the token rather than passively
-    /// waiting. Pairing requires passing BOTH steps:
-    ///
-    /// 1. **Token proof** — the sender presents the token from the daemon log.
-    ///    Accepted only when all of:
-    ///      - the sender's `from.id` equals the token's `target_user_id`, AND
-    ///      - the token Argon2id-verifies against the stored hash, AND
-    ///      - it is still within its 5-minute window.
-    /// 2. **Explicit identity confirmation** — the bot then asks: *"type YES
-    ///    to confirm"*. Only an explicit affirmative reply from the same user
-    ///    opens the door (the answer may come in any language — the LLM judge
-    ///    reads it). This is the "el bot debe saber que eres TÚ" guarantee:
-    ///    even possession of the token alone never pairs on its own.
-    ///
-    /// A stranger who copies the token cannot pair (wrong `from.id`); the
-    /// stored hash cannot be reversed or brute-forced; and repeated invalid
-    /// attempts burn the token entirely.
-    fn handle_pairing(
-        &self,
-        chat_id: i64,
-        text: &str,
-        username: &str,
-        sender_id: Option<i64>,
-    ) {
-        let Some(sender_id) = sender_id else {
-            // We could not resolve who sent this (Telegram always sends
-            // `from` on private chats, so this is defensive only).
-            log::warn!("telegram: pairing message with no sender id; ignoring");
-            return;
-        };
-
-        // Snapshot the pending token under the lock, then verify off-lock.
-        let pending = {
-            let guard = self.state.lock().expect("bot state mutex");
-            guard.pairing_token.as_ref().map(|t| PendingPairing {
-                hash:               t.token_hash.clone(),
-                is_valid:           t.is_valid(),
-                bound_to_sender:    t.matches_user(sender_id),
-                awaiting_confirm:   t.awaiting_confirm,
-                remaining_attempts: t.remaining_attempts(),
-                seconds_remaining:  t.seconds_remaining(),
-            })
-        };
-
-        // ── No token active at all ───────────────────────────────────────────
-        let Some(token) = pending else {
-            let _ = self.send(
-                chat_id,
-                "⚠️ No pairing token is currently active. \
-                 Restart the daemon or check the log \
-                 (`journalctl -u sysentinel`) for a token.",
-            );
-            return;
-        };
-
-        // ── Token expired OR bound to a different user ───────────────────────
-        if !token.is_valid || !token.bound_to_sender {
-            log::warn!(
-                "telegram: pairing denied for user '{}' (id={sender_id}, chat={chat_id}): {}",
-                username,
-                if !token.bound_to_sender {
-                    "token bound to a different Telegram account"
-                } else {
-                    "token expired"
-                },
-            );
-            let _ = self.send(
-                chat_id,
-                "⛔ Access denied. This pairing token cannot be used from this account.",
-            );
-            return;
-        }
-
-        // ── Step 2: explicit identity confirmation ───────────────────────────
-        if token.awaiting_confirm {
-            if Self::is_confirmation_phrase(text) {
-                self.complete_pairing(chat_id, username, sender_id);
-            } else {
-                // Language-agnostic: the conversational judge reads a clear
-                // yes/no in ANY language ("ja", "nein", "sì"…) — an explicit
-                // English "DENY" is always a hard "no".
-                match self.llm_yes_no(
-                    "A security bot is asking the owner for final confirmation \
-                     to bind their Telegram chat to this machine. Should this \
-                     chat be paired?",
-                    text,
-                ) {
-                    Some(true) => {
-                        log::info!(
-                            "telegram: pairing confirmed conversationally (id={sender_id}, chat={chat_id})"
-                        );
-                        self.complete_pairing(chat_id, username, sender_id);
-                    }
-                    Some(false) => {
-                        {
-                            let mut guard = self.state.lock().expect("bot state mutex");
-                            if let Some(t) = guard.pairing_token.as_mut() {
-                                t.burn();
-                            }
-                        }
-                        log::warn!(
-                            "telegram: pairing DENIED by user '{}' (id={sender_id}, chat={chat_id}); token burned",
-                            username
-                        );
-                        let _ = self.send_markdown(
-                            chat_id,
-                            "⛔ Pairing denied and the token was discarded. \
-                             If you did not expect this, check the machine now.",
-                        );
-                    }
-                    None => {
-                        let reminder = "\
-✅ *Token accepted.*\n\
-But before this chat can talk to the kernel, I need final confirmation.\n\
-\n\
-⚠️ *WARNING:* pairing grants this chat the ability to ask anything about the \
-machine (kernel events, memory, firmware, PMU counters).\n\
-\n\
-If this is really you, reply: **YES**\n\
-If you did NOT expect this, reply: **DENY** (or ignore — the token dies in \
-a few minutes).";
-
-                        // If they explicitly deny, kill the token immediately.
-                        if Self::is_denial_phrase(text) {
-                            {
-                                let mut guard = self.state.lock().expect("bot state mutex");
-                                if let Some(t) = guard.pairing_token.as_mut() {
-                                    t.burn();
-                                }
-                            }
-                            log::warn!(
-                                "telegram: pairing DENIED by user '{}' (id={sender_id}, chat={chat_id}); token burned",
-                                username
-                            );
-                        }
-                        let _ = self.send_markdown(chat_id, reminder);
-                    }
-                }
-            }
-            return;
-        }
-
-        // ── Step 1: ask for the token if nothing was presented ───────────────
-        if text.is_empty() {
-            let minutes = token.seconds_remaining.div_ceil(60);
-            let prompt = format!(
-                "🔑 *Pairing required.*\n\
-                 Send me the pairing token from the daemon log.\n\
-                 (It looks like `SYN-XXXXXXXX` and is valid for {minutes} minute(s).)",
-            );
-            let _ = self.send(chat_id, &prompt);
-            return;
-        }
-
-        // ── Step 1: verify the presented token ───────────────────────────────
-        if token.verify(text.trim()) {
-            {
-                let mut guard = self.state.lock().expect("bot state mutex");
-                if let Some(t) = guard.pairing_token.as_mut() {
-                    t.awaiting_confirm = true;
-                }
-            }
-            log::info!(
-                "telegram: token accepted from user '{}' (id={sender_id}, chat={chat_id}); \
-                 requesting identity confirmation",
-                username
-            );
-            let msg = "\
-✅ *Token accepted.*\n\
-\n\
-I have kernel access to the machine, so I must be 100% sure it is really you.\n\
-If this is really you, reply: **YES**\n\
-If you did NOT expect this, reply: **DENY**";
-            let _ = self.send_markdown(chat_id, msg);
-            return;
-        }
-
-        // ── Invalid token: record failure; burn after too many attempts ─────
-        let (burned, remaining) = {
-            let mut guard = self.state.lock().expect("bot state mutex");
-            let mut burned = false;
-            let mut remaining = 0u32;
-            if let Some(t) = guard.pairing_token.as_mut() {
-                if t.record_failure() {
-                    t.burn();
-                    burned = true;
-                }
-                remaining = t.remaining_attempts();
-            }
-            (burned, remaining)
-        };
-
-        if burned {
-            log::error!(
-                "telegram: pairing token BURNED after too many invalid attempts \
-                 (user '{}', id={sender_id}, chat={chat_id})",
-                username
-            );
-            let _ = self.send(
-                chat_id,
-                "🚫 Too many invalid attempts. The token has been revoked. \
-                 Restart the daemon to generate a new one.",
-            );
-        } else {
-            log::warn!(
-                "telegram: invalid pairing token from user '{}' (id={sender_id}, chat={chat_id}): {:?} — {} attempt(s) left",
-                username, text, remaining
-            );
-            let _ = self.send(
-                chat_id,
-                &format!(
-                    "❌ Invalid pairing token. {remaining} attempt(s) left before the token is revoked."
-                ),
-            );
-        }
-    }
-
-    /// Complete the pairing for an identity-confirmed user.
-    fn complete_pairing(&self, chat_id: i64, username: &str, sender_id: i64) {
-        {
-            let mut guard = self.state.lock().expect("bot state mutex");
-            guard.paired_chat_id = Some(chat_id);
-            guard.pairing_token  = None; // consumed: one-time use only
-        }
-
-        // Persist.
-        let state = PersistedState { paired_chat_id: Some(chat_id) };
-        if let Err(e) = state.save(&self.config) {
-            log::error!("failed to save pairing state: {e:#}");
-        }
-
-        log::info!(
-            "telegram: PAIRED successfully with user '{}' (id={sender_id}, chat_id={}) \
-             after token + explicit confirmation",
-            username, chat_id
-        );
-
-        let reply = "✅ *Paired and confirmed.*\n\
-                     Your system is now connected to this chat.\n\
-                     You can ask me anything about your machine.\n\n\
-                     Try: `/start` for the menu, or just ask a question.";
-        let _ = self.send_markdown(chat_id, reply);
-    }
+    // `handle_pairing` lived here: the token, the Argon2id verification, the
+    // five-minute window, the "type YES to confirm" step. All of it existed
+    // because on a transport anyone could message, the daemon had to work out
+    // whether a stranger was talking to it. On this one the question does not
+    // arise — see `dispatch`.
+    // `complete_pairing` lived here, alongside the token flow it finished.
+    // Pairing is now the phone proving possession of a key its hardware holds,
+    // on every connection — see `phonehome.rs`. There is no moment of "now we
+    // are paired" for the daemon to persist and trust on the next boot.
 
     /// The exact phrases that count as an identity confirmation.
+    // Kept: the confirmation/denial judges and the enrolment embedding are the
+    // pieces `/face register` needs once photos arrive over the phone channel.
+    #[allow(dead_code)]
     fn is_confirmation_phrase(text: &str) -> bool {
         matches!(
             text.trim().to_lowercase().as_str(),
@@ -1182,6 +584,7 @@ If you did NOT expect this, reply: **DENY**";
     }
 
     /// The exact phrases that explicitly abort an in-progress pairing.
+    #[allow(dead_code)]
     fn is_denial_phrase(text: &str) -> bool {
         matches!(
             text.trim().to_lowercase().as_str(),
@@ -1462,7 +865,7 @@ If you did NOT expect this, reply: **DENY**";
              hidden LKM in .init, suspicious writes)? Say what you'd keep an eye on. Be \
              brief — the essentials only, in the user's language.",
             pm.name, pm.size_kb, if pm.used_by == "-" { "none" } else { &pm.used_by },
-            truncate_for_telegram(&disasm)
+            truncate_for_message(&disasm)
         );
 
         let request = ChatRequest {
@@ -1476,7 +879,7 @@ If you did NOT expect this, reply: **DENY**";
         match self.llm.chat(&request) {
             Ok(reply) => {
                 let header = format!("🧠 *Analysis of `{}`*\n\n", pm.name);
-                let _ = self.send_markdown(chat_id, &truncate_for_telegram(&(header + &reply)));
+                let _ = self.send_markdown(chat_id, &truncate_for_message(&(header + &reply)));
             }
             Err(e) => {
                 log::error!("module analysis LLM failed: {e:#}");
@@ -1559,7 +962,7 @@ If you did NOT expect this, reply: **DENY**";
                 log::warn!("persona voice dropped ({e:#}); forwarding raw facts");
                 facts.to_string()
             });
-        let _ = self.send_markdown(chat_id, &truncate_for_telegram(&text));
+        let _ = self.send_markdown(chat_id, &truncate_for_message(&text));
     }
 
     /// Try to interpret `text` as a control command, a control confirmation,
@@ -2811,7 +2214,7 @@ PMU).";
                 lines.push_str(&format!("  ▪ `{name}` — {hint}\n"));
             }
             lines.push_str("\nSingle switch: `/llm <name>`\nWhole chain: `/settings backends a,b,c`");
-            let _ = self.send_markdown(chat_id, &truncate_for_telegram(&lines));
+            let _ = self.send_markdown(chat_id, &truncate_for_message(&lines));
             return;
         }
 
@@ -2934,7 +2337,7 @@ PMU).";
         lines.push_str("\nPick one: `/model <name>`\n");
         lines.push_str("Ready command: `/models <name>`\n");
         lines.push_str("Local provider: `/llm local`");
-        let _ = self.send_markdown(chat_id, &truncate_for_telegram(&lines));
+        let _ = self.send_markdown(chat_id, &truncate_for_message(&lines));
     }
 
     /// `/model [<provider>] [<m1,m2>]` — show or switch the working model(s).
@@ -3115,7 +2518,7 @@ PMU).";
             let _ = self.send(chat_id, "🧠 context.txt is empty (no conversation yet).");
             return;
         }
-        let text = truncate_for_telegram(&text);
+        let text = truncate_for_message(&text);
         let _ = self.send_markdown(chat_id, &format!("🧠 *Conversation context:*\n```\n{text}\n```"));
     }
 
@@ -3129,7 +2532,7 @@ PMU).";
             );
             return;
         }
-        let text = truncate_for_telegram(&text);
+        let text = truncate_for_message(&text);
         let _ = self.send_markdown(chat_id, &format!("💾 *Long-term memory:*\n```\n{text}\n```"));
     }
 
@@ -3175,34 +2578,30 @@ PMU).";
         let _ = self.send_markdown(chat_id, &crate::hwinfo::modules_report());
     }
 
-    fn cmd_unpair(&self, chat_id: i64, username: &str) {
-        {
-            let mut guard = self.state.lock().expect("bot state mutex");
-            guard.paired_chat_id = None;
+    /// Forget the paired handset, so the next one to connect becomes home.
+    ///
+    /// The equivalent of the old `/unpair`: there is no chat id to clear any
+    /// more, only the recorded device key.
+    fn cmd_unpair(&self, chat_id: i64, _username: &str) {
+        let path = crate::phonehome::profile_path(&self.config.phone.queue_path);
+        match std::fs::remove_file(&path) {
+            Ok(()) => {
+                log::warn!("phone: home handset forgotten ({})", path.display());
+                let _ = self.send(
+                    chat_id,
+                    "🔓 Olvidé el teléfono emparejado. El próximo que se conecte con \
+                     la clave de emparejamiento quedará registrado como el tuyo.",
+                );
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                let _ = self.send(chat_id, "No había ningún teléfono registrado.");
+            }
+            Err(e) => {
+                let _ = self.send(chat_id, &format!("❌ No pude olvidarlo: {e}"));
+            }
         }
-        let state = PersistedState { paired_chat_id: None };
-        if let Err(e) = state.save(&self.config) {
-            log::error!("failed to clear pairing state: {e:#}");
-        }
-        log::info!("telegram: unpaired user '{}' (chat_id={})", username, chat_id);
-        let _ = self.send(
-            chat_id,
-            "🔓 Unpaired. The bot will no longer accept messages from this chat.\n\
-             Restart the daemon and use the new pairing token to re-pair.",
-        );
     }
 
-    /// `/definehome` / `/detecthome` — bind or re-check "this is my PC".
-    ///
-    /// * `/definehome` — show this machine's fingerprint; with no saved
-    ///   profile it defines THIS PC as home.
-    /// * `/definehome status` — show the saved HOME profile + ring −3
-    ///   firmware drift (silicon is stable, fw moves).
-    /// * `/definehome hal` — the HAL / ring −3 coprocessor detail
-    ///   (Intel ME via HECI/MKHI, AMD PSP, HECI bus, TPM chips, chipset,
-    ///   hypervisor truth).
-    /// * `/definehome audit` — bootkit auditor (alias of `/bootkit`).
-    /// * `/definehome delete` — forget the saved profile (you changed PCs).
     fn cmd_definehome(&self, chat_id: i64, rest: &str) {
         use crate::detecthome;
 
@@ -3502,7 +2901,7 @@ PMU).";
             return;
         }
 
-        let block = truncate_for_telegram(&format!("```\n{}\n```", notable.join("\n")));
+        let block = truncate_for_message(&format!("```\n{}\n```", notable.join("\n")));
         self.voice_in_persona(
             chat_id,
             &format!(
@@ -3679,60 +3078,16 @@ PMU).";
         }
     }
 
-    /// Consume one incoming photo while `/face register` is arming: compute the
-    /// two perceptual hashes locally and persist them. Never stores the image.
-    fn enroll_face_photo(&self, chat_id: i64, msg: &TgMessage) {
-        let cancel = |bot: &TelegramBot, chat_id: i64, why: &str| {
-            bot.state.lock().expect("bot state mutex").face_pending = 0;
-            let _ = bot.send(chat_id, &format!("Aborté el registro: {why}"));
-        };
-        let Some(photo) = msg.photo.iter().max_by_key(|p| p.width * p.height) else {
-            return cancel(self, chat_id, "sin foto descargable");
-        };
-        let bytes = match fetch_file_bytes(&self.bot_token, &photo.file_id) {
-            Ok(b) => b,
-            Err(e) => return cancel(self, chat_id, &format!("no pude descargar la foto: {e:#}")),
-        };
-        let img = match image::load_from_memory(&bytes) {
-            Ok(i) => i,
-            Err(e) => return cancel(self, chat_id, &format!("no pude decodificar la foto: {e:#}")),
-        };
-        let mut store = match crate::fhash::FaceStore::load(std::path::Path::new(&self.config.face.path))
-        {
-            Ok(s) => s,
-            Err(e) => return cancel(self, chat_id, &format!("store de caras ilegible: {e:#}")),
-        };
-        // 128-D embedding opcional: lo calcula el tool estático del initramfs
-        // (detect→align→embed). Si el tool falta o no hay cara, el enroll cae
-        // al veredicto por hashes y el pipeline NN se queda sin template.
-        let embedding = self.face_embedding(&bytes);
-        let (p, w) = store.add_image_with_embedding(&img, embedding);
-        if let Err(e) = store.save() {
-            return cancel(self, chat_id, &format!("no pude guardar los hashes: {e:#}"));
-        }
-        store.mirror_to_esp();
-        let remaining = {
-            let mut g = self.state.lock().expect("bot state mutex");
-            g.face_pending = g.face_pending.saturating_sub(1);
-            g.face_pending
-        };
-        log::info!("face register: +1 enroll p={p:08x} w={w:08x} ({} left)", remaining);
-        if remaining == 0 {
-            let _ = self.send(
-                chat_id,
-                "Rostro registrado. De aquí en adelante, al iniciar sesión compararé la \
-                 cámara contra estos hashes (pHash/wHash + Hamming). No guardo fotos. \
-                 Los templates faciales se espejan al ESP para que el initramfs te \
-                 reconozca en el arranque antes de descifrar (umbral cosine 0.5).",
-            );
-        } else {
-            let _ = self.send(chat_id, &format!("Recibida. Quedan *{remaining}* foto(s)."));
-        }
-    }
+    // `enroll_face_photo` lived here: it consumed an incoming photo while
+    // `/face register` was arming, downloading it by Telegram file_id. There is
+    // no such thing any more. Photos will arrive over the phone channel, and
+    // wiring `/face register` to that is a separate change rather than a
+    // half-ported function left compiling against nothing.
 
     /// 128-D embedding de una foto vía el tool estático del initramfs
     /// (`sysentinel-face --embed`), usado como template del veredicto NN.
     /// `None` cuando el tool no está instalado, no hay cara o algo falló.
+    #[allow(dead_code)]
     fn face_embedding(&self, bytes: &[u8]) -> Option<Vec<f32>> {
         #[derive(serde::Deserialize)]
         struct ToolOut {
@@ -3958,255 +3313,152 @@ PMU).";
 
     // ── Telegram send helpers ─────────────────────────────────────────────────
 
-    fn send(&self, chat_id: i64, text: &str) -> Result<()> {
-        send_message(&self.bot_token, chat_id, text, None)
+    /// Reply to the owner.
+    ///
+    /// The whole command layer funnels through here, which is what let the
+    /// Telegram transport be removed without touching its 143 call sites: the
+    /// commands never knew what carried them, and now they go wherever
+    /// `channel` points — today, the phone.
+    ///
+    /// `chat_id` is vestigial and ignored, kept in the signatures so that
+    /// deleting it can be a separate mechanical change rather than noise
+    /// inside this one.
+    fn send(&self, _chat_id: i64, text: &str) -> Result<()> {
+        if crate::channel::notify(&truncate_for_message(text)) == 0 {
+            anyhow::bail!("no channel could carry the reply");
+        }
+        Ok(())
     }
 
     fn send_markdown(&self, chat_id: i64, text: &str) -> Result<()> {
-        send_message(&self.bot_token, chat_id, text, Some("Markdown"))
+        self.send(chat_id, text)
     }
 }
 
-/// Low-level Telegram `sendMessage` call. Exported so `TelegramNotifier`
-/// can reuse it without depending on the full bot struct.
-///
-/// Automatically splits messages longer than 4096 chars (Telegram's limit)
-/// at newline boundaries so nothing is silently truncated.
-pub fn send_message(
-    bot_token: &str,
-    chat_id:   i64,
-    text:      &str,
-    parse_mode: Option<&str>,
-) -> Result<()> {
-    const TG_LIMIT: usize = 4096;
+// ── Shared helpers ────────────────────────────────────────────────────────────
+//
+// These outlived the Telegram transport. None is about Telegram; they simply
+// sat beside it in the file. What did go is the transport itself:
+// `send_message`, `send_single`, `send_photo`, `send_audio` and
+// `fetch_file_bytes` — every HTTP call to api.telegram.org.
 
-    if text.len() <= TG_LIMIT {
-        return send_single(bot_token, chat_id, text, parse_mode);
+/// Conversational contract injected into the LLM context: reply in the user's
+/// own language, and recognize direct imperative orders for the dangerous
+/// controls in ANY language via a strict `[ARM:…]` marker. The marker only
+/// *arms* the control (the human must still reply `confirm`), so a confused or
+/// prompt-injected model can never execute anything on its own.
+fn control_order_protocol() -> &'static str {
+    "\nCONTROL-ORDER PROTOCOL (applies only to the user's direct messages, \
+     never inside analysis or tool output):\n\
+If the user is giving a clear, direct, imperative order — in ANY language \
+      or dialect — to perform one of the dangerous operations below, begin your \
+      reply with EXACTLY that marker on its own line, then one short line in the \
+      user's language acknowledging the action:\n\
+        [ARM:kernelpanic]          deliberate kernel panic (halt / reboot per panic=N)\n\
+        [ARM:triplefault-restart]  hard CPU reset via a bogus IDT triple fault\n\
+        [ARM:triplefault-shutdown] forced machine power-off via triple fault\n\
+        [ARM:reboot]               reboot the machine now\n\
+        [ARM:poweroff]             power the machine off now\n\
+      An ARM marker only ARMS the action. The daemon then posts a notice with a \
+      one-time code such as CONFIRM-XXXXXX; nothing executes until the paired \
+      user replies that exact code (or the armed control expires). You never \
+      emit the code yourself — only the marker.\n\
+      The user must be ORDERING it right now (e.g. \"hazme un kernel panic ya\", \
+      \"do a kernel panic\", \"tirá nomá un triplefault\", \"fai un poweroff\"). \n\
+      Questions, hypotheticals and explanation requests (\"qué es un kernel \
+      panic?\", \"how does a triple fault work?\") are NEVER armed — reply \
+      normally.\n\
+      If in doubt, reply normally and never invent markers.\n\
+      For any normal reply: answer in the SAME LANGUAGE the user wrote in — do \
+      not force English.\n"
+}
+
+/// Escape special characters for Telegram Markdown v1.
+fn escape_markdown(s: &str) -> String {
+    s.replace('_', "\\_")
+     .replace('*', "\\*")
+     .replace('[', "\\[")
+     .replace('`', "\\`")
+}
+
+/// Short system snapshot formatted for Telegram (Markdown).
+fn gather_system_snapshot() -> Result<String> {
+    let mut out = String::from("🖥 *System Status*\n\n");
+
+    if let Ok(raw) = std::fs::read_to_string("/proc/uptime") {
+        let secs: f64 = raw.split_whitespace().next()
+            .and_then(|s| s.parse().ok()).unwrap_or(0.0);
+        let d = (secs / 86400.0) as u64;
+        let h = ((secs % 86400.0) / 3600.0) as u64;
+        let m = ((secs % 3600.0)  / 60.0)   as u64;
+        out.push_str(&format!("⏱ Uptime: {d}d {h}h {m}m\n"));
     }
 
-    // Split on newlines, trying to keep chunks under the limit.
-    let mut chunks: Vec<String> = Vec::new();
-    let mut current = String::new();
+    if let Ok(raw) = std::fs::read_to_string("/proc/loadavg") {
+        out.push_str(&format!("📊 Load: `{}`\n", raw.trim()));
+    }
 
-    for line in text.split('\n') {
-        // +1 for the newline we're about to add (or already implicit).
-        if !current.is_empty() && current.len() + 1 + line.len() > TG_LIMIT {
-            chunks.push(std::mem::take(&mut current));
-        }
-        if !current.is_empty() {
-            current.push('\n');
-        }
-        current.push_str(line);
-
-        // Single line longer than the limit — hard-split it.
-        while current.len() > TG_LIMIT {
-            let mut end = TG_LIMIT;
-            while end > 0 && !current.is_char_boundary(end) {
-                end -= 1;
+    if let Ok(raw) = std::fs::read_to_string("/proc/meminfo") {
+        let mut total_kb: u64 = 0;
+        let mut avail_kb: u64 = 0;
+        for line in raw.lines() {
+            if let Some(v) = line.strip_prefix("MemTotal:") {
+                total_kb = v.split_whitespace().next()
+                    .and_then(|s| s.parse().ok()).unwrap_or(0);
             }
-            let part: String = current.drain(..end).collect();
-            chunks.push(part);
+            if let Some(v) = line.strip_prefix("MemAvailable:") {
+                avail_kb = v.split_whitespace().next()
+                    .and_then(|s| s.parse().ok()).unwrap_or(0);
+            }
+        }
+        if let Some(used_pct) = total_kb.checked_sub(avail_kb)
+            .and_then(|used| (used * 100).checked_div(total_kb))
+        {
+            let avail_mb = avail_kb / 1024;
+            let total_mb = total_kb / 1024;
+            out.push_str(&format!("💾 Memory: {avail_mb} MB free / {total_mb} MB ({used_pct}% used)\n"));
         }
     }
-    if !current.is_empty() {
-        chunks.push(current);
+
+    if let Ok(raw) = std::fs::read_to_string("/proc/version") {
+        let ver = raw.split_whitespace().nth(2).unwrap_or("?");
+        out.push_str(&format!("🐧 Kernel: `{ver}`\n"));
     }
 
-    for chunk in &chunks {
-        send_single(bot_token, chat_id, chunk, parse_mode)?;
+    if let Ok(raw) = std::fs::read_to_string("/proc/cpuinfo") {
+        if let Some(line) = raw.lines().find(|l| l.starts_with("model name")) {
+            if let Some(name) = line.split(':').nth(1) {
+                out.push_str(&format!("🔲 CPU: {}\n", name.trim()));
+            }
+        }
     }
-    Ok(())
-}
 
-fn send_single(
-    bot_token: &str,
-    chat_id:   i64,
-    text:      &str,
-    parse_mode: Option<&str>,
-) -> Result<()> {
-    let url  = format!("https://api.telegram.org/bot{bot_token}/sendMessage");
-    let body = SendMessageBody {
-        chat_id,
-        text,
-        parse_mode,
-        disable_web_page_preview: true,
-    };
-    ureq::post(&url)
-        .timeout(Duration::from_secs(10))
-        .send_json(&body)
-        .context("sendMessage request to Telegram")?;
-    Ok(())
-}
-
-/// Low-level Telegram `sendPhoto` call (multipart/form-data built by hand —
-/// ureq 2.x has no file-upload helper). Same split policy as [`send_message`]:
-/// the caption rides along in the same multipart body.
-pub fn send_photo(
-    bot_token: &str,
-    chat_id:   i64,
-    caption:   &str,
-    photo_path: &Path,
-) -> Result<()> {
-    let bytes = std::fs::read(photo_path)
-        .with_context(|| format!("reading photo {}", photo_path.display()))?;
-    let filename = photo_path
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "evidence.jpg".to_string());
-
-    const TG_LIMIT: usize = 1024;
-    let cap: String;
-    let caption: &str = if caption.len() <= TG_LIMIT {
-        caption
+    // Ring-0 kernel-module view: bare-metal/VM truth + co-processors.
+    // Works on both Intel ME and AMD PSP hosts.
+    if let Some(snap) = kernel_snap::KernelSnapshot::read() {
+        if let Some(h) = &snap.hypervisor {
+            out.push_str(&format!("🧠 Platform: `{}`\n", escape_markdown(h)));
+        }
+        if let Some(m) = &snap.me_fw {
+            out.push_str(&format!("🔒 Intel ME firmware: `{}`\n", escape_markdown(m)));
+        }
+        if let Some(p) = &snap.psp {
+            out.push_str(&format!("🔐 AMD PSP: `{}`\n", escape_markdown(p)));
+        }
+        if let Some(k) = &snap.kvm_features {
+            out.push_str(&format!("🧪 KVM CPU features: `{}`\n", escape_markdown(k)));
+        }
     } else {
-        cap = caption.chars().take(TG_LIMIT).collect::<String>() + "…";
-        &cap
-    };
-
-    let boundary = format!("----sysentinel{:016x}", std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0));
-    let mut body: Vec<u8> = Vec::with_capacity(bytes.len() + 1024);
-    push_form_text(&mut body, &boundary, "chat_id", &chat_id.to_string());
-    push_form_text(&mut body, &boundary, "caption", caption);
-    push_form_text(&mut body, &boundary, "parse_mode", "Markdown");
-    push_form_file(&mut body, &boundary, "photo", &filename, "image/jpeg", &bytes);
-    body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
-
-    let url = format!("https://api.telegram.org/bot{bot_token}/sendPhoto");
-    let resp = ureq::post(&url)
-        .timeout(Duration::from_secs(60))
-        .set("Content-Type", &format!("multipart/form-data; boundary={boundary}"))
-        .send(body.as_slice())
-        .context("sendPhoto request to Telegram")?;
-    anyhow::ensure!(
-        resp.status() == 200,
-        "Telegram sendPhoto returned non-200 status: {}",
-        resp.status()
-    );
-    Ok(())
-}
-
-/// Download a Telegram file by `file_id` (getFile → file path → bytes).
-fn fetch_file_bytes(bot_token: &str, file_id: &str) -> Result<Vec<u8>> {
-    use std::io::Read as _;
-    let url = format!("https://api.telegram.org/bot{bot_token}/getFile");
-    let meta = ureq::get(&url)
-        .query("file_id", file_id)
-        .timeout(Duration::from_secs(30))
-        .call()
-        .context("getFile request to Telegram")?
-        .into_string()
-        .context("reading getFile answer")?;
-    let v: serde_json::Value =
-        serde_json::from_str(&meta).context("parsing getFile answer")?;
-    anyhow::ensure!(v["ok"].as_bool().unwrap_or(false), "getFile failed: {v}");
-    let path = v["result"]["file_path"]
-        .as_str()
-        .context("getFile returned no file_path")?;
-    let dl = format!("https://api.telegram.org/file/bot{bot_token}/{path}");
-    let mut reader = ureq::get(&dl)
-        .timeout(Duration::from_secs(60))
-        .call()
-        .context("downloading Telegram file")?
-        .into_reader();
-    let mut buf = Vec::new();
-    reader.read_to_end(&mut buf).context("reading Telegram file body")?;
-    anyhow::ensure!(!buf.is_empty(), "downloaded file is empty");
-    Ok(buf)
-}
-
-/// Low-level Telegram `sendAudio` call — same hand-built multipart as
-/// [`send_photo`]. MIME is chosen from the file extension (oga/ogg, wav, mp3).
-/// Used by the evidence-delivery loop (first-network upload of the intruder
-/// audio); kept alive until that milestone lands.
-#[allow(dead_code)]
-pub fn send_audio(
-    bot_token: &str,
-    chat_id:   i64,
-    caption:   &str,
-    audio_path: &Path,
-) -> Result<()> {
-    let bytes = std::fs::read(audio_path)
-        .with_context(|| format!("reading audio {}", audio_path.display()))?;
-    let filename = audio_path
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "evidence.oga".to_string());
-    let mime = match audio_path.extension().and_then(|e| e.to_str()) {
-        Some("oga" | "ogg" | "opus") => "audio/ogg",
-        Some("wav") => "audio/wav",
-        Some("mp3") => "audio/mpeg",
-        _ => "application/octet-stream",
-    };
-    const TG_LIMIT: usize = 1024;
-    let cap: String;
-    let caption: &str = if caption.len() <= TG_LIMIT {
-        caption
-    } else {
-        cap = caption.chars().take(TG_LIMIT).collect::<String>() + "…";
-        &cap
-    };
-
-    let boundary = format!("----sysentinel{:016x}", std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0));
-    let mut body: Vec<u8> = Vec::with_capacity(bytes.len() + 1024);
-    push_form_text(&mut body, &boundary, "chat_id", &chat_id.to_string());
-    push_form_text(&mut body, &boundary, "caption", caption);
-    push_form_text(&mut body, &boundary, "parse_mode", "Markdown");
-    push_form_file(&mut body, &boundary, "audio", &filename, mime, &bytes);
-    body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
-
-    let url = format!("https://api.telegram.org/bot{bot_token}/sendAudio");
-    let resp = ureq::post(&url)
-        .timeout(Duration::from_secs(300))
-        .set("Content-Type", &format!("multipart/form-data; boundary={boundary}"))
-        .send(body.as_slice())
-        .context("sendAudio request to Telegram")?;
-    anyhow::ensure!(
-        resp.status() == 200,
-        "Telegram sendAudio returned non-200 status: {}",
-        resp.status()
-    );
-    Ok(())
-}
-
-fn push_form_text(body: &mut Vec<u8>, boundary: &str, name: &str, value: &str) {
-    body.extend_from_slice(format!(
-        "--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n"
-    ).as_bytes());
-}
-
-fn push_form_file(
-    body: &mut Vec<u8>,
-    boundary: &str,
-    name: &str,
-    filename: &str,
-    mime: &str,
-    data: &[u8],
-) {
-    body.extend_from_slice(format!(
-        "--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"; filename=\"{filename}\"\r\nContent-Type: {mime}\r\n\r\n"
-    ).as_bytes());
-    body.extend_from_slice(data);
-    body.extend_from_slice(b"\r\n");
-}
-
-// ── System context builder ────────────────────────────────────────────────────
-
-/// Parse a control-register number from the canonical forms "0".."8".
-fn parse_control_register(s: &str) -> Option<u8> {
-    match s.trim() {
-        "0" => Some(0),
-        "2" => Some(2),
-        "3" => Some(3),
-        "4" => Some(4),
-        "8" => Some(8),
-        _ => None,
+        // Module absent (no Secure Boot signing, not loaded…) → ring-3 fallback.
+        // Report what the machine IS, say clearly what we can't read, never fake
+        // a ring-0 fact.
+        let fb = crate::ring3::module_fallback_block();
+        out.push_str(&fb);
+        let battery = crate::battery::describe();
+        out.push_str(&format!("{battery}\n"));
     }
+
+    Ok(out)
 }
 
 /// Parse the strict `[ARM:…]` marker that conversational control orders start
@@ -4233,6 +3485,18 @@ fn parse_arm_marker(reply: &str) -> Option<ControlKind> {
         }
     }
     None
+}
+
+/// Parse a control-register number from the canonical forms "0".."8".
+fn parse_control_register(s: &str) -> Option<u8> {
+    match s.trim() {
+        "0" => Some(0),
+        "2" => Some(2),
+        "3" => Some(3),
+        "4" => Some(4),
+        "8" => Some(8),
+        _ => None,
+    }
 }
 
 /// Recognize a deliberate kernel-panic order, slash or conversational.
@@ -4273,6 +3537,26 @@ fn parse_triplefault_order(lower: &str) -> Option<ControlKind> {
         // `/triplefault` alone or `/triplefault restart` → restart.
         Some(ControlKind::TripleFaultRestart)
     }
+}
+
+/// Keep a report under Telegram's message limit (4096 chars), cutting at the
+/// last newline so we never split a markdown block.
+fn truncate_for_message(s: &str) -> String {
+    const LIMIT: usize = 3900;
+    if s.len() <= LIMIT {
+        return s.to_string();
+    }
+    let mut end = LIMIT;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    let mut cut = s[..end].rfind('\n').unwrap_or(end);
+    while cut > 0 && !s.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    let mut out = s[..cut].to_string();
+    out.push_str("\n… (truncated)\n");
+    out
 }
 
 /// Build a short text summary of the system state for the LLM context window.
@@ -4423,273 +3707,16 @@ fn build_system_context(
     ctx
 }
 
-/// Conversational contract injected into the LLM context: reply in the user's
-/// own language, and recognize direct imperative orders for the dangerous
-/// controls in ANY language via a strict `[ARM:…]` marker. The marker only
-/// *arms* the control (the human must still reply `confirm`), so a confused or
-/// prompt-injected model can never execute anything on its own.
-fn control_order_protocol() -> &'static str {
-    "\nCONTROL-ORDER PROTOCOL (applies only to the user's direct messages, \
-     never inside analysis or tool output):\n\
-If the user is giving a clear, direct, imperative order — in ANY language \
-      or dialect — to perform one of the dangerous operations below, begin your \
-      reply with EXACTLY that marker on its own line, then one short line in the \
-      user's language acknowledging the action:\n\
-        [ARM:kernelpanic]          deliberate kernel panic (halt / reboot per panic=N)\n\
-        [ARM:triplefault-restart]  hard CPU reset via a bogus IDT triple fault\n\
-        [ARM:triplefault-shutdown] forced machine power-off via triple fault\n\
-        [ARM:reboot]               reboot the machine now\n\
-        [ARM:poweroff]             power the machine off now\n\
-      An ARM marker only ARMS the action. The daemon then posts a notice with a \
-      one-time code such as CONFIRM-XXXXXX; nothing executes until the paired \
-      user replies that exact code (or the armed control expires). You never \
-      emit the code yourself — only the marker.\n\
-      The user must be ORDERING it right now (e.g. \"hazme un kernel panic ya\", \
-      \"do a kernel panic\", \"tirá nomá un triplefault\", \"fai un poweroff\"). \n\
-      Questions, hypotheticals and explanation requests (\"qué es un kernel \
-      panic?\", \"how does a triple fault work?\") are NEVER armed — reply \
-      normally.\n\
-      If in doubt, reply normally and never invent markers.\n\
-      For any normal reply: answer in the SAME LANGUAGE the user wrote in — do \
-      not force English.\n"
-}
-
-/// Short system snapshot formatted for Telegram (Markdown).
-fn gather_system_snapshot() -> Result<String> {
-    let mut out = String::from("🖥 *System Status*\n\n");
-
-    if let Ok(raw) = std::fs::read_to_string("/proc/uptime") {
-        let secs: f64 = raw.split_whitespace().next()
-            .and_then(|s| s.parse().ok()).unwrap_or(0.0);
-        let d = (secs / 86400.0) as u64;
-        let h = ((secs % 86400.0) / 3600.0) as u64;
-        let m = ((secs % 3600.0)  / 60.0)   as u64;
-        out.push_str(&format!("⏱ Uptime: {d}d {h}h {m}m\n"));
-    }
-
-    if let Ok(raw) = std::fs::read_to_string("/proc/loadavg") {
-        out.push_str(&format!("📊 Load: `{}`\n", raw.trim()));
-    }
-
-    if let Ok(raw) = std::fs::read_to_string("/proc/meminfo") {
-        let mut total_kb: u64 = 0;
-        let mut avail_kb: u64 = 0;
-        for line in raw.lines() {
-            if let Some(v) = line.strip_prefix("MemTotal:") {
-                total_kb = v.split_whitespace().next()
-                    .and_then(|s| s.parse().ok()).unwrap_or(0);
-            }
-            if let Some(v) = line.strip_prefix("MemAvailable:") {
-                avail_kb = v.split_whitespace().next()
-                    .and_then(|s| s.parse().ok()).unwrap_or(0);
-            }
-        }
-        if let Some(used_pct) = total_kb.checked_sub(avail_kb)
-            .and_then(|used| (used * 100).checked_div(total_kb))
-        {
-            let avail_mb = avail_kb / 1024;
-            let total_mb = total_kb / 1024;
-            out.push_str(&format!("💾 Memory: {avail_mb} MB free / {total_mb} MB ({used_pct}% used)\n"));
-        }
-    }
-
-    if let Ok(raw) = std::fs::read_to_string("/proc/version") {
-        let ver = raw.split_whitespace().nth(2).unwrap_or("?");
-        out.push_str(&format!("🐧 Kernel: `{ver}`\n"));
-    }
-
-    if let Ok(raw) = std::fs::read_to_string("/proc/cpuinfo") {
-        if let Some(line) = raw.lines().find(|l| l.starts_with("model name")) {
-            if let Some(name) = line.split(':').nth(1) {
-                out.push_str(&format!("🔲 CPU: {}\n", name.trim()));
-            }
-        }
-    }
-
-    // Ring-0 kernel-module view: bare-metal/VM truth + co-processors.
-    // Works on both Intel ME and AMD PSP hosts.
-    if let Some(snap) = kernel_snap::KernelSnapshot::read() {
-        if let Some(h) = &snap.hypervisor {
-            out.push_str(&format!("🧠 Platform: `{}`\n", escape_markdown(h)));
-        }
-        if let Some(m) = &snap.me_fw {
-            out.push_str(&format!("🔒 Intel ME firmware: `{}`\n", escape_markdown(m)));
-        }
-        if let Some(p) = &snap.psp {
-            out.push_str(&format!("🔐 AMD PSP: `{}`\n", escape_markdown(p)));
-        }
-        if let Some(k) = &snap.kvm_features {
-            out.push_str(&format!("🧪 KVM CPU features: `{}`\n", escape_markdown(k)));
-        }
-    } else {
-        // Module absent (no Secure Boot signing, not loaded…) → ring-3 fallback.
-        // Report what the machine IS, say clearly what we can't read, never fake
-        // a ring-0 fact.
-        let fb = crate::ring3::module_fallback_block();
-        out.push_str(&fb);
-        let battery = crate::battery::describe();
-        out.push_str(&format!("{battery}\n"));
-    }
-
-    Ok(out)
-}
-
-/// Escape special characters for Telegram Markdown v1.
-fn escape_markdown(s: &str) -> String {
-    s.replace('_', "\\_")
-     .replace('*', "\\*")
-     .replace('[', "\\[")
-     .replace('`', "\\`")
-}
-
-/// Keep a report under Telegram's message limit (4096 chars), cutting at the
-/// last newline so we never split a markdown block.
-fn truncate_for_telegram(s: &str) -> String {
-    const LIMIT: usize = 3900;
-    if s.len() <= LIMIT {
-        return s.to_string();
-    }
-    let mut end = LIMIT;
-    while end > 0 && !s.is_char_boundary(end) {
-        end -= 1;
-    }
-    let mut cut = s[..end].rfind('\n').unwrap_or(end);
-    while cut > 0 && !s.is_char_boundary(cut) {
-        cut -= 1;
-    }
-    let mut out = s[..cut].to_string();
-    out.push_str("\n… (truncated)\n");
-    out
-}
-
-// ── Pairing token announcement ────────────────────────────────────────────────
-
-/// Generate a pairing token **bound to the authorised user**, store it in
-/// `state`, and log it clearly.
-///
-/// Called once from `main()` at startup. The token is also announced to the
-/// previously-paired chat_id (if any) so the user can see it in Telegram.
-///
-/// # Binding
-///
-/// The token is minted for `config.telegram.telegram_id`. If that
-/// whitelist is `None`, the token **cannot** be securely bound (there is no
-/// user to bind to) and we refuse to mint one, logging a security warning
-/// instead. This preserves the guarantee: "only my Telegram id can pair."
-pub fn announce_pairing_token(
-    state:     &Arc<Mutex<SharedBotState>>,
-    config:    &Config,
-    bot_token: &str,
-) {
-    // ── We must know the authorised user to bind the token to them ───────────
-    let Some(telegram_id) = config.telegram.telegram_id.filter(|&id| id != 0) else {
-        log::warn!(
-            "telegram: REFUSING to generate a pairing token because \
-             [telegram].telegram_id is not set. A token that is not bound \
-             to your Telegram user id could be used by anyone who reads the \
-             log. Set `telegram_id` in config.toml (get your id via \
-             @userinfobot) and restart."
-        );
-        return;
-    };
-
-    let token = PairingToken::generate(telegram_id);
-    let token_str    = token.token.clone();
-    let secs         = token.seconds_remaining();
-
-    {
-        let mut guard = state.lock().expect("bot state mutex");
-        guard.pairing_token = Some(token);
-    }
-
-    // Always log — visible via journalctl even if Telegram is not configured.
-    log::info!(
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    );
-    log::info!("  sysentinel PAIRING TOKEN: {token_str}");
-    log::info!("  Valid for {secs} seconds. Send this token to your Telegram bot.");
-    log::info!("  Bound to Telegram user id: {telegram_id} (only this account can use it)");
-    log::info!(
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    );
-
-    // If there's a previously-paired chat_id, notify it there too.
-    if let Some(chat_id) = config.telegram.chat_id.filter(|&id| id != 0) {
-        let msg = format!(
-            "🔑 *New pairing token*: `{token_str}`\n\
-             Valid for {} minutes. Send it to this bot to (re-)pair.",
-            secs / 60
-        );
-        if let Err(e) = send_message(bot_token, chat_id, &msg, Some("Markdown")) {
-            log::warn!("could not send pairing token via Telegram: {e:#}");
-        }
-    }
-}
-
-/// Load the persisted paired chat_id (if any) from the state file.
-pub fn load_paired_chat_id(config: &Config) -> Option<i64> {
-    PersistedState::load(config)?.paired_chat_id
-}
-
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn token_verifies_with_argon2id() {
-        let token = PairingToken::generate(42);
-        // Correct token → true.
-        assert!(token.verify(&token.token));
-        // It must survive whitespace and case variations the user might type.
-        assert!(token.verify(&format!("  {}  ", token.token.to_lowercase())));
-        // Any other string → false.
-        assert!(!token.verify("SYN-WRONG1"));
-        assert!(!token.verify(""));
-    }
 
-    #[test]
-    fn token_hash_is_not_plaintext() {
-        let token = PairingToken::generate(7);
-        // The stored blob must never contain the token string.
-        assert!(!token.token_hash.contains(&token.token));
-        // And it must be a PHC argon2id string.
-        assert!(token.token_hash.starts_with("$argon2id$"));
-        // Salt is random: two tokens must never share a hash string.
-        let other = PairingToken::generate(7);
-        assert_ne!(token.token_hash, other.token_hash);
-    }
 
-    #[test]
-    fn token_format() {
-        let token = PairingToken::generate(1);
-        // SYN- + 8 unambiguous chars.
-        assert_eq!(token.token.len(), 12);
-        assert!(token.token.starts_with("SYN-"));
-        assert!(token.token[4..].chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit()));
-    }
 
-    #[test]
-    fn token_binds_to_user() {
-        let token = PairingToken::generate(999);
-        assert!(token.matches_user(999));
-        assert!(!token.matches_user(1000));
-    }
 
-    #[test]
-    fn burn_out_stops_after_max_failures() {
-        let mut token = PairingToken::generate(5);
-        // Remaining attempts start at the max.
-        assert_eq!(token.remaining_attempts(), 5);
-        let mut burned = false;
-        for _ in 0..5 {
-            burned = token.record_failure();
-        }
-        assert!(burned);           // 5th failure trips the burn flag
-        token.burn();
-        assert!(!token.is_valid()); // and the token is dead
-    }
 
     #[test]
     fn confirmation_phrases() {
@@ -4775,24 +3802,6 @@ mod tests {
         assert_eq!(parse_kernelpanic_order("hola"), None);
     }
 
-    #[test]
-    fn confirm_nonces_are_one_time_codes() {
-        // Fresh nonce has the expected shape and no ambiguous characters.
-        let a = fresh_confirm_nonce();
-        let b = fresh_confirm_nonce();
-        assert!(a.starts_with("CONFIRM-"), "nonce: {a}");
-        assert!(b.starts_with("CONFIRM-"), "nonce: {b}");
-        assert_eq!(a.len(), "CONFIRM-".len() + 6);
-        let tail = &a["CONFIRM-".len()..];
-        assert!(tail.chars().all(|c| c.is_ascii_alphanumeric()));
-        assert!(!tail.contains('O') && !tail.contains('0'));
-
-        // PendingControl mints its code at ARM time and it is stable.
-        let p1 = PendingControl::new(ControlKind::Reboot, 7);
-        assert!(p1.nonce.starts_with("CONFIRM-"));
-        let p1b = PendingControl::new(ControlKind::Reboot, 7);
-        assert_ne!(p1.nonce, p1b.nonce, "each ARM gets a fresh code");
-    }
 
     #[test]
     fn arm_markers_parse_strictly() {

@@ -687,8 +687,6 @@ mod tests {
             tone = "casual"
             emotions = true
             language = "Spanish"
-            [telegram]
-            bot_token = "t"
             [llm]
             model = "m"
         "#;
@@ -803,8 +801,6 @@ mod tests {
             tone = "casual"
             emotions = true
             language = "Spanish"
-            [telegram]
-            bot_token = "t"
             [llm]
             model = "m"
             [llm.deepseek]

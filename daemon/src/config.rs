@@ -8,13 +8,6 @@
 //!
 //! # Pairing and interactive mode
 //!
-//! `[telegram] interactive = true` enables the `getUpdates` long-poll loop
-//! that handles pairing and conversational queries. When `interactive = false`
-//! (or omitted), the daemon is strictly outbound-only (the original behaviour).
-//!
-//! `[telegram] chat_id` may be `0` or omitted — the daemon will display a
-//! pairing token in the log and update the state file after a successful pair.
-//! Once paired, the `chat_id` is persisted to `state_file`.
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
@@ -26,7 +19,6 @@ use std::path::Path;
 pub struct Config {
     pub general:  GeneralConfig,
     pub persona:  PersonaConfig,
-    pub telegram: TelegramConfig,
     pub llm:      LlmConfig,
     #[serde(default)]
     pub memory:   MemoryConfig,
@@ -111,39 +103,6 @@ pub struct PersonaConfig {
 
 fn default_language() -> String { "en".to_string() }
 fn default_false()   -> bool   { false }
-
-// ── [telegram] ───────────────────────────────────────────────────────────────
-
-#[derive(Debug, Deserialize, Clone)]
-pub struct TelegramConfig {
-    /// Bot token from @BotFather. Required.
-    pub bot_token: String,
-    /// Paired Telegram chat ID. `0` or absent means not yet paired; the daemon
-    /// will display a pairing token in the log. Once paired, the chat_id is
-    /// persisted to `state_file` automatically.
-    #[serde(default)]
-    pub chat_id: Option<i64>,
-    /// Enable outbound Telegram alerting at all.
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-    /// Enable the interactive bot (getUpdates long-poll, pairing flow, chat).
-    /// When `false`, the daemon sends outbound alerts only (no listener).
-    #[serde(default = "default_true")]
-    pub interactive: bool,
-    /// Path where the daemon persists the paired chat_id. Mode 0600.
-    #[serde(default = "default_state_file")]
-    pub state_file: String,
-    /// Your Telegram user id (ask @userinfobot). The pairing token is bound
-    /// to this id: it only works when sent **by this exact `from.id`**. Any
-    /// message from a different user is rejected outright, even with a
-    /// valid-looking token. Leave `None` (or omit) to disable the whitelist
-    /// — the daemon will then REFUSE to generate a token. NOT recommended.
-    #[serde(default)]
-    pub telegram_id: Option<i64>,
-}
-
-fn default_true()       -> bool   { true }
-fn default_state_file() -> String { "/var/lib/sysentinel/state.json".to_string() }
 
 // ── [llm] ────────────────────────────────────────────────────────────────────
 
@@ -354,7 +313,7 @@ pub struct CameraConfig {
     /// Take webcam photos of intruders at LUKS unlock (evidence written by
     /// the initramfs hook) and at login events (successful login or ≥
     /// `login_fail_threshold` failed attempts). Photos are attached with
-    /// sendPhoto; with no webcam only the text alert goes out.
+    /// attached to the alert; with no webcam only the text goes out.
     #[serde(default)]
     pub enabled: bool,
     /// The V4L2 capture binary (`sysentinel-cam`, built from ramdisk/).
@@ -435,6 +394,8 @@ fn default_phone_queue() -> usize { 500 }
 fn default_phone_queue_path() -> String {
     "/var/lib/sysentinel/phone-queue.json".to_string()
 }
+
+fn default_true() -> bool { true }
 
 // ── [ipc] ────────────────────────────────────────────────────────────────────
 
@@ -530,12 +491,19 @@ impl Config {
     }
 
     fn validate(&self) -> Result<()> {
-        if self.telegram.enabled {
+        // The phone channel needs both halves or it cannot start, and a
+        // watchdog that cannot reach anyone is the state worth refusing early
+        // rather than discovering when something happens.
+        if self.phone.enabled {
             anyhow::ensure!(
-                !self.telegram.bot_token.trim().is_empty()
-                    && self.telegram.bot_token != "REPLACE_WITH_YOUR_BOT_TOKEN",
-                "telegram.bot_token is not set in config.toml — create a bot \
-                 via @BotFather and paste the token there"
+                self.phone.bind.is_some(),
+                "phone.bind is not set in config.toml — say which address the app \
+                 should reach this machine on"
+            );
+            anyhow::ensure!(
+                self.phone.pairing_key.is_some(),
+                "phone.pairing_key is not set in config.toml — start the daemon once \
+                 and it will print a fresh one to paste in"
             );
         }
 
@@ -572,8 +540,6 @@ mod tests {
         [general]
         [persona]
         tone = "casual"
-        [telegram]
-        bot_token = "t"
     "#;
 
     fn parse(backend_lines: &str) -> Config {

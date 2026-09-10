@@ -515,7 +515,6 @@ mod tests {
         let raw = format!(
             "[general]\nsettings_file = \"{}/settings.json\"\n\
              [persona]\ntone = \"casual\"\n\
-             [telegram]\nbot_token = \"t\"\n\
              [llm]\nmodel = \"m\"\n\
              [camera]\nevidence_dir = \"{}\"\n",
             dir.display(),

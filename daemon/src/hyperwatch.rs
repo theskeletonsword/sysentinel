@@ -34,7 +34,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::bot::{self, SharedBotState};
+use crate::bot::SharedBotState;
 use crate::config::Config;
 use crate::llm;
 use crate::settings::Settings;
@@ -321,9 +321,9 @@ pub fn run_hypercall_loop(
             continue;
         }
 
-        let chat_id = {
+        let _chat_id = {
             let g = state.lock().expect("bot state mutex");
-            g.paired_chat_id.or(config.telegram.chat_id).filter(|&id| id != 0)
+            g.paired_chat_id
         };
 
         let mut facts = format!("The guest asked the hypervisor something ({} hypercall{})\n", records.len(), if records.len() == 1 { "" } else { "s" });
@@ -343,12 +343,8 @@ pub fn run_hypercall_loop(
             last_send = now;
             continue;
         }
-        if let Some(chat_id) = chat_id {
-            if let Err(e) = bot::send_message(&config.telegram.bot_token, chat_id, &text, Some("Markdown")) {
-                log::error!("hyperwatch send failed: {e:#}");
-            }
-        } else {
-            log::info!("hyperwatch: {} hypercalls seen (not paired — not sent)", records.len());
+        if crate::channel::notify(&text) == 0 {
+            log::error!("hyperwatch: no channel could carry this report");
         }
         last_send = now;
     }

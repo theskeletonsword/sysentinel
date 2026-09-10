@@ -1,42 +1,21 @@
 // SPDX-License-Identifier: Apache-2.0
+//! sysentinel-daemon — kernel log watchdog with an AI companion.
 //!
-//! sysentinel-daemon — your PC's AI companion.
-//!
-//! # What this does
-//!
-//! Three concurrent activities run for the life of the process:
-//!
-//! 1. **kmsg watcher** (main thread) — tails `/dev/kmsg` for OOM kills,
-//!    kernel panics, segfaults, and oopses. On each event: asks the LLM to
-//!    explain it in the configured tone, then sends a Telegram alert to the
-//!    paired chat.
-//!
-//! 2. **Telegram bot** (background thread, optional) — long-polls
-//!    `getUpdates` for incoming messages. Handles the pairing flow (one-time
-//!    token, 5-minute window) and then routes conversational queries to the
-//!    LLM with live system context (uptime, memory, kernel alerts, Intel ME /
-//!    AMD PSP firmware version, PMU counters).
-//!
-//! 3. **Hardware diagnostics** (background thread, optional) — periodically
-//!    calls `sensors`, reads PCI sysfs, queries ME/PSP, and sends a summary
-//!    to Telegram.
-//!
-//! # Privilege model
-//!
-//! The daemon runs as a dedicated `sysentinel` system user with:
-//!   - `CAP_SYSLOG`   — read `/dev/kmsg`
-//!   - `CAP_PERFMON`  — read hardware PMU counters (optional, graceful fallback)
-//!
-//! No additional groups are needed. Intel ME firmware is queried in ring-0 by
-//! the `sysentinel_metrics` kernel module and read back from `/proc/sysentinel_metrics`
-//! (readable via a udev rule shipped by `scripts/install.sh`); AMD PSP / TPM
-//! info is read from sysfs. Compatible with both Intel ME and AMD PSP hosts.
-//!
-//! See `scripts/sysentinel.service` for the full systemd unit.
+//! 1. **kmsg watcher** (main thread) — tails `/dev/kmsg`, classifies each
+//!    event, asks the configured LLM to explain it in the configured tone,
+//!    and sends the result to the owner through `channel`.
+//! 2. **command layer** (`bot.rs`) — the interactive side: `/status`,
+//!    `/definehome`, `/exec`, `/settings` and the ARM → confirm ritual. It no
+//!    longer owns a transport; whatever carries a message calls into it.
+//! 3. **phone channel** (`phone.rs`) — the way out. A direct connection with
+//!    no relay, no bearer token and no endpoint a stranger can reach, which is
+//!    what replaced the Telegram bot this daemon used to poll.
+//! 4. **watchers** — login, LUKS, modules, hypercalls, battery, devices. None
+//!    of them knows what transport carries its alerts.
 
-mod bot;
 mod battery;
 mod bootkit_audit;
+mod bot;
 mod camera;
 mod channel;
 mod classify;
@@ -53,31 +32,30 @@ mod hwdiag;
 mod hwinfo;
 mod hyperwatch;
 mod ipc;
-mod kmsg;
 mod kernel_snap;
+mod kmsg;
 mod llm;
 mod loginwatch;
 mod luks;
 mod mei;
 mod meiclients;
 mod memory;
-mod mood;
 mod modulewatch;
+mod mood;
 mod phone;
 mod phonehome;
 mod pmu;
 mod presence;
 mod procinfo;
-mod selinux;
-mod settings;
 mod ring3;
 mod secureboot;
-mod telegram;
+mod selinux;
+mod settings;
 mod tpmkey;
 mod undervolt;
 
 use anyhow::{Context, Result};
-use bot::{SharedBotState, TelegramBot};
+use bot::SharedBotState;
 use clap::Parser;
 use classify::Severity;
 use config::Config;
@@ -93,7 +71,7 @@ use std::time::Duration;
 #[command(
     name    = "sysentinel-daemon",
     version,
-    about   = "Kernel log watchdog + interactive AI companion via Telegram",
+    about   = "Kernel log watchdog + interactive AI companion, over your own phone",
     long_about = None,
 )]
 struct Args {
@@ -101,11 +79,11 @@ struct Args {
     #[arg(short, long, default_value = "/etc/sysentinel/config.toml")]
     config: PathBuf,
 
-    /// Echo every classified kmsg event to stdout (does not suppress Telegram alerts).
+    /// Echo every classified kmsg event to stdout (does not suppress alerts).
     #[arg(long)]
     verbose: bool,
 
-    /// Suppress Telegram alerts (useful for testing the LLM backend locally).
+    /// Suppress outbound alerts (useful for testing the LLM backend locally).
     #[arg(long)]
     dry_run: bool,
 }
@@ -127,49 +105,8 @@ fn main() -> Result<()> {
     let min_severity = Severity::from_str_name(&config.general.min_severity)
         .context("general.min_severity is not a recognised severity name")?;
 
-    // Shared bot state (paired chat_id, pairing token, recent alert buffer).
-    let persisted_id = bot::load_paired_chat_id(&config);
-    let shared_state: Arc<Mutex<SharedBotState>> =
-        Arc::new(Mutex::new(SharedBotState::new(persisted_id)));
-
-    // ── How this daemon reaches its owner ─────────────────────────────────────
-    // Registered once; every watcher then says "reach the owner" without
-    // knowing or caring which transport carries it. That is what makes the
-    // transport replaceable: swapping Telegram for the phone app is a change
-    // here, not across seven watchers.
-    {
-        let mut notifiers: Vec<Box<dyn channel::Notifier>> = Vec::new();
-
-        // The phone first: it is the channel with no relay and no endpoint a
-        // stranger can reach, so it is the one meant to outlive the other.
-        if config.phone.enabled {
-            match phone::start(&config) {
-                Ok(ch) => notifiers.push(Box::new(ch)),
-                Err(e) => log::error!("phone channel unavailable: {e:#}"),
-            }
-        }
-
-        notifiers.push(Box::new(channel::TelegramChannel::new(
-            &config,
-            Arc::clone(&shared_state),
-        )));
-        channel::init(channel::Channels::new(notifiers));
-
-        if channel::is_deaf() {
-            log::warn!(
-                "no channel can reach you: this daemon will watch and never be able \
-                 to report. Pair a channel, or the alerts go nowhere."
-            );
-        } else {
-            log::info!("channels ready: {}", channel::ready_names().join(", "));
-        }
-        // Say out loud what the live channels expose, rather than leaving it
-        // implied. A bot endpoint strangers can reach is a real property of
-        // this setup and the owner should be reminded of it, not surprised.
-        if let Some(note) = channel::exposure_note() {
-            log::warn!("channel exposure — {note}");
-        }
-    }
+    // Shared state: pending decisions, recent alerts, the kmsg ring.
+    let shared_state: Arc<Mutex<SharedBotState>> = Arc::new(Mutex::new(SharedBotState::new(None)));
 
     // Notification preferences (/settings) — shared with the bot and watchers.
     let settings: Arc<Mutex<settings::Settings>> = Arc::new(Mutex::new(
@@ -200,15 +137,56 @@ fn main() -> Result<()> {
     let system_prompt = llm::build_system_prompt(&config);
 
     log::info!(
-        "sysentinel-daemon starting — llm_chain={} telegram={} interactive={} \
-         min_severity={:?} paired_chat_id={:?} settings_file={}",
+        "sysentinel-daemon starting — llm_chain={} phone={} min_severity={:?} \
+         settings_file={}",
         llm_chain.join(" → "),
-        config.telegram.enabled,
-        config.telegram.interactive,
+        config.phone.enabled,
         min_severity,
-        persisted_id,
         config.general.settings_file,
     );
+
+    // ── How this daemon reaches its owner ─────────────────────────────────────
+    // Registered once; every watcher then says "reach the owner" without
+    // knowing or caring which transport carries it. That is what makes the
+    // transport replaceable: swapping the phone for the phone app is a change
+    // here, not across seven watchers.
+    {
+        let mut notifiers: Vec<Box<dyn channel::Notifier>> = Vec::new();
+
+        // The phone first: it is the channel with no relay and no endpoint a
+        // stranger can reach, so it is the one meant to outlive the other.
+        if config.phone.enabled {
+            // The command layer, driven by whatever the phone says.
+            let commands = bot::TelegramBot::new(
+                config.clone(),
+                Arc::clone(&llm_backend),
+                system_prompt.clone(),
+                Arc::clone(&shared_state),
+                Arc::clone(&settings),
+            );
+            match phone::start(&config, move |text| commands.handle_owner_text(text)) {
+                Ok(ch) => notifiers.push(Box::new(ch)),
+                Err(e) => log::error!("phone channel unavailable: {e:#}"),
+            }
+        }
+
+        channel::init(channel::Channels::new(notifiers));
+
+        if channel::is_deaf() {
+            log::warn!(
+                "no channel can reach you: this daemon will watch and never be able \
+                 to report. Pair a channel, or the alerts go nowhere."
+            );
+        } else {
+            log::info!("channels ready: {}", channel::ready_names().join(", "));
+        }
+        // Say out loud what the live channels expose, rather than leaving it
+        // implied. A bot endpoint strangers can reach is a real property of
+        // this setup and the owner should be reminded of it, not surprised.
+        if let Some(note) = channel::exposure_note() {
+            log::warn!("channel exposure — {note}");
+        }
+    }
 
     // ── Firmware status (log at startup) ─────────────────────────────────────
     let fw_status = mei::query_firmware_status();
@@ -217,36 +195,6 @@ fn main() -> Result<()> {
     }
     if let Some(ref psp) = fw_status.amd_psp {
         log::info!("AMD PSP: {psp}");
-    }
-
-    // ── Pairing token (when interactive mode is on) ───────────────────────────
-    if config.telegram.enabled && config.telegram.interactive {
-        // Only announce a new token if not already paired.
-        if persisted_id.is_none() {
-            bot::announce_pairing_token(
-                &shared_state,
-                &config,
-                &config.telegram.bot_token,
-            );
-        } else if let Some(id) = persisted_id {
-            log::info!("telegram: already paired with chat_id={id}");
-        }
-    }
-
-    // ── Telegram bot thread ───────────────────────────────────────────────────
-    if config.telegram.enabled && config.telegram.interactive {
-        let tg_bot = TelegramBot::new(
-            config.clone(),
-            Arc::clone(&llm_backend),
-            system_prompt.clone(),
-            Arc::clone(&shared_state),
-            Arc::clone(&settings),
-        );
-        thread::Builder::new()
-            .name("telegram-bot".to_string())
-            .spawn(move || tg_bot.run())
-            .context("spawning Telegram bot thread")?;
-        log::info!("telegram: interactive bot thread started");
     }
 
     // ── Live watcher thread (thresholds, htop, PMU, TSC) ─────────────────────
@@ -285,7 +233,7 @@ fn main() -> Result<()> {
         log::info!("hwdiag: periodic diagnostics thread started");
     }
 
-    // ── Login watcher thread (wtmp → Telegram announce + kill ritual) ────────
+    // ── Login watcher thread (wtmp → the phone announce + kill ritual) ────────
     {
         let cfg3   = config.clone();
         let state3 = Arc::clone(&shared_state);
@@ -438,7 +386,7 @@ fn run_kmsg_loop(
         let target_id = {
             let guard = state.lock().expect("bot state mutex");
             guard.paired_chat_id
-                .or(config.telegram.chat_id)
+                
                 .filter(|&id| id != 0)
         };
 
@@ -512,16 +460,11 @@ fn run_kmsg_loop(
                 log::info!("DRY RUN — would send SELinux alert #{id}");
                 continue;
             }
-            if let Some(chat_id) = target_id {
-                if let Err(e) = bot::send_message(
-                    &config.telegram.bot_token,
-                    chat_id,
-                    &alert_text,
-                    Some("Markdown"),
-                ) {
-                    log::error!("Telegram SELinux alert failed: {e:#}");
+            if let Some(_chat_id) = target_id {
+                if crate::channel::notify(&alert_text) == 0 {
+                    log::error!("selinux: no channel could carry this alert");
                 }
-            } else if config.telegram.enabled {
+            } else if !crate::channel::is_deaf() {
                 log::warn!("SELinux denial not sent (not yet paired): {}", denial.raw);
             }
             continue;
@@ -582,16 +525,11 @@ fn run_kmsg_loop(
         let alert_text = explanation.trim().to_string();
 
         // Send alert to paired chat_id (from persisted state or config).
-        if let Some(chat_id) = target_id {
-            if let Err(e) = bot::send_message(
-                &config.telegram.bot_token,
-                chat_id,
-                &alert_text,
-                Some("Markdown"),
-            ) {
-                log::error!("Telegram alert failed: {e:#}");
+        if let Some(_chat_id) = target_id {
+            if crate::channel::notify(&alert_text) == 0 {
+                log::error!("kmsg: no channel could carry this alert");
             }
-        } else if config.telegram.enabled {
+        } else if !crate::channel::is_deaf() {
             // Not paired yet — just log it.
             log::warn!("kernel alert (not sent — not yet paired): {event_text}");
         }
@@ -649,11 +587,10 @@ fn run_hwdiag_loop(
     config:        &Config,
     llm:           &dyn llm::LlmBackend,
     dry_run:       bool,
-    state:         &Arc<Mutex<SharedBotState>>,
+    _state:         &Arc<Mutex<SharedBotState>>,
     settings:      &Arc<Mutex<settings::Settings>>,
 ) {
     let interval = Duration::from_secs(config.hwdiag.interval_minutes * 60);
-    let notifier = telegram::TelegramNotifier::new(&config.telegram);
 
     loop {
         thread::sleep(interval);
@@ -692,23 +629,8 @@ fn run_hwdiag_loop(
                     text
                 };
 
-                let target = {
-                    let guard = state.lock().expect("bot state mutex");
-                    guard.paired_chat_id
-                        .filter(|&id| id != 0)
-                        .or(config.telegram.chat_id.filter(|&id| id != 0))
-                };
-                if let Some(chat_id) = target {
-                    if let Err(e) = bot::send_message(
-                        &config.telegram.bot_token,
-                        chat_id,
-                        &annotated,
-                        Some("Markdown"),
-                    ) {
-                        log::error!("hwdiag Telegram send failed: {e:#}");
-                    }
-                } else if let Err(e) = notifier.send(&annotated) {
-                    log::warn!("hwdiag fallback notifier also failed: {e:#}");
+                if crate::channel::notify(&annotated) == 0 {
+                    log::error!("hwdiag: no channel could carry this summary");
                 }
             }
             Err(e) => log::error!("hwdiag summarize() failed: {e:#}"),
@@ -720,7 +642,7 @@ fn run_hwdiag_loop(
 
 /// Thresholds the live watcher acts on. Crossing into the danger band sends
 /// one alert; recovering back under the safe floor re-arms it (edge
-/// triggering, so sustained conditions don't spam Telegram).
+/// triggering, so sustained conditions don't spam the phone).
 const THERMAL_HOT_MC:  u32 = 85_000; // ≥85 °C → hot
 const THERMAL_RESET_MC: u32 = 75_000; // <75 °C → clear
 const MEM_LOW_MB:       u64 = 512;    // ≤512 MB free → pressure
@@ -753,7 +675,7 @@ fn run_watch_loop(
         let target = {
             let guard = state.lock().expect("bot state mutex");
             guard.paired_chat_id
-                .or(config.telegram.chat_id)
+                
                 .filter(|&id| id != 0)
         };
 
@@ -776,14 +698,9 @@ fn run_watch_loop(
                 log::info!("DRY RUN — live watch: {text}");
                 return;
             }
-            if let Some(chat_id) = target {
-                if let Err(e) = bot::send_message(
-                    &config.telegram.bot_token,
-                    chat_id,
-                    &text,
-                    Some("Markdown"),
-                ) {
-                    log::error!("live watch Telegram send failed: {e:#}");
+            if let Some(_chat_id) = target {
+                if crate::channel::notify(&text) == 0 {
+                    log::error!("live-watch: no channel could carry this alert");
                 }
             } else {
                 log::debug!("live watch: not paired yet; suppressing: {text}");

@@ -5,7 +5,7 @@
 //! The heavy lifting (V4L2 ioctls, YUYV/GREY→JPEG, format fallback) lives in
 //! the standalone `ramdisk/` crate. This module just runs it and copies the
 //! produced JPEG into the evidence dir. Photos are attached with Telegram
-//! `sendPhoto`; with no webcam the daemon falls back to text-only alerts.
+//! attached to the alert; with no webcam the daemon falls back to text only.
 //!
 //! Exit-code contract (from ramdisk/src/main.rs):
 //!   0 = photo written, 1 = no usable camera, 2 = capture failed, 130 = killed.

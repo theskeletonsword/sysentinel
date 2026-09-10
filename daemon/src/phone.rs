@@ -360,7 +360,10 @@ impl Notifier for PhoneChannel {
 /// Fails loudly rather than silently degrading. A channel the owner asked for
 /// and did not get is exactly the thing that must not pass unnoticed — they
 /// would believe they were covered.
-pub fn start(config: &crate::config::Config) -> Result<PhoneChannel> {
+pub fn start(
+    config: &crate::config::Config,
+    on_command: impl Fn(&str) + Send + Sync + 'static,
+) -> Result<PhoneChannel> {
     let bind = config
         .phone
         .bind
@@ -397,11 +400,7 @@ pub fn start(config: &crate::config::Config) -> Result<PhoneChannel> {
     std::thread::Builder::new()
         .name("phone".to_string())
         .spawn(move || {
-            run_phone_loop(&bind_for_thread, key, listener_queue, profile, |text| {
-                // Conversation is wired separately; until then the phone gets
-                // an honest placeholder rather than silence.
-                format!("(sin modelo conectado todavía) dijiste: {text}")
-            })
+            run_phone_loop(&bind_for_thread, key, listener_queue, profile, on_command)
         })
         .context("spawning the phone listener")?;
 
@@ -438,7 +437,7 @@ pub fn run_phone_loop(
     key: [u8; 32],
     queue: Arc<Mutex<AlertQueue>>,
     profile_path: PathBuf,
-    llm_answer: impl Fn(&str) -> String + Send + Sync + 'static,
+    on_command: impl Fn(&str) + Send + Sync + 'static,
 ) {
     let listener = match TcpListener::bind(bind) {
         Ok(l) => l,
@@ -452,7 +451,7 @@ pub fn run_phone_loop(
     for stream in listener.incoming() {
         match stream {
             Ok(s) => {
-                if let Err(e) = serve(s, &key, &queue, &profile_path, &llm_answer) {
+                if let Err(e) = serve(s, &key, &queue, &profile_path, &on_command) {
                     // Deliberately terse: a peer that fails to authenticate is
                     // told nothing and logged at debug, so a port scan does not
                     // fill the log or learn that it found the right protocol.
@@ -469,7 +468,7 @@ fn serve(
     key: &[u8; 32],
     queue: &Arc<Mutex<AlertQueue>>,
     profile_path: &Path,
-    llm_answer: &(impl Fn(&str) -> String + Send + Sync),
+    on_command: &(impl Fn(&str) + Send + Sync),
 ) -> Result<()> {
     stream.set_read_timeout(Some(IO_TIMEOUT))?;
     stream.set_write_timeout(Some(IO_TIMEOUT))?;
@@ -516,14 +515,14 @@ fn serve(
                 log::info!("phone: acknowledged up to {id} ({dropped} delivered)");
                 ToPhone::Ok
             }
-            FromPhone::Say { text } => ToPhone::Alerts {
-                alerts: vec![QueuedAlert {
-                    id: 0,
-                    unix_time: now_unix(),
-                    text: llm_answer(&text),
-                    photo: None,
-                }],
-            },
+            FromPhone::Say { text } => {
+                // Straight into the command layer. Replies come back through
+                // `channel::notify`, which means they land in this same queue
+                // and reach the phone on its next fetch — commands and alerts
+                // travel the same road.
+                on_command(&text);
+                ToPhone::Ok
+            }
             FromPhone::Identify { public_key, signature, backing, model, manufacturer } => {
                 identify_handset(
                     profile_path,
