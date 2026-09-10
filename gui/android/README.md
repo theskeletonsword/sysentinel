@@ -47,19 +47,22 @@ at the level it can prove, not the level the phone asserts.
 
 ## Building
 
-Verified building on this machine with **Gradle 9.1.0 + AGP 8.13.0 + SDK 34**,
-using the JDK bundled inside the Android Studio flatpak. That combination is not
-incidental: Gradle 8.13 cannot parse Java 25 and fails with the version string
-as its entire error message, so if the only JDK around is 25 or newer, Gradle 9
-is required.
+Verified building with **Gradle 8.13 + JDK 21 + AGP 8.13.0 + SDK 34**, which is
+the supported combination and the one to use:
 
 ```sh
-export JAVA_HOME=/var/lib/flatpak/app/com.google.AndroidStudio/current/active/files/extra/jbr
+export JAVA_HOME=/usr/lib/jvm/temurin-21-jdk    # any JDK 17-21
 export ANDROID_HOME=$HOME/Android/Sdk
 gradle assembleDebug          # both flavours
 gradle assembleModernDebug    # arm64-v8a, minSdk 28
 gradle assembleLegacyDebug    # armeabi-v7a, minSdk 21
 ```
+
+**On JDK versions**, because this costs an afternoon otherwise: Gradle 8.13
+cannot parse Java 25 and fails with the version string as its entire error
+message — no mention of Java, no hint. If the only JDK on the machine is 25 or
+newer (including the one bundled in the Android Studio flatpak, which is also
+25), either install a JDK 17-21 or use Gradle 9.1+. Both were verified here.
 
 `local.properties` (holding `sdk.dir`) is machine-local and gitignored.
 

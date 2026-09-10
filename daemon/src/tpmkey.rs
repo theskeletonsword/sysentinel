@@ -448,7 +448,7 @@ fn choose_alg() -> LlavecitaAlg {
 /// Does this CPU have hardware AES? x86_64 exposes it as the `aes` (AES-NI) /
 /// `vaes` flags in /proc/cpuinfo; aarch64 as the `aes` feature bit. A missing
 /// /proc/cpuinfo (or a weird arch) conservatively reports "no".
-fn aes_accelerated() -> bool {
+pub(crate) fn aes_accelerated() -> bool {
     let content = match std::fs::read_to_string("/proc/cpuinfo") {
         Ok(c) => c,
         Err(_) => return false,

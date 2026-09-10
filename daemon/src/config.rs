@@ -40,6 +40,8 @@ pub struct Config {
     pub face:     FaceConfig,
     #[serde(default)]
     pub ipc:      IpcConfig,
+    #[serde(default)]
+    pub phone:    PhoneConfig,
 }
 
 // ── [general] ────────────────────────────────────────────────────────────────
@@ -401,6 +403,37 @@ impl Default for CameraConfig {
             timeout: 10,
         }
     }
+}
+
+// ── [phone] ──────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct PhoneConfig {
+    /// Serve the phone app. Off by default: this makes a root daemon listen on
+    /// a socket, which is a surface that did not exist before.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Address to listen on. Written out on purpose rather than defaulted to
+    /// something convenient — "which interface is this reachable from" is the
+    /// decision, and it should be made deliberately.
+    #[serde(default)]
+    pub bind: Option<String>,
+    /// 64 hex characters: the key shared with the paired phone. Sealing a frame
+    /// with it IS the authentication, so it is the whole secret.
+    #[serde(default)]
+    pub pairing_key: Option<String>,
+    /// Alerts kept while the phone is away. The oldest are dropped past this,
+    /// so a handset left off for a month cannot fill the disk.
+    #[serde(default = "default_phone_queue")]
+    pub queue_capacity: usize,
+    /// Where the undelivered queue lives.
+    #[serde(default = "default_phone_queue_path")]
+    pub queue_path: String,
+}
+
+fn default_phone_queue() -> usize { 500 }
+fn default_phone_queue_path() -> String {
+    "/var/lib/sysentinel/phone-queue.json".to_string()
 }
 
 // ── [ipc] ────────────────────────────────────────────────────────────────────

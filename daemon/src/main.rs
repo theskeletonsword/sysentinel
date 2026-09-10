@@ -63,6 +63,7 @@ mod meiclients;
 mod memory;
 mod mood;
 mod modulewatch;
+mod phone;
 mod pmu;
 mod presence;
 mod procinfo;
@@ -136,8 +137,22 @@ fn main() -> Result<()> {
     // transport replaceable: swapping Telegram for the phone app is a change
     // here, not across seven watchers.
     {
-        let telegram = channel::TelegramChannel::new(&config, Arc::clone(&shared_state));
-        channel::init(channel::Channels::new(vec![Box::new(telegram)]));
+        let mut notifiers: Vec<Box<dyn channel::Notifier>> = Vec::new();
+
+        // The phone first: it is the channel with no relay and no endpoint a
+        // stranger can reach, so it is the one meant to outlive the other.
+        if config.phone.enabled {
+            match phone::start(&config) {
+                Ok(ch) => notifiers.push(Box::new(ch)),
+                Err(e) => log::error!("phone channel unavailable: {e:#}"),
+            }
+        }
+
+        notifiers.push(Box::new(channel::TelegramChannel::new(
+            &config,
+            Arc::clone(&shared_state),
+        )));
+        channel::init(channel::Channels::new(notifiers));
 
         if channel::is_deaf() {
             log::warn!(

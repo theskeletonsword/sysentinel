@@ -349,6 +349,36 @@ timeout = 10
 # El destino es la app del teléfono, que puede guardar una clave que esta
 # máquina no alcanza y no necesita a un tercero para entregar un mensaje.
 
+# ── [phone] ─────────────────────────────────────────────────────────────────
+# El canal que reemplaza a Telegram: la app del teléfono, conectada directo.
+#
+# Qué gana: no hay token al portador que hable por la máquina si se filtra, no
+# hay endpoint que un desconocido alcance (y sea rechazado sólo DESPUÉS de
+# llegar), y no hay un tercero que vea quién habló con quién y cuándo.
+#
+# Qué cuesta, y conviene saberlo antes: el relay de Telegram era lo que hacía
+# al teléfono alcanzable desde cualquier parte. Esto es una conexión directa.
+# En tu LAN funciona; a través de internet necesita un camino que pongas tú —
+# WireGuard, Tailscale, una VPN a casa. Sin eso el daemon encola pero no
+# entrega mientras estás fuera, que es justo cuando más probable es que alguien
+# toque el equipo. Ese es el trato honesto.
+#
+# Las alertas se escriben a disco ANTES de intentar entregarlas y sólo se
+# borran cuando el teléfono las confirma, así que "no había nadie escuchando"
+# retrasa una alerta en vez de destruirla.
+#
+# Ojo: esto hace que un daemon con privilegios escuche en un socket. Es una
+# superficie que antes no existía. Por eso está apagado, y por eso `bind` no
+# tiene valor por defecto: decidir desde qué interfaz es alcanzable es la
+# decisión, y se toma a mano.
+
+[phone]
+enabled = false
+# bind = "10.0.0.5:8443"        # o "0.0.0.0:8443" si sabes lo que haces
+# pairing_key = "…64 hex…"      # arranca sin ella y el log te genera una
+queue_capacity = 500
+queue_path = "/var/lib/sysentinel/phone-queue.json"
+
 # ── [ipc] ────────────────────────────────────────────────────────────────────
 # Local control socket for the desktop GUI, so you don't have to type into a
 # chat window in front of colleagues.
