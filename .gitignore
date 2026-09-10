@@ -12,5 +12,7 @@ ramdisk/target/
 Module.symvers
 modules.order
 
-# Local state
-*.lock
+# Local state — these are binaries, so Cargo.lock IS tracked on purpose
+# (a bare `*.lock` here would silently exclude it).
+/daemon/config/config.toml
+*.pid

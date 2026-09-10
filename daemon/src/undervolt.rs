@@ -32,6 +32,8 @@ pub enum UndervoltStatus {
 
 impl UndervoltStatus {
     /// True only when positive evidence of a shift exists.
+    // Positive-evidence accessor; the report renders the full status instead.
+    #[allow(dead_code)]
     pub fn is_active(&self) -> bool {
         matches!(self, UndervoltStatus::Active)
     }
@@ -112,7 +114,7 @@ fn offsets_verdict(text: &str) -> UndervoltStatus {
     let mut saw_number = false;
     for line in text.lines() {
         for tok in line.split_whitespace() {
-            let cleaned = tok.trim_end_matches(|c| matches!(c, 'm' | 'M' | 'v' | 'V'));
+            let cleaned = tok.trim_end_matches(['m', 'M', 'v', 'V']);
             let Ok(n): Result<i64, _> = cleaned.parse() else {
                 continue;
             };
@@ -144,7 +146,7 @@ fn has_percent_offset(conf: &str) -> bool {
         l[..percent]
             .split(|c: char| !(c.is_ascii_digit() || c == '-' || c == '+' || c == '.'))
             .filter_map(|t| t.parse::<f64>().ok())
-            .last()
+            .next_back()
             .map(|n| n != 0.0)
             .unwrap_or(false)
     })

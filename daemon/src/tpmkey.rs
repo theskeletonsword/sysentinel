@@ -401,6 +401,8 @@ pub fn verify(meta: &TpmKeyMeta, fingerprint: &str, base: &Path) -> Verify {
 /// first). Gives future halves of the daemon a real AEAD secret that only the
 /// original TPM + unchanged identity can produce. `fingerprint` is the AAD the
 /// holder was sealed with.
+// Counterpart to `seal`; exercised by the swtpm round-trip test.
+#[allow(dead_code)]
 pub fn open(meta: &TpmKeyMeta, fingerprint: &str, base: &Path) -> Result<[u8; 32]> {
     let dir = seal_dir(base);
     let key = unseal(meta.handle, &dir.join(&meta.blob_pub), &dir.join(&meta.blob_priv))?;
@@ -487,7 +489,7 @@ fn aead_seal(
 ) -> Result<(Vec<u8>, [u8; 16])> {
     use aws_lc_rs::aead::{Aad, LessSafeKey, Nonce, UnboundKey};
     let alg = alg.aead_alg();
-    let unbound = UnboundKey::new(&alg, key)
+    let unbound = UnboundKey::new(alg, key)
         .context("tpmkey: key invalid for the chosen cipher")?;
     let nonce = Nonce::try_assume_unique_for_key(nonce)
         .context("tpmkey: invalid nonce")?;
@@ -511,7 +513,7 @@ fn aead_open(
 ) -> Result<Vec<u8>> {
     use aws_lc_rs::aead::{Aad, LessSafeKey, Nonce, UnboundKey};
     let alg = alg.aead_alg();
-    let unbound = UnboundKey::new(&alg, key)
+    let unbound = UnboundKey::new(alg, key)
         .context("tpmkey: key invalid for the chosen cipher")?;
     let nonce = Nonce::try_assume_unique_for_key(nonce)
         .context("tpmkey: invalid nonce")?;
@@ -658,7 +660,7 @@ fn encode_hex(bytes: &[u8]) -> String {
 
 fn decode_hex(s: &str) -> Result<Vec<u8>> {
     let s = s.trim();
-    if s.len() % 2 != 0 {
+    if !s.len().is_multiple_of(2) {
         bail!("tpmkey: hex of odd length");
     }
     (0..s.len() / 2)
@@ -734,6 +736,8 @@ mod tests {
             Ok(k) => k,
             Err(e) => {
                 let _ = swtpm.kill();
+        let _ = swtpm.wait();
+                let _ = swtpm.wait();
                 cleanup_env(&base);
                 panic!("tpmkey: bind failed against swtpm: {e:#}");
             }
@@ -794,8 +798,10 @@ mod tests {
         );
 
         let _ = swtpm2.kill();
+        let _ = swtpm2.wait();
         cleanup_env(&base);
         let _ = swtpm.kill();
+        let _ = swtpm.wait();
     }
 
     fn swtpm_port() -> u16 {
@@ -813,7 +819,7 @@ mod tests {
     #[test]
     fn aes_accel_detection_is_boolean() {
         // Must never panic and return one of the two outcomes.
-        assert!(aes_accelerated() == true || aes_accelerated() == false);
+        assert!(aes_accelerated() || !aes_accelerated());
     }
 
     #[test]

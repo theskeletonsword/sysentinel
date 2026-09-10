@@ -473,6 +473,8 @@ pub fn hal_info() -> HalInfo {
 
 impl HalInfo {
     /// Machine-readable one-liner for logs/status.
+    // Compact HAL rendering; kept alongside the verbose report.
+    #[allow(dead_code)]
     pub fn summary(&self) -> String {
         let fw = self
             .me_fw
@@ -493,7 +495,7 @@ impl HalInfo {
     /// Telegram-friendly rendering for `/firmware` and `/definehome hal`.
     pub fn render_markdown(&self) -> String {
         let mut out = String::new();
-        out.push_str(&format!("🔩 *HAL — ring −3 coprocessor*\n"));
+        out.push_str("🔩 *HAL — ring −3 coprocessor*\n");
         out.push_str(&format!("  coprocessor: `{}`\n", self.coprocessor.label()));
         out.push_str(&format!("  cpu vendor: {}\n", self.cpu_vendor));
         out.push_str(&format!("  cpu part (fmh): `{}`\n", self.cpu_part));

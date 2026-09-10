@@ -54,6 +54,8 @@ impl Grade {
             Grade::Bad    => "🚨",
         }
     }
+    // Verdict wording helper, exercised by the audit tests.
+    #[allow(dead_code)]
     fn word(self) -> &'static str {
         match self {
             Grade::Ok    => "ok",
@@ -216,11 +218,7 @@ fn check_efi_variables(a: &mut Audit) {
             // A BootOrder that is not all-zeros (all zero = use default).
             if let Ok(raw) = fs::read(e.path()) {
                 let payload = &raw[4.min(raw.len())..];
-                if payload.iter().any(|b| *b != 0) {
-                    nonzero_ok = true;
-                } else {
-                    nonzero_ok = false;
-                }
+                nonzero_ok = payload.iter().any(|b| *b != 0);
             }
         } else if name.starts_with("Boot") && name.contains('-') {
             boot_entries += 1;
@@ -427,6 +425,8 @@ fn check_filesystem_integrity(a: &mut Audit) {
 }
 
 /// Human summary line used by `/start` and proactive context.
+// One-line audit summary; kept for callers that want the digest form.
+#[allow(dead_code)]
 pub fn short_summary() -> String {
     let a = run();
     let ok = a.findings.iter().filter(|f| f.grade == Grade::Ok).count();

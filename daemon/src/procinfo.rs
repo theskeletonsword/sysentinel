@@ -21,9 +21,12 @@ pub struct ProcRow {
     pub rss_mb: f32,
 }
 
+/// One `/proc/<pid>/stat` row: `(pid, utime+stime ticks, rss pages)`.
+type RawProcRow = (i32, i64, usize);
+
 /// Read /proc/stat (idle+u+s+n totals) plus every /proc/<pid>/stat
 /// (utime+stime ticks, rss pages). Returns (total_cpu_ticks, rows).
-fn read_proc_stat() -> Result<(i64, Vec<(i32, i64, usize)>)> {
+fn read_proc_stat() -> Result<(i64, Vec<RawProcRow>)> {
     let stat = fs::read_to_string("/proc/stat")?;
     let first = stat.lines().next().unwrap_or_default();
     let fields: Vec<&str> = first.split_whitespace().collect();
@@ -56,7 +59,7 @@ fn trace_stats(raw: &str, pid: i32, out: &mut Vec<(i32, i64, usize)>) {
     let Some(end) = raw.rfind(')') else { return };
     let Some(rest) = raw.get(end + 1..) else { return };
 
-    let v: Vec<&str> = rest.trim_start().split_whitespace().collect();
+    let v: Vec<&str> = rest.split_whitespace().collect();
     // After ")" the first field is field 3 (state); utime is field 14 → index
     // 14-3 = 11, stime → 12, rss is field 24 → 21.
     if v.len() <= 21 {

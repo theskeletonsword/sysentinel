@@ -3,10 +3,11 @@
 //!
 //! This client does exactly one thing: call the Bot API's
 //! `sendMessage` endpoint with a preconfigured `chat_id`. There is:
-//!   - no long-polling `getUpdates` loop,
-//!   - no webhook listener,
-//!   - no inbound command parser,
-//!   - no pairing/handshake flow of any kind.
+//! - no long-polling `getUpdates` loop,
+//! - no webhook listener,
+//! - no inbound command parser,
+//! - no pairing/handshake flow of any kind.
+//!
 //! The bot token and chat id are read once from the local config file
 //! that the user filled in themselves; trust is established entirely
 //! out-of-band (the user created the bot and copied the token in).

@@ -180,11 +180,8 @@ fn main() -> Result<()> {
                 &config,
                 &config.telegram.bot_token,
             );
-        } else {
-            log::info!(
-                "telegram: already paired with chat_id={}",
-                persisted_id.unwrap()
-            );
+        } else if let Some(id) = persisted_id {
+            log::info!("telegram: already paired with chat_id={id}");
         }
     }
 

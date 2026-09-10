@@ -1,0 +1,87 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Build, lint and test the two Rust workspaces on every push and PR.
+#
+# Deliberately NOT running `cargo fmt --check`: this codebase uses hand-aligned
+# columns that rustfmt would rewrite. Style is reviewed by humans; clippy is
+# the machine-enforced gate.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  daemon:
+    name: daemon (ring 3)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: daemon
+      - name: clippy
+        run: cargo clippy --manifest-path daemon/Cargo.toml --all-targets -- -D warnings
+      - name: test
+        run: cargo test --manifest-path daemon/Cargo.toml
+      - name: build (release)
+        run: cargo build --manifest-path daemon/Cargo.toml --release
+
+  ramdisk:
+    name: ramdisk tools (musl static)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+          targets: x86_64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ramdisk
+      - name: clippy
+        run: cargo clippy --manifest-path ramdisk/Cargo.toml --all-targets -- -D warnings
+      - name: test
+        run: cargo test --manifest-path ramdisk/Cargo.toml
+      # The initramfs tools must stay statically linked: a dynamic binary would
+      # fail to run on a bare dracut ramdisk.
+      - name: build (musl static)
+        run: |
+          sudo apt-get update && sudo apt-get install -y musl-tools
+          cargo build --manifest-path ramdisk/Cargo.toml \
+            --release --target x86_64-unknown-linux-musl
+          for b in sysentinel-cam sysentinel-face; do
+            path=ramdisk/target/x86_64-unknown-linux-musl/release/$b
+            file "$path"
+            # musl produces a static-PIE; accept either wording, reject dynamic.
+            file "$path" | grep -qE 'static-pie linked|statically linked' \
+              || { echo "::error::$b is not statically linked"; exit 1; }
+          done
+
+  licences:
+    name: licence map
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # This repo is deliberately not uniformly licensed: daemon/ is Apache-2.0
+      # while kernel_module/, ramdisk/ and scripts/ are MIT OR GPL-2.0-or-later.
+      # A new file with the wrong header quietly breaks that, so gate on it.
+      - name: per-directory licence map
+        run: ./scripts/licence-map-check.sh
+
+  shell:
+    name: shellcheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck
+        run: |
+          sudo apt-get update && sudo apt-get install -y shellcheck
+          shellcheck -S warning $(git ls-files '*.sh')

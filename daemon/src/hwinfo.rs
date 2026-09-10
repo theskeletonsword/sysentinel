@@ -219,7 +219,7 @@ fn read_hex(path: &std::path::Path) -> String {
         .ok()
         .map(|s| s.trim().trim_start_matches("0x").to_string())
         .filter(|s| !s.is_empty())
-        .map(|s| format!("0x{pad}{s}", pad = "0000".repeat(1).chars().take(0).collect::<String>()))
+        .map(|s| format!("0x{pad}{s}", pad = "0000".to_string().chars().take(0).collect::<String>()))
         .map(|s| if s.len() - 2 < 4 { format!("0x{:0>4}", &s[2..]) } else { s })
         .unwrap_or_default()
 }
@@ -311,9 +311,7 @@ pub fn hardware_report() -> String {
             if !g.nvidia_smi.is_empty() {
                 out.push_str("  nvidia-smi: ");
                 for part in g.nvidia_smi.split(',') {
-                    match part.trim() {
-                        p => out.push_str(p),
-                    }
+                    out.push_str(part.trim());
                     out.push_str(" | ");
                 }
                 out.pop();

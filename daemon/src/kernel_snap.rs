@@ -88,6 +88,8 @@ impl KernelSnapshot {
     }
 
     /// How the CR0.WP bit (write-protect, bit 16) currently sits.
+    // Snapshot accessors kept for callers reading individual flags.
+    #[allow(dead_code)]
     pub fn cr0_wp_enabled() -> Option<bool> {
         Self::current_cr(0).map(|v| (v >> 16) & 1 == 1)
     }
@@ -101,10 +103,12 @@ impl KernelSnapshot {
     }
 
     /// True when the module reports no hypervisor — the host is bare metal.
+    // Snapshot accessor kept for callers reading individual flags.
+    #[allow(dead_code)]
     pub fn is_bare_metal(&self) -> bool {
         self.hypervisor
             .as_deref()
-            .map_or(false, |h| h.contains("bare-metal") || h.eq_ignore_ascii_case("none"))
+            .is_some_and(|h| h.contains("bare-metal") || h.eq_ignore_ascii_case("none"))
     }
 
     /// Compact multi-line summary suitable for an LLM system prompt.

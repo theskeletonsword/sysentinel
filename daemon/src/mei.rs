@@ -205,6 +205,8 @@ fn parse_me_live(s: &str) -> Option<MeLiveStatus> {
 }
 
 /// Parse a kernel-module `psp=up(...)` token into its detail string.
+// Exercised by the unit tests; kept as the canonical `psp=up(...)` parser.
+#[allow(dead_code)]
 fn parse_psp_up(s: &str) -> Option<String> {
     s.strip_prefix("up(")?.strip_suffix(')').map(String::from)
 }

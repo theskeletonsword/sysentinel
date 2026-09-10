@@ -26,7 +26,7 @@
 use anyhow::{Context, Result};
 use std::fs;
 use std::io::Write as IoWrite;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
@@ -64,7 +64,7 @@ impl MemoryStore {
         self.max_entries.store(n.max(2), Ordering::Relaxed);
     }
 
-    fn ensure_parents(path: &PathBuf) -> Result<()> {
+    fn ensure_parents(path: &Path) -> Result<()> {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)
                 .map_err(|e| anyhow::anyhow!("creating dir {}: {e}", parent.display()))?;

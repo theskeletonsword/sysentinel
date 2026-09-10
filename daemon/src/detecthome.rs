@@ -58,6 +58,8 @@ pub struct MachineIdentity {
     pub board_name: String,
     pub board_serial: String,
     pub chassis_serial: String,
+    // Part of the persisted fingerprint; compared as raw JSON, not field-wise.
+    #[allow(dead_code)]
     pub bios_version: String,
     // ── Compute / GPU / RAM ────────────────────────────────────────────────
     pub cpu_model: String,
@@ -494,7 +496,7 @@ fn sha256(data: &[u8]) -> [u8; 32] {
     msg.extend_from_slice(&bitlen.to_be_bytes());
 
     let mut w = [0u32; 64];
-    for chunk in msg.chunks_exact(64) {
+    for chunk in msg.as_chunks::<64>().0 {
         for i in 0..16 {
             w[i] = u32::from_be_bytes([
                 chunk[i * 4], chunk[i * 4 + 1], chunk[i * 4 + 2], chunk[i * 4 + 3],
@@ -555,7 +557,7 @@ mod tests {
 
     #[test]
     fn fingerprint_is_stable_and_unique_tokens_differ() {
-        let mut a = collect_identity();
+        let a = collect_identity();
         let fa = a.fingerprint();
         assert_eq!(a.fingerprint(), fa, "same machine → same hash");
 

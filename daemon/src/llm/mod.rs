@@ -112,6 +112,7 @@ pub trait LlmBackend: Send + Sync {
 
     /// Downcast helper used by tests to inspect the concrete backend shape
     /// (e.g. whether a provider model list built a `FallbackBackend`).
+    #[allow(dead_code)]
     fn as_any(&self) -> &dyn std::any::Any {
         &()
     }
@@ -158,6 +159,7 @@ pub const PROVIDER_HINTS: &[(&str, &str)] = &[
 /// Kept together so `/llm`, `/settings llama_ctx`, `/settings local_ctx` and
 /// `/model <name>` rebuild the active backend consistently.
 #[cfg_attr(not(feature = "local-llm"), allow(dead_code))]
+#[derive(Default)]
 pub struct RuntimePrefs {
     /// Context length for the llama.cpp HTTP-server backend (`n_ctx`);
     /// 0 = don't override the server.
@@ -177,17 +179,6 @@ pub struct RuntimePrefs {
     pub models_by_provider: std::collections::HashMap<String, Vec<String>>,
 }
 
-impl Default for RuntimePrefs {
-    fn default() -> Self {
-        Self {
-            llama_ctx: 0,
-            local_ctx: 0,
-            local_model: None,
-            model: None,
-            models_by_provider: std::collections::HashMap::new(),
-        }
-    }
-}
 
 /// Build a backend for a specific provider name. Used both at startup and by
 /// the live `/llm` switch (and rebuilds after tuning `/settings`).
@@ -346,6 +337,8 @@ impl FallbackBackend {
     }
 
     #[cfg(test)]
+    // Mirrors `len()`; kept for completeness of the chain API.
+    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.chain.is_empty()
     }
@@ -555,7 +548,7 @@ pub fn build_system_prompt(config: &Config) -> String {
         .find_map(|l| {
             let l = l.trim();
             let rest = l.strip_prefix("MemTotal:")?;
-            rest.trim().split_whitespace().next()?.parse().ok()
+            rest.split_whitespace().next()?.parse().ok()
         })
         .unwrap_or(0);
     if mem_total_kb > 0 {
@@ -742,8 +735,10 @@ mod tests {
         // SAME provider wrapped in a FallbackBackend, even when the list is a
         // substring/suffix of a real provider name set via settings.
         let cfg = test_config();
-        let mut prefs = RuntimePrefs::default();
-        prefs.model = Some("deepseek-chat".to_string());
+        let mut prefs = RuntimePrefs {
+            model: Some("deepseek-chat".to_string()),
+            ..Default::default()
+        };
         prefs.models_by_provider.insert(
             "deepseek".to_string(),
             vec!["deepseek-chat".to_string(), "deepseek-reasoner".to_string()],
@@ -760,8 +755,10 @@ mod tests {
     fn build_named_single_model_uses_global_override() {
         // Without a per-provider list, the single `/model` override applies.
         let cfg = test_config();
-        let mut prefs = RuntimePrefs::default();
-        prefs.model = Some("deepseek-reasoner".to_string());
+        let prefs = RuntimePrefs {
+            model: Some("deepseek-reasoner".to_string()),
+            ..Default::default()
+        };
         let b = build_named(&cfg, "deepseek", &prefs).expect("build_named succeeds");
         assert!(
             b.as_any().downcast_ref::<FallbackBackend>().is_none(),
