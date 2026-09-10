@@ -258,16 +258,11 @@ fn send_with_photo(
     if config.camera.enabled && !dry_run {
         match camera::capture(&config.camera, &shot_dir) {
             CamResult::Photo { path } => {
-                // Local face check (only when enrolled): pure perceptual
-                // hashing, no tokens, no stored images.
+                // Local face check (only when enrolled): the neural pipeline
+                // when `sysentinel-face` is installed, perceptual hashes
+                // otherwise. No tokens either way, and no images retained.
                 let face_line = if config.face.enabled {
-                    let thr = crate::fhash::FaceThresholds {
-                        p_owner: config.face.p_owner,
-                        w_owner: config.face.w_owner,
-                        p_ambiguous: config.face.p_ambiguous,
-                        w_ambiguous: config.face.w_ambiguous,
-                    };
-                    crate::fhash::verdict_text(&thr, std::path::Path::new(&config.face.path), &path)
+                    crate::facenn::verdict_line(&config.face, &path)
                 } else {
                     None
                 };

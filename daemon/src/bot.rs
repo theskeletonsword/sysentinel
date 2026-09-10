@@ -3511,12 +3511,36 @@ PMU).";
                                 .iter()
                                 .map(|e| format!("`p{:08x}` `w{:08x}`", e.p_hash, e.w_hash))
                                 .collect();
+                            // Say which engine actually decides a login here:
+                            // the two are not equally strong evidence.
+                            let engine = if crate::facenn::available(&self.config.face) {
+                                if vecs > 0 {
+                                    format!(
+                                        "🧠 Motor activo: *red neuronal* (coseno ≥ {:.2} = dueño, \
+                                         ≥ {:.2} = dudoso)",
+                                        self.config.face.nn_owner, self.config.face.nn_ambiguous
+                                    )
+                                } else {
+                                    "⚠️ Motor activo: *hash perceptual* — hay tool pero ningún \
+                                     enroll tiene vector 128-D; vuelve a registrar con \
+                                     `/face register`"
+                                        .to_string()
+                                }
+                            } else {
+                                format!(
+                                    "⚠️ Motor activo: *hash perceptual* (más débil) — falta \
+                                     `{}`. El hash describe la foto entera, así que un \
+                                     desconocido en tu silla y tu fondo se le parece.",
+                                    self.config.face.tool_path
+                                )
+                            };
                             format!(
                                 "{} enroll(s) registrados ({} con vector 128-D para el \
-                                 initramfs):\n{}",
+                                 initramfs):\n{}\n\n{}",
                                 s.len(),
                                 vecs,
-                                head.join("\n")
+                                head.join("\n"),
+                                engine
                             )
                         };
                         let _ = self.send(chat_id, &msg);

@@ -142,7 +142,8 @@ sysentinel/
 │       ├── luks.rs               LUKS-decrypt tripwire ("¿fui yo?") over initramfs evidence
 │       ├── loginwatch.rs         Login success/failure watcher + intrusion capture
 │       ├── camera.rs             Webcam evidence via sysentinel-cam
-│       ├── fhash.rs              Perceptual face hashing (pHash/DCT + wHash/Haar)
+│       ├── fhash.rs              Perceptual face hashing (pHash/DCT + wHash/Haar) — fallback
+│       ├── facenn.rs             Neural face verification: runs the musl tool from glibc
 │       │
 │       ├── pmu.rs                PMU counters via perf_event_open; paranoid ladder + hybrid dispatcher
 │       ├── coretype.rs           Clean-room core-type oracle (CPUID.1AH / MIDR_EL1)

@@ -43,6 +43,7 @@ mod config;
 mod coretype;
 mod detecthome;
 mod dmesg;
+mod facenn;
 mod fhash;
 mod hal;
 mod hwdiag;

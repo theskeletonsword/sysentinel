@@ -421,9 +421,27 @@ pub struct FaceConfig {
     #[serde(default = "default_w_owner")] pub w_owner: u32,
     #[serde(default = "default_p_amb")]   pub p_ambiguous: u32,
     #[serde(default = "default_w_amb")]   pub w_ambiguous: u32,
+
+    /// The static-musl face tool. It carries both ONNX models inside it, so a
+    /// single binary serves the initramfs and this glibc daemon alike.
+    #[serde(default = "default_face_tool")]
+    pub tool_path: String,
+    /// Cosine over the 128-D embeddings at or above which the probe is the
+    /// owner. See `facenn` for where the defaults come from.
+    #[serde(default = "default_nn_owner")]
+    pub nn_owner: f32,
+    /// Cosine at or above which the probe is a *possible* owner.
+    #[serde(default = "default_nn_amb")]
+    pub nn_ambiguous: f32,
 }
 
 fn default_face_path() -> String { "/var/lib/sysentinel/faces.json".to_string() }
+fn default_face_tool() -> String { "/usr/libexec/sysentinel-face".to_string() }
+// Measured on this project's models: an identical image scores 1.000000 and
+// six different faces scored up to 0.46 — hence a floor above that, not the
+// 0.45 often quoted for MobileFaceNet.
+fn default_nn_owner() -> f32 { 0.62 }
+fn default_nn_amb()   -> f32 { 0.50 }
 fn default_p_owner()  -> u32 { 14 }
 fn default_w_owner()  -> u32 { 15 }
 fn default_p_amb()    -> u32 { 20 }
@@ -434,6 +452,9 @@ impl Default for FaceConfig {
         Self {
             enabled: false,
             path: default_face_path(),
+            tool_path: default_face_tool(),
+            nn_owner: default_nn_owner(),
+            nn_ambiguous: default_nn_amb(),
             p_owner: 14, w_owner: 15, p_ambiguous: 20, w_ambiguous: 22,
         }
     }

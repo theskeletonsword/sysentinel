@@ -278,7 +278,31 @@ height = 480
 enabled = false
 # Where the owner-face hashes live (JSON, mode 0600). Hashes only.
 path = "/var/lib/sysentinel/faces.json"
-# Hamming thresholds over the 64-bit perceptual hashes.
+# ── Which engine decides a login ─────────────────────────────────────────────
+# When `tool_path` exists AND an enroll carries a 128-D vector, the verdict is
+# the NEURAL one: SCRFD detects the face, MobileFaceNet embeds the aligned
+# 112x112 crop, and the probe is compared by cosine. The same static-musl
+# binary the initramfs uses runs here — one artifact, so early boot and the
+# live daemon can never disagree about what a face is.
+#
+# Without it the daemon falls back to the 64-bit perceptual hashes below. That
+# fallback is weaker in a way worth understanding: a perceptual hash describes
+# the whole PICTURE, background included, not the face. A different person in
+# your chair, against your wall, at your framing scores close to you — which is
+# precisely the case this daemon exists to catch. `/face status` always says
+# which engine is live.
+tool_path = "/usr/libexec/sysentinel-face"
+
+# Cosine thresholds over the 128-D embeddings (1.0 = identical, 0.0 = unrelated).
+# Measured on these models: the same image scores 1.000000, while six different
+# faces scored -0.03, 0.0005, 0.069, 0.10, 0.10 and 0.46. That 0.46 is why the
+# floor sits above the 0.45 often quoted for MobileFaceNet — a stranger already
+# reached it. Enroll a few times and see where your own repeat photos land
+# before loosening these.
+nn_owner     = 0.62   # >= this: it's you
+nn_ambiguous = 0.50   # >= this: possibly you, worth a look
+
+# Hamming thresholds for the perceptual-hash fallback (64-bit hashes).
 p_owner      = 14
 w_owner      = 15
 p_ambiguous  = 20
