@@ -45,6 +45,35 @@ biometric.
 That chain is what the daemon verifies. Until it does, a confirmation is graded
 at the level it can prove, not the level the phone asserts.
 
+## Building
+
+Verified building on this machine with **Gradle 9.1.0 + AGP 8.13.0 + SDK 34**,
+using the JDK bundled inside the Android Studio flatpak. That combination is not
+incidental: Gradle 8.13 cannot parse Java 25 and fails with the version string
+as its entire error message, so if the only JDK around is 25 or newer, Gradle 9
+is required.
+
+```sh
+export JAVA_HOME=/var/lib/flatpak/app/com.google.AndroidStudio/current/active/files/extra/jbr
+export ANDROID_HOME=$HOME/Android/Sdk
+gradle assembleDebug          # both flavours
+gradle assembleModernDebug    # arm64-v8a, minSdk 28
+gradle assembleLegacyDebug    # armeabi-v7a, minSdk 21
+```
+
+`local.properties` (holding `sdk.dir`) is machine-local and gitignored.
+
+Output, as built here:
+
+| APK | Size | ABI | minSdk |
+|---|---|---|---|
+| `app-modern-debug.apk` | 28 MB | arm64-v8a | 28 |
+| `app-legacy-debug.apk` | 6.7 MB | — | 21 |
+
+The legacy APK carries no `lib/` directory yet because there is no native code
+in it; the `abiFilters` take effect once there is. The size gap is Compose,
+which is why it is scoped to one flavour.
+
 ## Cipher choice
 
 The same rule the daemon already applies on x86 (`daemon/src/tpmkey.rs`), moved

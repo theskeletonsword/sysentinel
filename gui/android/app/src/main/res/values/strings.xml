@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">sysentinel</string>
+    <string name="hint_message">Escribe un mensaje…</string>
+    <string name="send">Enviar</string>
+    <string name="confirm_with_biometric">Confirmar con huella</string>
+</resources>

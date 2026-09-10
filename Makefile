@@ -3,7 +3,7 @@
 # Top-level convenience Makefile. Each component also builds
 # standalone from within its own directory.
 
-.PHONY: all daemon kernel-module ramdisk gui check licence-map licence-audit clean install install-dracut uninstall
+.PHONY: all daemon kernel-module ramdisk gui apk check licence-map licence-audit clean install install-dracut uninstall
 
 all: daemon kernel-module ramdisk
 
@@ -52,6 +52,12 @@ licence-audit:
 # so a machine without them can still build everything else.
 gui:
 	cargo build --release --manifest-path gui/linux/Cargo.toml
+
+# Android front-end. Needs a JDK, the Android SDK, and Gradle 9+ (Gradle 8
+# cannot parse Java 25). See gui/android/README.md.
+GRADLE ?= gradle
+apk:
+	cd gui/android && $(GRADLE) assembleDebug
 
 clean:
 	cd daemon && cargo clean

@@ -3,6 +3,13 @@ daemon/target/
 ramdisk/target/
 gui/linux/target/
 
+# Android build output and machine-local SDK path
+gui/android/build/
+gui/android/app/build/
+gui/android/.gradle/
+gui/android/local.properties
+gui/android/.kotlin/
+
 # Kernel module build artifacts (kbuild)
 *.o
 *.ko
