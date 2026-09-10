@@ -312,6 +312,20 @@ fn main() -> Result<()> {
         log::info!("battery-watch: battery watcher thread started");
     }
 
+    // ── Device watcher: keyboards and storage appearing on any bus ────────────
+    {
+        let cfg7 = config.clone();
+        let state7 = Arc::clone(&shared_state);
+        let st7 = Arc::clone(&settings);
+        let dry7 = args.dry_run;
+        let llm7: Arc<llm::RuntimeLlm> = Arc::clone(&llm_backend);
+        thread::Builder::new()
+            .name("device-watch".to_string())
+            .spawn(move || presence::run_device_loop(&cfg7, &state7, &st7, llm7.as_ref(), dry7))
+            .context("spawning device watcher thread")?;
+        log::info!("device-watch: device watcher thread started");
+    }
+
     // ── Main loop: watch /dev/kmsg ────────────────────────────────────────────
     let kmsg_llm: Arc<dyn llm::LlmBackend + Send + Sync> = llm_backend.clone();
     run_kmsg_loop(
