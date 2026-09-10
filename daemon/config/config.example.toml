@@ -206,11 +206,26 @@ include_firmware = true
 #   - Periodic hwdiag summaries.
 #
 # Software counters (context switches, page faults, CPU migrations) are always
-# available. Hardware counters (IPC, LLC misses, branch mispredictions) require:
-#   - AmbientCapabilities=CAP_PERFMON in the systemd unit, OR
+# available. For hardware counters the daemon walks a ladder and keeps the
+# widest scope /proc/sys/kernel/perf_event_paranoid actually permits — it never
+# just gives up:
+#
+#   paranoid  what you get
+#   -------- -----------------------------------------------------------------
+#     <= 0    system-wide: every CPU, kernel time included
+#        1    this process only, kernel time included
+#        2    this process only, user-mode only  <- the UPSTREAM DEFAULT
+#     >= 3    nothing (a Debian/Ubuntu-only setting)
+#
+# CAP_PERFMON bypasses all of it. To get machine-wide counters, either:
+#   - AmbientCapabilities=CAP_PERFMON in the systemd unit (preferred), OR
 #   - echo 0 | sudo tee /proc/sys/kernel/perf_event_paranoid
 #
-# The daemon degrades gracefully if hardware counters are unavailable.
+# It matters on a hybrid CPU (Intel P/E cores, ARM big.LITTLE): the per-core-type
+# breakdown is sharpest system-wide, where each CPU gets its own counter and the
+# results are grouped by the core type the silicon itself reports.
+#
+# The daemon degrades gracefully at every rung, and says which one it used.
 enabled   = true
 # How long to sample PMU counters before reading them, in milliseconds.
 # 250 ms is a good balance; raise to 1000 ms for more accurate IPC measurement.
@@ -231,8 +246,10 @@ enabled = true
 # The V4L2 binary (built from ramdisk/, installed by scripts/install-dracut.sh).
 # It auto-detects BOTH USB webcams and the built-in one.
 tool_path = "/usr/libexec/sysentinel-cam"
-# Where the initramfs hook mirrors the post-decrypt evidence (marker + photo).
-# The daemon scans this dir at startup and dedupes by kernel boot_id.
+# Where the initramfs hook mirrors the LUKS evidence (marker + photo). The
+# capture now starts BEFORE the LUKS password prompt; the pre-pivot hook is
+# only the fallback. The daemon scans this dir at startup and dedupes by
+# kernel boot_id.
 evidence_dir = "/var/lib/sysentinel/luks-evidence"
 # Failed attempts before an intruder photo + alert (3 guesses = brute-force).
 login_fail_threshold = 3
@@ -241,5 +258,30 @@ fail_window_minutes = 10
 # Requested capture resolution; the camera picks the nearest supported one.
 width  = 640
 height = 480
+
+# ── [face] ──────────────────────────────────────────────────────────────────
+# Local owner-face verification at login. Purely perceptual: every photo is
+# reduced to two 64-bit hashes (pHash/DCT + wHash/Haar) and matched by
+# Hamming distance — NO neural model, NO LLM tokens, and NO pictures are ever
+# stored. `/face register` is the only way to enroll your face; when enabled,
+# a login whose webcam frame does NOT match a registered hash is flagged.
+#
+# threshold meaning (distance over 64 bits):
+#   ≤ *owner        → it's the owner
+#   ≤ *ambiguous    → possible owner, keep an eye
+#   >  *ambiguous   → unknown face (potential intruder)
+# The match is an OR-vote: pHash *or* wHash under its owner threshold is
+# enough (each hash survives different degradations).
+
+[face]
+# Recognize the owner by camera at login (default: off — no camera use).
+enabled = false
+# Where the owner-face hashes live (JSON, mode 0600). Hashes only.
+path = "/var/lib/sysentinel/faces.json"
+# Hamming thresholds over the 64-bit perceptual hashes.
+p_owner      = 14
+w_owner      = 15
+p_ambiguous  = 20
+w_ambiguous  = 22
 # Seconds to wait for a frame while a format is being tried.
 timeout = 10

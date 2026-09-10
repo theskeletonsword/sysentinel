@@ -92,16 +92,15 @@ pub fn module_fallback_block() -> String {
 
     // PMU: pure perf_event_open — works WITHOUT the module. With
     // perf_event_paranoid ≤ 0 (the user's -1) it runs system-wide.
+    // Ask the PMU what scope it actually got rather than predicting from the
+    // sysctl: CAP_PERFMON widens it past what perf_event_paranoid implies.
     let paranoid = crate::pmu::read_paranoid();
+    let access   = crate::pmu::probe_access();
     let pmu_note = match paranoid {
-        Some(p) if p <= 0 => {
-            "perf_event_open system-wide (perf_event_paranoid ≤ 0)".to_string()
-        }
-        Some(p) => {
-            format!("perf_event_open per-process (paranoid={p})")
-        }
-        None => "PMU counters unavailable".to_string(),
+        Some(p) => format!("perf_event_open {} (paranoid={p})", access.describe()),
+        None    => format!("perf_event_open {}", access.describe()),
     };
+
     out.push_str(&format!("- PMU/IPC: {pmu_note}\n"));
 
     out

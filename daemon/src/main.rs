@@ -40,6 +40,7 @@ mod bootkit_audit;
 mod camera;
 mod classify;
 mod config;
+mod coretype;
 mod detecthome;
 mod dmesg;
 mod fhash;
