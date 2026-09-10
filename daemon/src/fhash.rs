@@ -106,8 +106,6 @@ impl FaceStore {
     }
 
     /// Hash + embedding opcional de una foto y añade el enroll.
-    // Enrolment path for `/face register`; waiting on photos over the phone.
-    #[allow(dead_code)]
     pub fn add_image_with_embedding(
         &mut self,
         img: &image::DynamicImage,

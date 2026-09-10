@@ -286,6 +286,12 @@ pub enum FromPhone {
     Ack { id: u64 },
     /// A reply typed by the owner.
     Say { text: String },
+    /// A photo for `/face register`.
+    ///
+    /// Base64 rather than a byte array: a JPEG through a JSON array of integers
+    /// is roughly six bytes on the wire per byte of image, which turns a 2 MB
+    /// photo into 12 MB and straight past the frame cap.
+    Photo { jpeg_base64: String },
 }
 
 /// What the daemon sends back.
@@ -305,6 +311,52 @@ pub enum ToPhone {
     Alerts { alerts: Vec<QueuedAlert> },
     Ok,
     Error { message: String },
+}
+
+/// Decode standard base64. Hand-rolled to avoid a dependency for forty lines,
+/// and strict: padding and alphabet are checked rather than guessed at, so a
+/// truncated upload fails here instead of becoming a corrupt JPEG later.
+fn decode_base64(s: &str) -> Option<Vec<u8>> {
+    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let s = s.trim().as_bytes();
+    if !s.len().is_multiple_of(4) || s.is_empty() {
+        return None;
+    }
+    let mut out = Vec::with_capacity(s.len() / 4 * 3);
+    let last = s.len() / 4 - 1;
+    for (idx, chunk) in s.chunks(4).enumerate() {
+        let mut buf = [0u8; 4];
+        let mut pad = 0;
+        for (i, &c) in chunk.iter().enumerate() {
+            if c == b'=' {
+                // Padding is only ever the last one or two characters of the
+                // FINAL quantum. "aGV=bG8=" is two valid-looking chunks and not
+                // valid base64, which is exactly the shape a truncated upload
+                // spliced onto another one takes.
+                if i < 2 || idx != last {
+                    return None;
+                }
+                pad += 1;
+                buf[i] = 0;
+            } else if pad > 0 {
+                return None; // data after padding
+            } else {
+                buf[i] = ALPHABET.iter().position(|&a| a == c)? as u8;
+            }
+        }
+        let n = (u32::from(buf[0]) << 18)
+            | (u32::from(buf[1]) << 12)
+            | (u32::from(buf[2]) << 6)
+            | u32::from(buf[3]);
+        out.push((n >> 16) as u8);
+        if pad < 2 {
+            out.push((n >> 8) as u8);
+        }
+        if pad < 1 {
+            out.push(n as u8);
+        }
+    }
+    Some(out)
 }
 
 // ── The channel ───────────────────────────────────────────────────────────────
@@ -363,6 +415,7 @@ impl Notifier for PhoneChannel {
 pub fn start(
     config: &crate::config::Config,
     on_command: impl Fn(&str) + Send + Sync + 'static,
+    on_photo: impl Fn(&[u8]) + Send + Sync + 'static,
 ) -> Result<PhoneChannel> {
     let bind = config
         .phone
@@ -423,7 +476,7 @@ pub fn start(
     std::thread::Builder::new()
         .name("phone".to_string())
         .spawn(move || {
-            run_phone_loop(&bind_for_thread, key, listener_queue, profile, on_command)
+            run_phone_loop(&bind_for_thread, key, listener_queue, profile, on_command, on_photo)
         })
         .context("spawning the phone listener")?;
 
@@ -523,6 +576,7 @@ pub fn run_phone_loop(
     queue: Arc<Mutex<AlertQueue>>,
     profile_path: PathBuf,
     on_command: impl Fn(&str) + Send + Sync + 'static,
+    on_photo: impl Fn(&[u8]) + Send + Sync + 'static,
 ) {
     let listener = match TcpListener::bind(bind) {
         Ok(l) => l,
@@ -536,7 +590,7 @@ pub fn run_phone_loop(
     for stream in listener.incoming() {
         match stream {
             Ok(s) => {
-                if let Err(e) = serve(s, &key, &queue, &profile_path, &on_command) {
+                if let Err(e) = serve(s, &key, &queue, &profile_path, &on_command, &on_photo) {
                     // Deliberately terse: a peer that fails to authenticate is
                     // told nothing and logged at debug, so a port scan does not
                     // fill the log or learn that it found the right protocol.
@@ -554,6 +608,7 @@ fn serve(
     queue: &Arc<Mutex<AlertQueue>>,
     profile_path: &Path,
     on_command: &(impl Fn(&str) + Send + Sync),
+    on_photo: &(impl Fn(&[u8]) + Send + Sync),
 ) -> Result<()> {
     stream.set_read_timeout(Some(IO_TIMEOUT))?;
     stream.set_write_timeout(Some(IO_TIMEOUT))?;
@@ -658,6 +713,15 @@ fn serve(
                 }
                 answer
             }
+            FromPhone::Photo { jpeg_base64 } => match decode_base64(&jpeg_base64) {
+                Some(bytes) => {
+                    on_photo(&bytes);
+                    ToPhone::Ok
+                }
+                None => ToPhone::Error {
+                    message: "la foto no venía en base64 válido".to_string(),
+                },
+            },
             FromPhone::Hello { .. } => ToPhone::Error {
                 message: "already said hello".to_string(),
             },
@@ -969,6 +1033,46 @@ mod tests {
             assert!(!crate::phonehome::verify_challenge(&pubkey, b"otro desafio", &sig));
             println!("interop: verified the JVM's device-key signature");
         }
+
+        // The app encodes photos with Android's Base64.NO_WRAP; the daemon
+        // decodes them by hand. Two base64 implementations agreeing is one more
+        // thing not to assume.
+        if let Ok(path) = std::env::var("SYSENTINEL_INTEROP_B64") {
+            let encoded = std::fs::read_to_string(&path).unwrap();
+            let decoded = decode_base64(&encoded).expect("the JVM's base64 must decode");
+            assert_eq!(
+                decoded,
+                vec![0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46],
+                "decoded to something other than the JPEG header it sent"
+            );
+            println!("interop: decoded the JVM's base64 photo");
+        }
+    }
+
+    #[test]
+    fn base64_is_strict_about_what_it_accepts() {
+        // A truncated upload must fail here, not turn into a corrupt JPEG that
+        // fails somewhere unhelpful later.
+        assert_eq!(decode_base64("aGVsbG8="), Some(b"hello".to_vec()));
+        assert_eq!(decode_base64("aGVsbG8h"), Some(b"hello!".to_vec()));
+        assert_eq!(decode_base64("aGk="), Some(b"hi".to_vec()));
+        // Whitespace from a JSON pretty-printer is forgiven.
+        assert_eq!(decode_base64("  aGVsbG8=\n"), Some(b"hello".to_vec()));
+
+        assert!(decode_base64("").is_none());
+        assert!(decode_base64("aGVsbG8").is_none(), "unpadded length");
+        assert!(decode_base64("aGVs bG8=").is_none(), "space inside");
+        assert!(decode_base64("=GVsbG8=").is_none(), "padding at the front");
+        assert!(decode_base64("aGV=bG8=").is_none(), "data after padding");
+        assert!(decode_base64("aGVsbG8~").is_none(), "outside the alphabet");
+    }
+
+    #[test]
+    fn a_photo_frame_round_trips_through_the_protocol() {
+        let msg = FromPhone::Photo { jpeg_base64: "aGVsbG8=".into() };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert_eq!(json, r#"{"op":"photo","jpeg_base64":"aGVsbG8="}"#);
+        assert_eq!(serde_json::from_str::<FromPhone>(&json).unwrap(), msg);
     }
 
     #[test]

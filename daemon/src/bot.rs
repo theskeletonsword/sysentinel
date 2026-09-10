@@ -573,8 +573,8 @@ impl TelegramBot {
     // are paired" for the daemon to persist and trust on the next boot.
 
     /// The exact phrases that count as an identity confirmation.
-    // Kept: the confirmation/denial judges and the enrolment embedding are the
-    // pieces `/face register` needs once photos arrive over the phone channel.
+    // The denial judge has a caller; this one is waiting on the confirmation
+    // flow moving to the phone's biometric, which is the next change.
     #[allow(dead_code)]
     fn is_confirmation_phrase(text: &str) -> bool {
         matches!(
@@ -3111,16 +3111,78 @@ PMU).";
         }
     }
 
-    // `enroll_face_photo` lived here: it consumed an incoming photo while
-    // `/face register` was arming, downloading it by Telegram file_id. There is
-    // no such thing any more. Photos will arrive over the phone channel, and
-    // wiring `/face register` to that is a separate change rather than a
-    // half-ported function left compiling against nothing.
+    /// Consume one photo sent while `/face register` is arming: hash it and
+    /// take its 128-D embedding, then throw the pixels away.
+    ///
+    /// Ported from the Telegram path, which fetched the image by file_id. The
+    /// bytes now arrive over the phone channel and everything after that is
+    /// unchanged — the image is never written to disk, only the two perceptual
+    /// hashes and the embedding are kept.
+    pub fn enroll_face_photo(&self, bytes: &[u8]) {
+        let wants = {
+            let g = self.state.lock().expect("bot state mutex");
+            g.face_pending > 0
+        };
+        if !wants {
+            log::debug!("face: a photo arrived with no `/face register` armed — ignored");
+            return;
+        }
+
+        let img = match image::load_from_memory(bytes) {
+            Ok(i) => i,
+            Err(e) => {
+                let _ = self.send(0, &format!("❌ No pude leer esa imagen: {e}"));
+                return;
+            }
+        };
+
+        // The neural template comes from the same static tool the initramfs
+        // uses, so early boot and the daemon agree on what a face is.
+        let embedding = self.face_embedding(bytes);
+        if embedding.is_none() {
+            log::warn!("face: no 128-D embedding for this enrolment — hashes only");
+        }
+
+        let path = std::path::PathBuf::from(&self.config.face.path);
+        let mut store = match crate::fhash::FaceStore::load(&path) {
+            Ok(s) => s,
+            Err(e) => {
+                let _ = self.send(0, &format!("❌ No pude abrir el registro de caras: {e}"));
+                return;
+            }
+        };
+        let (p_hash, w_hash) = store.add_image_with_embedding(&img, embedding.clone());
+        if let Err(e) = store.save() {
+            let _ = self.send(0, &format!("❌ No pude guardar el enrolamiento: {e}"));
+            return;
+        }
+        store.mirror_to_esp();
+
+        let remaining = {
+            let mut g = self.state.lock().expect("bot state mutex");
+            g.face_pending = g.face_pending.saturating_sub(1);
+            g.face_pending
+        };
+
+        let engine = if embedding.is_some() {
+            "con vector 128-D (la red neuronal podrá reconocerte)"
+        } else {
+            "solo hashes — falta el tool `sysentinel-face`, el reconocimiento será débil"
+        };
+        let msg = if remaining == 0 {
+            format!(
+                "✅ Rostro registrado {engine}.\n`p{p_hash:08x}` `w{w_hash:08x}`\n\n\
+                 No guardé la foto: solo los hashes y el vector."
+            )
+        } else {
+            format!("✅ Recibida ({engine}). Quedan *{remaining}* foto(s).")
+        };
+        let _ = self.send_markdown(0, &msg);
+    }
 
     /// 128-D embedding de una foto vía el tool estático del initramfs
     /// (`sysentinel-face --embed`), usado como template del veredicto NN.
     /// `None` cuando el tool no está instalado, no hay cara o algo falló.
-    #[allow(dead_code)]
     fn face_embedding(&self, bytes: &[u8]) -> Option<Vec<f32>> {
         #[derive(serde::Deserialize)]
         struct ToolOut {

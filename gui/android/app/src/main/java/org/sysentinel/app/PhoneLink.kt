@@ -192,6 +192,25 @@ class PhoneLink(
         exchange(JSONObject().put("op", "ack").put("id", id))
     }
 
+    /**
+     * Send a photo for `/face register`.
+     *
+     * Base64 rather than a JSON array of integers: a 2 MB JPEG through an array
+     * is roughly six bytes on the wire per byte of image, which would put it
+     * straight past the daemon's frame cap.
+     *
+     * `Base64.NO_WRAP` matters — the default inserts newlines every 76
+     * characters, and the daemon's decoder rejects whitespace inside a
+     * quantum rather than guessing at it.
+     */
+    fun sendPhoto(jpeg: ByteArray) {
+        val encoded = android.util.Base64.encodeToString(jpeg, android.util.Base64.NO_WRAP)
+        val reply = exchange(JSONObject().put("op", "photo").put("jpeg_base64", encoded))
+        if (reply.optString("op") == "error") {
+            throw PhoneLinkException(reply.optString("message", "el equipo rechazó la foto"))
+        }
+    }
+
     /** Say something to the machine and get its reply. */
     fun say(text: String): List<Message> {
         val reply = exchange(JSONObject().put("op", "say").put("text", text))

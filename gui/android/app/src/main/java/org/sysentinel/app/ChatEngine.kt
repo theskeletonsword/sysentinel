@@ -98,6 +98,23 @@ class ChatEngine(private val pairing: Pairing, private val appVersion: String) {
         }
     }
 
+    /** Send a photo for `/face register`. */
+    fun sendPhoto(jpeg: ByteArray, listener: Listener) {
+        val l = link ?: run {
+            listener.onStatus("sin conexión — la foto no salió", false)
+            return
+        }
+        io.execute {
+            try {
+                l.sendPhoto(jpeg)
+                post(listener) { it.onStatus("foto enviada", true) }
+                drain(listener, l)
+            } catch (e: Exception) {
+                post(listener) { it.onStatus(e.message ?: "no se pudo enviar la foto", false) }
+            }
+        }
+    }
+
     fun stop() {
         io.execute { link?.close(); link = null }
     }

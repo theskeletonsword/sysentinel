@@ -164,7 +164,15 @@ fn main() -> Result<()> {
                 Arc::clone(&shared_state),
                 Arc::clone(&settings),
             );
-            match phone::start(&config, move |text| commands.handle_owner_text(text)) {
+            // One handle drives both: text goes to the command layer, photos
+            // to `/face register`. Same connection, same proof of identity.
+            let for_photos = std::sync::Arc::new(commands);
+            let for_text = std::sync::Arc::clone(&for_photos);
+            match phone::start(
+                &config,
+                move |text| for_text.handle_owner_text(text),
+                move |bytes| for_photos.enroll_face_photo(bytes),
+            ) {
                 Ok(ch) => notifiers.push(Box::new(ch)),
                 Err(e) => log::error!("phone channel unavailable: {e:#}"),
             }

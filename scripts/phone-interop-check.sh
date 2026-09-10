@@ -66,6 +66,13 @@ public class Interop {
         Files.writeString(Path.of(a[4]), toHex(sig.sign()));
         System.out.println("interop: signed the challenge with an EC P-256 key");
 
+        // Base64 the way the app encodes a photo (Android's NO_WRAP is plain
+        // RFC 4648 with no line breaks, which is what java.util.Base64 does).
+        byte[] photo = new byte[]{(byte)0xFF,(byte)0xD8,(byte)0xFF,(byte)0xE0,0x00,0x10,0x4A,0x46};
+        Files.writeString(Path.of(a[5]),
+            java.util.Base64.getEncoder().encodeToString(photo));
+        System.out.println("interop: encoded a photo the way the app does");
+
         // Seal one for Rust.
         byte[] n2 = new byte[NONCE];
         new SecureRandom().nextBytes(n2);
@@ -103,14 +110,15 @@ javac -d "$work" "$work/Interop.java"
 # A challenge for the JVM to sign, as the daemon would issue.
 printf '%s' "$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')" > "$work/challenge.hex"
 java -cp "$work" Interop "$work/from_rust.hex" "$work/from_java.hex" \
-    "$work/challenge.hex" "$work/pubkey.hex" "$work/sig.hex"
+    "$work/challenge.hex" "$work/pubkey.hex" "$work/sig.hex" "$work/photo.b64"
 
 echo "==> rust opens the jvm's reply, and verifies its signature"
 SYSENTINEL_INTEROP_IN="$work/from_java.hex" \
 SYSENTINEL_INTEROP_CHALLENGE="$work/challenge.hex" \
 SYSENTINEL_INTEROP_PUBKEY="$work/pubkey.hex" \
 SYSENTINEL_INTEROP_SIG="$work/sig.hex" \
+SYSENTINEL_INTEROP_B64="$work/photo.b64" \
     cargo test --manifest-path daemon/Cargo.toml \
     phone::tests::frames_interoperate_with_the_jvm -- --nocapture 2>&1 | grep -E "interop:|test result"
 
-echo "phone-interop: OK — frames and device-key signatures cross both languages"
+echo "phone-interop: OK — frames, signatures and photo encoding cross both languages"
