@@ -34,7 +34,6 @@ use crate::selinux::{self, AvcDenial};
 use crate::settings::Settings;
 use crate::loginwatch;
 use anyhow::Result;
-use std::io::Read;
 use std::collections::{HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
 
@@ -113,13 +112,16 @@ impl PendingControl {
     const CONFIRMATION_WINDOW: std::time::Duration =
         std::time::Duration::from_secs(60);
 
-    fn new(kind: ControlKind, chat_id: i64) -> Self {
-        Self {
+    /// Arm a control. Fails when no confirmation code can be minted, which is
+    /// the right outcome: better to refuse to arm than to arm with a code
+    /// somebody could guess.
+    fn new(kind: ControlKind, chat_id: i64) -> Result<Self> {
+        Ok(Self {
             kind,
             chat_id,
             expires: std::time::Instant::now() + Self::CONFIRMATION_WINDOW,
-            nonce: fresh_confirm_nonce(),
-        }
+            nonce: fresh_confirm_nonce()?,
+        })
     }
 
     fn is_expired(&self) -> bool {
@@ -131,34 +133,52 @@ impl PendingControl {
 /// charset (no 0/O, 1/I/L), case-insensitive by convention. 6 chars ≈ 30 bits
 /// of entropy — not a secret against the *same* paired chat (which could do
 /// ~1M guesses in the 60 s window), but the real gate is that only the paired
-/// chat can reach this prompt at all, so the code is a human intent beacon.
-fn fresh_confirm_nonce() -> String {
-    let mut bytes = [0u8; 6];
-    if std::fs::File::open("/dev/urandom")
-        .and_then(|mut f| {
-                        f.read_exact(&mut bytes)
-        })
-        .is_err()
-    {
-        // Non-secret fallback: partition-id drift, so the code is still
-        // one-time-only per process lifetime. Windows/dev boxes without
-        // /dev/urandom should never reach here on Linux, but never panic.
-        let seed = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos() as u64)
-            .unwrap_or(0x5A5A_5A5A_5A5A_5A5A);
-        let mut x = seed;
-        for b in bytes.iter_mut() {
-            x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-            *b = (x >> 33) as u8;
+/// Mint a one-time `CONFIRM-XXXXXX` code.
+///
+/// # No fallback, and no bias
+///
+/// This used to fall back to a clock-seeded LCG when `/dev/urandom` could not
+/// be read, with a comment admitting the result was "non-secret". That is the
+/// wrong trade for a code that authorises a reboot or a wipe: an attacker who
+/// knows roughly when the order was armed can enumerate a handful of
+/// nanosecond seeds and recover the code outright. A confirmation nobody can
+/// mint is an inconvenience; one an attacker can predict is not a
+/// confirmation. So this returns an error and the ARM fails.
+///
+/// The charset mapping uses rejection sampling rather than `% 31`. With 256
+/// not divisible by 31, a modulo would make eight of the characters slightly
+/// likelier than the rest and quietly shave entropy off every code — small,
+/// but free to avoid.
+fn fresh_confirm_nonce() -> Result<String> {
+    // Ambiguous glyphs (0/O, 1/I/L) are already excluded: these codes get read
+    // aloud and typed back.
+    const CHARSET: &[u8] = b"ABCDEFGHJKMNPQRSTUVWXYZ23456789";
+    const LEN: usize = 6;
+    // Largest multiple of the charset that fits in a byte; anything at or above
+    // it is redrawn rather than folded, which is what keeps the distribution
+    // flat.
+    const LIMIT: u8 = (256 / CHARSET.len() * CHARSET.len()) as u8;
+
+    let mut code = String::with_capacity(LEN);
+    let mut buf = [0u8; 32];
+    let mut used = buf.len();
+    while code.len() < LEN {
+        if used == buf.len() {
+            getrandom::getrandom(&mut buf).map_err(|e| {
+                anyhow::anyhow!(
+                    "no entropy for a confirmation code ({e}) — refusing to arm, \
+                     because a predictable code is not a confirmation"
+                )
+            })?;
+            used = 0;
+        }
+        let b = buf[used];
+        used += 1;
+        if b < LIMIT {
+            code.push(CHARSET[(b % CHARSET.len() as u8) as usize] as char);
         }
     }
-    const CHARSET: &[u8] = b"ABCDEFGHJKMNPQRSTUVWXYZ23456789";
-    let code: String = bytes
-        .iter()
-        .map(|b| CHARSET[(*b as usize) % CHARSET.len()] as char)
-        .collect();
-    format!("CONFIRM-{code}")
+    Ok(format!("CONFIRM-{code}"))
 }
 
 /// An SELinux `allow` that has been *armed* (`/selinux allow <id>`) but not
@@ -1405,7 +1425,20 @@ impl TelegramBot {
     fn arm_control(&self, chat_id: i64, kind: ControlKind) {
         let nonce = {
             let mut guard = self.state.lock().expect("bot state mutex");
-            guard.pending_control = Some(PendingControl::new(kind.clone(), chat_id));
+            match PendingControl::new(kind.clone(), chat_id) {
+                Ok(p) => guard.pending_control = Some(p),
+                Err(e) => {
+                    drop(guard);
+                    log::error!("refusing to arm {kind:?}: {e:#}");
+                    let _ = self.send(
+                        chat_id,
+                        "❌ No pude generar un código de confirmación seguro, así que \
+                         no armo nada. Sin entropía, un código adivinable no es una \
+                         confirmación.",
+                    );
+                    return;
+                }
+            }
             guard
                 .pending_control
                 .as_ref()
@@ -3896,6 +3929,47 @@ mod tests {
         assert!(state.get_selinux(2).is_none());
         assert!(state.push_selinux(&raw2).is_none());
         assert_eq!(state.recent_selinux.len(), 1);
+    }
+
+    #[test]
+    fn confirmation_codes_are_unpredictable_and_unbiased() {
+        use std::collections::HashMap;
+
+        // Shape: no ambiguous glyphs, since these get read aloud and typed.
+        let one = fresh_confirm_nonce().unwrap();
+        assert!(one.starts_with("CONFIRM-"));
+        assert_eq!(one.len(), "CONFIRM-".len() + 6);
+        // Only the code part: the "CONFIRM-" prefix legitimately contains O and I.
+        assert!(
+            !one.trim_start_matches("CONFIRM-").chars().any(|c| "01ILO".contains(c)),
+            "ambiguous glyph in {one}"
+        );
+
+        // Never repeats. The old clock-seeded fallback could, and a code an
+        // attacker can predict is not a confirmation at all.
+        let mut seen = std::collections::HashSet::new();
+        let mut freq: HashMap<char, usize> = HashMap::new();
+        for _ in 0..4000 {
+            let code = fresh_confirm_nonce().unwrap();
+            assert!(seen.insert(code.clone()), "code repeated: {code}");
+            for c in code.trim_start_matches("CONFIRM-").chars() {
+                *freq.entry(c).or_default() += 1;
+            }
+        }
+
+        // Rejection sampling, not `% 31`: a modulo would make eight of the
+        // characters measurably likelier. 24000 draws over 31 symbols averages
+        // ~774 each; a modulo bias shows as a ~1/8 excess on the low eight.
+        assert_eq!(freq.len(), 31, "every symbol should appear");
+        let counts: Vec<usize> = freq.values().copied().collect();
+        let (lo, hi) = (
+            *counts.iter().min().unwrap() as f64,
+            *counts.iter().max().unwrap() as f64,
+        );
+        assert!(
+            hi / lo < 1.35,
+            "distribution looks skewed: min {lo}, max {hi} — modulo bias?"
+        );
     }
 
     #[test]

@@ -316,7 +316,7 @@ pub fn bind(fingerprint: &str, base: &Path) -> Result<TpmKey> {
     let mut holder = [0u8; 32];
     getrandom::getrandom(&mut holder)
         .map_err(|e| anyhow::anyhow!("getrandom(/dev/urandom) failed: {e}"))?;
-    let nonce = random_nonce();
+    let nonce = random_nonce()?;
 
     let (sealed, tag) = aead_seal(alg, &key, &nonce, fingerprint.as_bytes(), &holder)?;
     // aws-lc's in-place AEAD open expects the tag APPENDED to the ciphertext
@@ -473,10 +473,20 @@ pub(crate) fn aes_accelerated() -> bool {
 /// Fresh 12-byte nonce per message, from /dev/urandom. The caller guarantees
 /// key+nonce uniqueness: each bind already mints a brand-new key, and this
 /// nonce is used for exactly ONE sealed holder.
-fn random_nonce() -> [u8; 12] {
+/// A fresh 12-byte nonce, or an error.
+///
+/// It returns `Result` because the previous version did not: it discarded the
+/// failure and handed back twelve zeros. A fixed nonce reused under one AES-GCM
+/// key is not a degraded mode, it is a total break — the keystream repeats and
+/// the authentication key can be recovered from two messages. Silently
+/// producing one on a machine whose entropy source just failed is the worst
+/// possible response, so this fails loudly instead and the caller refuses to
+/// seal.
+fn random_nonce() -> Result<[u8; 12]> {
     let mut n = [0u8; 12];
-    let _ = getrandom::getrandom(&mut n);
-    n
+    getrandom::getrandom(&mut n)
+        .map_err(|e| anyhow::anyhow!("tpmkey: no entropy for a nonce ({e}) — refusing to seal"))?;
+    Ok(n)
 }
 
 /// AES-256-GCM / ChaCha20-Poly1305 encrypt. Returns (ciphertext, 16-byte tag).
@@ -825,7 +835,18 @@ mod tests {
     #[test]
     fn nonce_is_single_use_pairing_with_key() {
         // Two nonces for the same profile must differ (fresh per unit).
-        assert_ne!(random_nonce(), random_nonce());
+        // Never the same twice, and — the point of the change — never the
+        // all-zero array that a discarded getrandom error used to produce.
+        // A fixed nonce reused under one AES-GCM key is a total break, not a
+        // degraded mode.
+        let a = random_nonce().unwrap();
+        let b = random_nonce().unwrap();
+        assert_ne!(a, b);
+        assert_ne!(a, [0u8; 12], "a failed draw must error, never return zeros");
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..500 {
+            assert!(seen.insert(random_nonce().unwrap()), "nonce repeated");
+        }
     }
 
     #[test]

@@ -342,6 +342,11 @@ object DeviceIdentity {
         val key = wrappingKey() ?: return null
         return try {
             val c = javax.crypto.Cipher.getInstance("AES/GCM/NoPadding")
+            // No IV is passed in, and that is deliberate: for a Keystore AES
+            // key the platform *refuses* a caller-supplied IV on encryption and
+            // generates a fresh one itself, precisely so an application cannot
+            // reuse a nonce under one key — which for GCM is a total break, not
+            // a weakness. `c.iv` below is that generated value.
             c.init(javax.crypto.Cipher.ENCRYPT_MODE, key)
             val body = c.doFinal(plaintext.toByteArray(Charsets.UTF_8))
             android.util.Base64.encodeToString(c.iv + body, android.util.Base64.NO_WRAP)
