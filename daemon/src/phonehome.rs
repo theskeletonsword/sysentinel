@@ -130,20 +130,78 @@ pub fn profile_path(queue_path: &str) -> PathBuf {
         .join("phone-home.json")
 }
 
-pub fn load(path: &Path) -> Option<PhoneProfile> {
-    let raw = std::fs::read_to_string(path).ok()?;
-    serde_json::from_str(&raw).ok()
+/// Read the paired handset, distinguishing "nobody is paired" from "I cannot
+/// tell".
+///
+/// # Why this is not an `Option`
+///
+/// It was, and the difference is the whole security property. `Ok(None)` means
+/// no handset has ever been bound, and the next one to connect becomes the
+/// owner's — that is how pairing works. A file that exists but will not parse
+/// is a completely different statement, and folding it into `None` meant a
+/// truncated write, a full disk or a deliberately corrupted byte silently
+/// turned the machine back into "anyone holding the pairing key is the owner",
+/// re-binding to whatever handset connected next. A check that disappears when
+/// something goes wrong is not a check.
+///
+/// So a damaged profile is an error, and callers fail closed on it.
+pub fn load(path: &Path) -> Result<Option<PhoneProfile>> {
+    let raw = match std::fs::read_to_string(path) {
+        Ok(r) => r,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => {
+            return Err(anyhow::anyhow!(e)).with_context(|| {
+                format!(
+                    "phonehome: {} exists but cannot be read — refusing to treat that \
+                     as 'no phone is paired'",
+                    path.display()
+                )
+            })
+        }
+    };
+    let profile: PhoneProfile = serde_json::from_str(&raw).with_context(|| {
+        format!(
+            "phonehome: {} is not a readable profile — refusing to treat that as \
+             'no phone is paired'",
+            path.display()
+        )
+    })?;
+    Ok(Some(profile))
 }
 
 /// Record this handset as the paired one — the phone's `/definehome`.
+///
+/// Written to a private temporary file and renamed into place, because a
+/// half-written profile is not a cosmetic problem: [`load`] refuses to read one
+/// and the daemon then refuses connections until a human looks. `rename` within
+/// a directory is atomic, so a reader sees the old profile or the new one and
+/// never a fragment.
 pub fn save(path: &Path, profile: &PhoneProfile) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt;
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(path, serde_json::to_string_pretty(profile)?)
-        .with_context(|| format!("writing {}", path.display()))?;
-    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    let json = serde_json::to_string_pretty(profile)?;
+    let tmp = path.with_extension("json.new");
+    // Created 0600 from the start rather than chmod'ed afterwards: the window
+    // between the two is exactly when another user gets to read it.
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(&tmp)
+        .with_context(|| format!("writing {}", tmp.display()))?;
+    f.write_all(json.as_bytes())
+        .with_context(|| format!("writing {}", tmp.display()))?;
+    // Durable before it is visible: a crash between the two must not leave the
+    // name pointing at a file whose contents never reached the disk.
+    f.sync_all().with_context(|| format!("flushing {}", tmp.display()))?;
+    drop(f);
+    std::fs::rename(&tmp, path)
+        .with_context(|| format!("renaming {} into place", tmp.display()))?;
     Ok(())
 }
 
@@ -293,14 +351,57 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("phone-home.json");
 
-        assert!(load(&path).is_none());
+        assert!(load(&path).unwrap().is_none());
         let (_, key) = a_phone();
         let p = profile_for(key, "Pixel 8");
         save(&path, &p).unwrap();
 
-        assert_eq!(load(&path).unwrap(), p);
+        assert_eq!(load(&path).unwrap().unwrap(), p);
         let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_damaged_profile_is_never_read_as_nobody_is_paired() {
+        // The failure that matters: if a corrupt file read as `None`, the
+        // daemon would drop back to "whoever holds the pairing key is the
+        // owner" and re-bind to the next handset that connected. Fail closed.
+        let dir = std::env::temp_dir().join(format!("sysentinel-ph-bad-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("phone-home.json");
+
+        std::fs::write(&path, b"{ this is not json").unwrap();
+        let err = load(&path).expect_err("a corrupt profile must be an error");
+        assert!(format!("{err:#}").contains("no phone is paired"), "{err:#}");
+
+        // Truncated mid-write is the realistic version of the same thing.
+        let (_, key) = a_phone();
+        let good = serde_json::to_string(&profile_for(key, "Pixel 8")).unwrap();
+        std::fs::write(&path, &good.as_bytes()[..good.len() / 2]).unwrap();
+        assert!(load(&path).is_err(), "a truncated profile must be an error");
+
+        // And an absent file still means exactly what it says.
+        std::fs::remove_file(&path).unwrap();
+        assert!(load(&path).unwrap().is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn saving_leaves_no_half_written_profile_behind() {
+        let dir = std::env::temp_dir().join(format!("sysentinel-ph-atomic-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("phone-home.json");
+        let (_, key) = a_phone();
+        let p = profile_for(key, "Pixel 8");
+
+        save(&path, &p).unwrap();
+        save(&path, &p).unwrap(); // twice: the staging name must not collide
+        assert_eq!(load(&path).unwrap().unwrap(), p);
+        // The staging file must not survive a successful save.
+        assert!(!path.with_extension("json.new").exists());
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 

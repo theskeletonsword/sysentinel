@@ -57,6 +57,7 @@ use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -70,8 +71,20 @@ use crate::channel::Notifier;
 /// after. A length prefix is an invitation to ask for a gigabyte.
 const MAX_FRAME: usize = 1 << 20;
 
-/// How long a silent peer may hold a connection.
+/// How long a silent peer may hold a connection once it has authenticated.
 const IO_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How long an unauthenticated peer gets to produce its first frame.
+///
+/// Much shorter than [`IO_TIMEOUT`], because there is nothing to think about:
+/// the app sends `hello` immediately. Anyone still silent after this is either
+/// broken or holding a slot on purpose, and slots are the scarce thing.
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Connections served at once. Past this, new ones are dropped instead of
+/// queued: a bounded refusal is honest, while an unbounded backlog is a way to
+/// make the machine run out of threads.
+const MAX_CONNECTIONS: usize = 8;
 
 /// One thing waiting to reach the owner.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -476,7 +489,22 @@ pub fn start(
     // key would outlive the pairing.
     let profile = crate::phonehome::profile_path(&config.phone.queue_path);
     let advertise = config.phone.advertise.clone().unwrap_or_else(|| bind.clone());
-    if crate::phonehome::load(&profile).is_none() {
+    // An unreadable profile is not "nobody is paired": drawing the pairing QR
+    // then would invite a re-pair the owner never asked for. Say so and draw
+    // nothing.
+    let paired = match crate::phonehome::load(&profile) {
+        Ok(p) => p,
+        Err(e) => {
+            log::error!("phone: {e:#}");
+            log::error!(
+                "phone: not showing a pairing QR while the handset profile is \
+                 unreadable — fix or delete {} first",
+                profile.display()
+            );
+            Some(unreadable_profile_placeholder())
+        }
+    };
+    if paired.is_none() {
         let uri = pairing_uri(&advertise, &key_hex);
         eprintln!("\n  Empareja tu teléfono — escanea esto con la app:\n");
         match pairing_qr(&uri) {
@@ -720,17 +748,74 @@ pub fn run_phone_loop(
         Err(_) => log::info!("phone: listening — direct, no relay, no third party"),
     }
 
+    let on_command = Arc::new(on_command);
+    let on_photo = Arc::new(on_photo);
+    let on_confirm = Arc::new(on_confirm);
+    let live = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
     for stream in listener.incoming() {
-        match stream {
-            Ok(s) => {
-                if let Err(e) = serve(s, &key, &queue, &profile_path, &on_command, &on_photo, &on_confirm) {
+        let s = match stream {
+            Ok(s) => s,
+            Err(e) => {
+                log::warn!("phone: accept failed: {e}");
+                continue;
+            }
+        };
+
+        // Every connection gets its own thread. Serving them one at a time on
+        // this thread meant a single peer — any peer, authenticated or not —
+        // could hold the only channel the owner has: connect, say nothing, and
+        // the accept loop sits in `read` until the timeout while the real phone
+        // waits behind it. Repeat that and the machine is watching with nobody
+        // to tell. Silencing the alarm is the attack this whole daemon exists
+        // to survive, so it must not be a single blocking `read`.
+        let count = live.fetch_add(1, Ordering::SeqCst);
+        if count >= MAX_CONNECTIONS {
+            live.fetch_sub(1, Ordering::SeqCst);
+            // Terse and at debug: a flood must not also become a log flood.
+            log::debug!("phone: refusing a connection — {MAX_CONNECTIONS} already open");
+            drop(s);
+            continue;
+        }
+
+        let queue = Arc::clone(&queue);
+        let profile_path = profile_path.clone();
+        let on_command = Arc::clone(&on_command);
+        let on_photo = Arc::clone(&on_photo);
+        let on_confirm = Arc::clone(&on_confirm);
+        let live_here = Arc::clone(&live);
+
+        let spawned = std::thread::Builder::new()
+            .name("phone-conn".to_string())
+            .spawn(move || {
+                // A panic anywhere under `serve` — including deep inside a
+                // command handler — used to unwind through the accept loop and
+                // kill the listener for the life of the process. One bad
+                // message would have cost every future alert, silently. Now it
+                // costs one connection.
+                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    serve(
+                        s, &key, &queue, &profile_path,
+                        on_command.as_ref(), on_photo.as_ref(), on_confirm.as_ref(),
+                    )
+                }));
+                match outcome {
                     // Deliberately terse: a peer that fails to authenticate is
                     // told nothing and logged at debug, so a port scan does not
                     // fill the log or learn that it found the right protocol.
-                    log::debug!("phone: connection ended: {e}");
+                    Ok(Err(e)) => log::debug!("phone: connection ended: {e}"),
+                    Err(_) => log::error!(
+                        "phone: a connection handler panicked — that connection is gone, \
+                         the channel is not"
+                    ),
+                    Ok(Ok(())) => {}
                 }
-            }
-            Err(e) => log::warn!("phone: accept failed: {e}"),
+                live_here.fetch_sub(1, Ordering::SeqCst);
+            });
+
+        if spawned.is_err() {
+            live.fetch_sub(1, Ordering::SeqCst);
+            log::warn!("phone: cannot spawn a handler thread — dropping this connection");
         }
     }
 }
@@ -744,8 +829,11 @@ fn serve(
     on_photo: &(impl Fn(&[u8]) + Send + Sync),
     on_confirm: &(impl Fn(&str, &[u8]) -> Result<String> + Send + Sync),
 ) -> Result<()> {
-    stream.set_read_timeout(Some(IO_TIMEOUT))?;
-    stream.set_write_timeout(Some(IO_TIMEOUT))?;
+    // A tight deadline until the peer has proved it holds the key, a longer
+    // one afterwards. An unauthenticated stranger should not be able to hold a
+    // slot for half a minute just by connecting.
+    stream.set_read_timeout(Some(HANDSHAKE_TIMEOUT))?;
+    stream.set_write_timeout(Some(HANDSHAKE_TIMEOUT))?;
 
     // The first frame must open with the paired key. A peer that cannot
     // produce one gets no reply at all.
@@ -755,7 +843,13 @@ fn serve(
     let FromPhone::Hello { app_version } = hello else {
         anyhow::bail!("first frame was not a hello");
     };
-    log::info!("phone: authenticated client (app {app_version})");
+    // Authenticated, so the clock can relax.
+    stream.set_read_timeout(Some(IO_TIMEOUT))?;
+    stream.set_write_timeout(Some(IO_TIMEOUT))?;
+    // The version string comes off the wire. It is written to a log an
+    // operator reads, so it is trimmed to something that cannot forge a log
+    // line with its own newlines.
+    log::info!("phone: authenticated client (app {})", sanitise_for_log(&app_version));
 
     let queued = queue.lock().expect("phone queue").len();
     let host = std::fs::read_to_string("/proc/sys/kernel/hostname")
@@ -777,7 +871,27 @@ fn serve(
     // leak — photographed off a screen, read out of a log, restored from a
     // backup. So once a handset is bound, holding the key is not enough: every
     // command is gated on a signature from that handset's secure element.
-    let mut identified = crate::phonehome::load(profile_path).is_none();
+    //
+    // If the profile cannot be read we do not know whether a handset is bound,
+    // and "I do not know" must not resolve to "then anyone may command this
+    // machine". Refuse the connection and say why.
+    let mut identified = match crate::phonehome::load(profile_path) {
+        Ok(p) => p.is_none(),
+        Err(e) => {
+            log::error!("phone: {e:#}");
+            respond(
+                &mut stream,
+                key,
+                &ToPhone::Error {
+                    message: "el perfil del teléfono emparejado está ilegible en el \
+                              equipo: no puedo saber si eres tú, así que no acepto \
+                              órdenes hasta que se arregle"
+                        .to_string(),
+                },
+            )?;
+            return Ok(());
+        }
+    };
 
     loop {
         let frame = match read_frame(&mut stream) {
@@ -873,6 +987,41 @@ fn serve(
     }
 }
 
+/// Stand-in for "a profile exists but we cannot read it".
+///
+/// Used only to keep the startup path from treating an unreadable profile as an
+/// unpaired machine and drawing a pairing QR. Nothing compares against it: the
+/// connection path refuses outright rather than guessing.
+fn unreadable_profile_placeholder() -> crate::phonehome::PhoneProfile {
+    crate::phonehome::PhoneProfile {
+        public_key_der: Vec::new(),
+        claimed_backing: "desconocido".to_string(),
+        attestation_verified: false,
+        model: "?".to_string(),
+        manufacturer: "?".to_string(),
+        paired_at_unix: 0,
+    }
+}
+
+/// Make a string from the wire safe to put in a log line.
+///
+/// Anything a peer controls that ends up in a log can forge log entries: a
+/// newline plus a plausible-looking timestamp is all it takes to write a line
+/// an operator will read as the daemon's own. Control characters go, and the
+/// length is capped, because the only legitimate value here is a version.
+fn sanitise_for_log(s: &str) -> String {
+    let cleaned: String = s
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(32)
+        .collect();
+    if cleaned.is_empty() {
+        "?".to_string()
+    } else {
+        cleaned
+    }
+}
+
 fn respond(stream: &mut TcpStream, key: &[u8; 32], msg: &ToPhone) -> Result<()> {
     let json = serde_json::to_vec(msg)?;
     let sealed = seal(key, &json)?;
@@ -910,7 +1059,20 @@ fn identify_handset(
         };
     }
 
-    let saved = phonehome::load(profile_path);
+    let saved = match phonehome::load(profile_path) {
+        Ok(p) => p,
+        Err(e) => {
+            // Never fall through to the NotPaired branch here: that branch
+            // *writes a new profile*, so a damaged file would hand the machine
+            // to whichever handset connected next.
+            log::error!("phone: {e:#}");
+            return ToPhone::Error {
+                message: "el perfil del teléfono emparejado está ilegible: no voy a \
+                          emparejar encima de algo que no puedo leer"
+                    .to_string(),
+            };
+        }
+    };
     match phonehome::identify(saved.as_ref(), public_key) {
         PhoneVerdict::SameDevice => {
             let detail = saved.map(|p| p.describe()).unwrap_or_default();
@@ -990,6 +1152,134 @@ mod tests {
         // The port is optional in what we are handed; the host still decides.
         assert!(undialable("0.0.0.0").is_some());
         assert!(undialable("10.0.0.5").is_none());
+    }
+
+    /// Speak the client half of the protocol over a socket.
+    fn hello_and_wait(addr: &str, key: &[u8; 32]) -> Result<ToPhone> {
+        let mut s = TcpStream::connect(addr)?;
+        s.set_read_timeout(Some(Duration::from_secs(5)))?;
+        let frame = seal(key, &serde_json::to_vec(&FromPhone::Hello {
+            app_version: "test".into(),
+        })?)?;
+        write_frame(&mut s, &frame)?;
+        let reply = read_frame(&mut s)?;
+        Ok(serde_json::from_slice(&open(key, &reply)?)?)
+    }
+
+    #[test]
+    fn a_silent_peer_cannot_hold_the_channel_shut() {
+        // The property under test is the one the whole daemon rests on: the
+        // owner can be reached. Serving connections one at a time on the accept
+        // loop meant anybody who could open a socket — no key, no words — could
+        // keep the real phone waiting behind them. Here, two squatters connect
+        // and say nothing, and a legitimate client must still get its welcome.
+        let key = [9u8; 32];
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        let dir = tmpdir("dos");
+        let queue = Arc::new(Mutex::new(AlertQueue::load(&dir.join("q.json"), 10)));
+        let profile = dir.join("phone-home.json");
+        let _ = std::fs::remove_file(&profile);
+
+        std::thread::spawn(move || {
+            run_phone_loop(listener, key, queue, profile, |_| {}, |_| {}, |_, _| {
+                Ok(String::new())
+            })
+        });
+
+        // Squatters: connected, saying nothing, holding their slots.
+        let _squatters: Vec<TcpStream> = (0..2)
+            .filter_map(|_| TcpStream::connect(&addr).ok())
+            .collect();
+
+        let began = std::time::Instant::now();
+        let welcome = hello_and_wait(&addr, &key).expect("a real client must still be served");
+        assert!(
+            matches!(welcome, ToPhone::Welcome { .. }),
+            "expected a welcome, got {welcome:?}"
+        );
+        assert!(
+            began.elapsed() < Duration::from_secs(3),
+            "served in {:?} — a silent peer was allowed to delay the owner",
+            began.elapsed()
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_unreadable_profile_refuses_commands_instead_of_re_pairing() {
+        // The fail-open that was here: a corrupt phone-home.json read as
+        // "nobody is paired", which both let any key-holder issue commands
+        // without identifying and let the next handset overwrite the profile.
+        let key = [5u8; 32];
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        let dir = tmpdir("corrupt");
+        let queue = Arc::new(Mutex::new(AlertQueue::load(&dir.join("q.json"), 10)));
+        let profile = dir.join("phone-home.json");
+        std::fs::write(&profile, b"{ truncated mid-write").unwrap();
+        let before = std::fs::read(&profile).unwrap();
+
+        let ordered = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = Arc::clone(&ordered);
+        std::thread::spawn(move || {
+            run_phone_loop(
+                listener, key, queue, profile,
+                move |_| { counter.fetch_add(1, Ordering::SeqCst); },
+                |_| {},
+                |_, _| Ok(String::new()),
+            )
+        });
+
+        let mut s = TcpStream::connect(&addr).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let hello = seal(&key, &serde_json::to_vec(&FromPhone::Hello {
+            app_version: "test".into(),
+        }).unwrap()).unwrap();
+        write_frame(&mut s, &hello).unwrap();
+        let welcome: ToPhone =
+            serde_json::from_slice(&open(&key, &read_frame(&mut s).unwrap()).unwrap()).unwrap();
+        assert!(matches!(welcome, ToPhone::Welcome { .. }), "{welcome:?}");
+
+        // Holding the pairing key is not enough while the daemon cannot tell
+        // which handset it belongs to.
+        let refusal: ToPhone =
+            serde_json::from_slice(&open(&key, &read_frame(&mut s).unwrap()).unwrap()).unwrap();
+        match refusal {
+            ToPhone::Error { message } => assert!(message.contains("ilegible"), "{message}"),
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+
+        // A command sent anyway must never reach the command layer.
+        let say = seal(&key, &serde_json::to_vec(&FromPhone::Say {
+            text: "/poweroff".into(),
+        }).unwrap()).unwrap();
+        let _ = write_frame(&mut s, &say);
+        std::thread::sleep(Duration::from_millis(200));
+        assert_eq!(ordered.load(Ordering::SeqCst), 0, "a command got through");
+
+        // And the damaged profile is left exactly as it was, not overwritten
+        // with whoever just connected.
+        assert_eq!(
+            std::fs::read(dir.join("phone-home.json")).unwrap(),
+            before,
+            "the profile was rewritten"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_peer_cannot_forge_log_lines_through_its_version_string() {
+        // Whatever the far side says about itself ends up in a log an operator
+        // reads. A newline there is a forged entry.
+        let nasty = "1.0\n2026-09-11 03:14 ERROR phone: pairing revoked by owner";
+        let safe = sanitise_for_log(nasty);
+        assert!(!safe.contains('\n'), "{safe}");
+        assert!(safe.starts_with("1.0"), "{safe}");
+        assert!(safe.len() <= 32, "{safe}");
+        assert_eq!(sanitise_for_log(""), "?");
+        assert_eq!(sanitise_for_log("0.1.0"), "0.1.0");
     }
 
     #[test]

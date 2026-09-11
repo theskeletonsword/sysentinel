@@ -2626,7 +2626,9 @@ PMU).";
     /// signature captured from an earlier confirmation buys nothing.
     pub fn confirm_by_signature(&self, nonce: &str, signature: &[u8]) -> Result<String> {
         let profile = crate::phonehome::profile_path(&self.config.phone.queue_path);
-        let Some(phone) = crate::phonehome::load(&profile) else {
+        // An unreadable profile fails the confirmation rather than passing it:
+        // this function authorises reboots and power-offs.
+        let Some(phone) = crate::phonehome::load(&profile)? else {
             anyhow::bail!("no hay teléfono emparejado: nada puede confirmar");
         };
         if !crate::phonehome::verify_challenge(&phone.public_key_der, nonce.as_bytes(), signature) {
