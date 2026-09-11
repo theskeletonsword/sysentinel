@@ -181,14 +181,51 @@ pub const CATEGORIES: &[&str] = &[
 
 impl Settings {
     /// Load from a JSON file; missing/corrupt file falls back to defaults.
+    /// Read the saved preferences.
+    ///
+    /// # A broken file must not become a more destructive machine
+    ///
+    /// A missing file is a first run: defaults are exactly right, and the
+    /// defaults are deliberately loud — every alerting category on.
+    ///
+    /// A file that *exists and will not parse* is a different situation, and
+    /// falling back to the same defaults there is not neutral. Two of those
+    /// defaults do something: `luks_deny_action` is `poweroff`, and
+    /// `login_auto_close` closes a session nobody answered for. An owner who
+    /// deliberately set those to the quiet option would have them silently
+    /// re-armed by a truncated write or a bad byte — the machine becoming
+    /// more willing to act because a file broke.
+    ///
+    /// So a damaged file keeps the loud *alerting* defaults, which can only
+    /// cost a notification, and forces the *destructive* knobs to their
+    /// gentlest setting until a human has looked.
     pub fn load(path: &Path) -> Self {
-        match std::fs::read_to_string(path) {
-            Ok(raw) => serde_json::from_str(&raw).unwrap_or_else(|e| {
-                log::warn!("settings: failed to parse {}: {e}; using defaults",
-                           path.display());
-                Settings::default()
-            }),
-            Err(_) => Settings::default(),
+        let raw = match std::fs::read_to_string(path) {
+            Ok(r) => r,
+            // Absent: first run.
+            Err(_) => return Settings::default(),
+        };
+        match serde_json::from_str::<Settings>(&raw) {
+            Ok(s) => s,
+            Err(e) => {
+                log::error!(
+                    "settings: {} exists but will not parse: {e}. Using defaults, \
+                     with the destructive options forced OFF (luks_deny=none, \
+                     login_auto_close=false) until you fix or delete it — a \
+                     damaged file must not make this machine readier to act.",
+                    path.display()
+                );
+                Settings::safe_after_damage()
+            }
+        }
+    }
+
+    /// Defaults, minus anything that acts on its own.
+    fn safe_after_damage() -> Self {
+        Settings {
+            luks_deny_action: "none".to_string(),
+            login_auto_close: false,
+            ..Settings::default()
         }
     }
 
@@ -368,6 +405,33 @@ fn truncate_inline(s: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_damaged_settings_file_never_makes_the_machine_readier_to_act() {
+        // The defaults are deliberately loud, which is right for alerting and
+        // wrong for the two knobs that DO something: luks_deny_action defaults
+        // to poweroff, and login_auto_close closes an unanswered session. An
+        // owner who turned those off must not have them re-armed by a
+        // truncated write.
+        let dir = std::env::temp_dir().join(format!("sysentinel-set-dmg-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+
+        // Absent is a first run: plain defaults, poweroff included.
+        assert_eq!(Settings::load(&path).luks_deny_action, "poweroff");
+
+        // Damaged is not.
+        std::fs::write(&path, b"{ half written").unwrap();
+        let after = Settings::load(&path);
+        assert_eq!(after.luks_deny_action, "none");
+        assert!(!after.login_auto_close);
+        // The alerting categories stay on: a spurious alert costs a
+        // notification, and going quiet is the failure this repo is about.
+        assert!(after.kernel);
+        assert!(after.login);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn defaults_are_all_on() {

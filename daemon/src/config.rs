@@ -215,10 +215,39 @@ where
     }
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Deserialize, Clone)]
 pub struct ProviderConfig {
     pub api_key:  String,
     pub base_url: String,
+}
+
+/// Hand-written so the key cannot be printed by accident.
+///
+/// `Config` derives `Debug` all the way down, which means one
+/// `log::debug!("{config:?}")` — or a panic message that happens to include
+/// it — would put every API key and the phone pairing key into the journal,
+/// in plaintext, forever. Nothing does that today. This is so that nothing
+/// can start to without noticing.
+impl std::fmt::Debug for ProviderConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProviderConfig")
+            .field("api_key", &Redacted(self.api_key.len()))
+            .field("base_url", &self.base_url)
+            .finish()
+    }
+}
+
+/// Prints how much there is, never what it is.
+struct Redacted(usize);
+
+impl std::fmt::Debug for Redacted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.0 == 0 {
+            write!(f, "<unset>")
+        } else {
+            write!(f, "<{} chars, redacted>", self.0)
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -380,7 +409,7 @@ impl Default for CameraConfig {
 
 // ── [phone] ──────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Deserialize, Clone, Default)]
+#[derive(Deserialize, Clone, Default)]
 pub struct PhoneConfig {
     /// Serve the phone app. Off by default: this makes a root daemon listen on
     /// a socket, which is a surface that did not exist before.
@@ -412,6 +441,25 @@ pub struct PhoneConfig {
     /// Where the undelivered queue lives.
     #[serde(default = "default_phone_queue_path")]
     pub queue_path: String,
+}
+
+/// Hand-written for the same reason as [`ProviderConfig`]: the pairing key is
+/// the whole authentication of the phone channel, and a derived `Debug` would
+/// print it.
+impl std::fmt::Debug for PhoneConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PhoneConfig")
+            .field("enabled", &self.enabled)
+            .field("bind", &self.bind)
+            .field("advertise", &self.advertise)
+            .field(
+                "pairing_key",
+                &Redacted(self.pairing_key.as_deref().map(str::len).unwrap_or(0)),
+            )
+            .field("queue_capacity", &self.queue_capacity)
+            .field("queue_path", &self.queue_path)
+            .finish()
+    }
 }
 
 fn default_phone_queue() -> usize { 500 }
@@ -727,6 +775,40 @@ mod tests {
         assert!(check_permissions(&path).is_ok());
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn printing_the_config_never_prints_a_secret() {
+        // Config derives Debug all the way down. One log::debug!("{config:?}")
+        // — or a panic message that happens to carry it — would put every API
+        // key and the pairing key into the journal in plaintext, forever.
+        let provider = ProviderConfig {
+            api_key: "sk-live-do-not-print-me".into(),
+            base_url: "https://api.example.com/v1".into(),
+        };
+        let shown = format!("{provider:?}");
+        assert!(!shown.contains("do-not-print-me"), "{shown}");
+        assert!(shown.contains("redacted"), "{shown}");
+        // The URL is not a secret and stays readable — that is what someone
+        // reading a debug dump actually needs.
+        assert!(shown.contains("api.example.com"), "{shown}");
+
+        let phone = PhoneConfig {
+            enabled: true,
+            bind: Some("192.168.1.5:8443".into()),
+            advertise: None,
+            pairing_key: Some("ab".repeat(32)),
+            queue_capacity: 500,
+            queue_path: "/var/lib/sysentinel/phone-queue.json".into(),
+        };
+        let shown = format!("{phone:?}");
+        assert!(!shown.contains("abab"), "{shown}");
+        assert!(shown.contains("64 chars, redacted"), "{shown}");
+        assert!(shown.contains("192.168.1.5:8443"), "{shown}");
+
+        // An unset key says so rather than looking like a zero-length secret.
+        let empty = PhoneConfig::default();
+        assert!(format!("{empty:?}").contains("<unset>"));
     }
 
     #[test]
