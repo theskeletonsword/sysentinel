@@ -126,6 +126,13 @@ impl PendingControl {
     }
 }
 
+/// Longest single message accepted from the owner.
+///
+/// Generous for anything a person types, and far below the frame limit the
+/// transport allows: what lies between the two is only ever stored in the
+/// conversation file and forwarded to a paid API.
+const MAX_OWNER_TEXT: usize = 16 * 1024;
+
 /// Mint a one-time `CONFIRM-XXXXXX` code from `/dev/urandom`. Unambiguous
 /// charset (no 0/O, 1/I/L), case-insensitive by convention. 6 chars ≈ 30 bits
 /// of entropy — not a secret against the *same* paired chat (which could do
@@ -579,9 +586,29 @@ impl CommandBot {
     /// it is, and what it says arrives here.
     pub fn handle_owner_text(&self, text: &str) {
         let text = text.trim();
-        if !text.is_empty() {
-            self.dispatch(text);
+        if text.is_empty() {
+            return;
         }
+        // A frame may carry a megabyte, and everything past a reasonable
+        // message length only goes on to be stored in the conversation file
+        // and posted to an LLM API — at the owner's cost, and at the size
+        // limit of whichever provider answers. Cut it here, once, and say so
+        // rather than truncating invisibly somewhere downstream.
+        if text.len() > MAX_OWNER_TEXT {
+            let mut cut = MAX_OWNER_TEXT;
+            while cut > 0 && !text.is_char_boundary(cut) {
+                cut -= 1;
+            }
+            log::warn!("bot: owner text was {} bytes — cut to {cut}", text.len());
+            let trimmed = format!(
+                "{}\n\n[…corté el mensaje: llegaron {} bytes y proceso {MAX_OWNER_TEXT}]",
+                &text[..cut],
+                text.len()
+            );
+            self.dispatch(&trimmed);
+            return;
+        }
+        self.dispatch(text);
     }
 
     /// Dispatch one command or message from the owner.

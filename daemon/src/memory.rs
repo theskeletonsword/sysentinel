@@ -48,6 +48,26 @@ pub struct MemoryStore {
     lock: Mutex<()>,
 }
 
+/// Longest a single stored entry may be.
+///
+/// The context file is read back into *every* prompt, so one huge turn is
+/// paid for on every request that follows it — and `/remember` appends
+/// forever. A few KB is more than any real fact or answer.
+const MAX_ENTRY: usize = 4 * 1024;
+
+/// Trim and cut an entry on a character boundary.
+fn clamp(text: &str) -> String {
+    let t = text.trim();
+    if t.len() <= MAX_ENTRY {
+        return t.to_string();
+    }
+    let mut cut = MAX_ENTRY;
+    while cut > 0 && !t.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    format!("{}…", &t[..cut])
+}
+
 impl MemoryStore {
     pub fn new(memory_file: &str, context_file: &str, max_entries: usize) -> Self {
         Self {
@@ -96,8 +116,11 @@ impl MemoryStore {
             &fs::read_to_string(&self.context_file).unwrap_or_default(),
         );
 
-        turns.push(Turn::User(user_msg.trim().to_string()));
-        turns.push(Turn::Assistant(assistant_msg.trim().to_string()));
+        // Bounded per turn, not only by count. The context file is read back
+        // into every prompt, so one enormous turn is paid for on every
+        // request that follows it, forever.
+        turns.push(Turn::User(clamp(user_msg)));
+        turns.push(Turn::Assistant(clamp(assistant_msg)));
 
         // Keep only the most recent `max_entries` turns.
         if turns.len() > self.max_entries.load(Ordering::Relaxed) {
@@ -130,10 +153,11 @@ impl MemoryStore {
     pub fn append_memory(&self, text: &str) -> Result<()> {
         let _guard = self.lock.lock().expect("memory mutex");
         Self::ensure_parents(&self.memory_file)?;
-        let trimmed = text.trim();
+        let trimmed = clamp(text);
         if trimmed.is_empty() {
             return Ok(());
         }
+        let trimmed = trimmed.as_str();
         use std::io::Write;
         let mut file = std::fs::OpenOptions::new()
             .create(true)
@@ -244,6 +268,26 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn one_enormous_turn_cannot_be_paid_for_forever() {
+        // The context file is read back into every prompt. Storing a megabyte
+        // once means sending a megabyte on every request after it — at the
+        // owner's cost, until something else prunes it out.
+        let huge = "x".repeat(200_000);
+        let kept = clamp(&huge);
+        assert!(kept.len() <= MAX_ENTRY + 4, "{}", kept.len());
+        assert!(kept.ends_with('…'), "the cut must be visible");
+
+        // Ordinary text is untouched, including multi-byte characters.
+        assert_eq!(clamp("  hola, ¿qué tal?  "), "hola, ¿qué tal?");
+        assert_eq!(clamp(""), "");
+
+        // And the cut never lands inside a character.
+        let accented = "á".repeat(MAX_ENTRY);
+        let cut = clamp(&accented);
+        assert!(cut.chars().all(|c| c == 'á' || c == '…'), "cut mid-character");
+    }
 
     #[test]
     fn parse_round_trip() {

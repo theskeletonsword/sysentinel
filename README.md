@@ -62,6 +62,18 @@ against GPL-only kernel symbols — declare the GPL flavour when building it.
 
 ---
 
+## Reporting a vulnerability
+
+**Everything here is in scope and every vulnerability is eligible for a
+report** — the kernel module, the initramfs tools that run as root before the
+disk is unlocked, the phone app, the scripts, and the documentation itself.
+Silencing the alerts, feeding it fabricated evidence, or making a check
+disappear by corrupting a file all count, not just memory corruption.
+
+Report to **agustin.pereira.ro@gmail.com**. Details, including what is *not* a
+vulnerability and what this tool admits it cannot protect you from, are in
+[SECURITY.md](SECURITY.md).
+
 ## What it does
 
 | Feature | Description |
@@ -70,7 +82,7 @@ against GPL-only kernel symbols — declare the GPL flavour when building it.
 | **LLM explanation** | Asks a configurable AI to explain the event in plain language, in your language and tone |
 | **Alerts to your phone** | Direct connection to the paired handset. No bearer token, no endpoint a stranger can reach, no relay that sees who talked to whom. Alerts are queued to disk and delivered when the phone reconnects, so a handset that was asleep delays an alert instead of losing it |
 | **Interactive chat** | Talk to your PC from the app or the desktop GUI — ask "why is my system slow?", "what happened last night?", "how's my CPU?" |
-| **Pairing flow** | One-time 5-minute token pair; strict `chat_id` whitelist thereafter |
+| **Pairing flow** | Scan the QR the machine draws on its own console; the handset then registers a key held in its TEE, and every later connection has to sign a fresh challenge with it |
 | **Intel ME status** | Live ring −3 alliance: the module binds the MKHI MEI client and re-runs `GET_FW_VERSION` over the HECI bus on every windowed `/proc` read (`me_live=ok(v18.1.2204.0,rt=…ms)`, `me_drift` flags version drift) |
 | **AMD PSP status** | Real PSP handshake (`PSP_CMD_HSTI_QUERY` → fused HSTI word via the ccp driver's exported platform-access API), shown as `psp=up(hsti=…,flags=tsme,rt=…ms)`; degrades to vendor presence where the mailbox is firewalled |
 | **Presence ladder (no camera needed)** | `/definehome presencia`. Face recognition answers "who is there" only while a camera exists. Without one it drops to voice; without a microphone either it stops claiming identity and describes the *situation* instead. Below all of it sits the only rung that is not a heuristic: asking the owner in the paired chat, which needs no sensor on the host at all |
@@ -125,7 +137,7 @@ sysentinel/
 │       ├── main.rs               Entry point, thread orchestration
 │       ├── config.rs             TOML config loading + validation
 │       ├── settings.rs           Live, chat-mutable runtime settings
-│       ├── bot.rs                Interactive bot: pairing, whitelist, AI chat
+│       ├── bot.rs                Command layer: /status, /definehome, ARM→confirm, AI chat
 │       ├── phone.rs              The phone channel: framed AEAD, durable alert queue
 │       ├── phonehome.rs          `/definehome` for the handset — bound by a key, not a model
 │       ├── channel.rs            Pluggable transport: what reaches the owner, and what it exposes
@@ -390,7 +402,7 @@ Key properties:
 - **No third-party relay.** The phone connects directly. There is no bot token to leak, and no endpoint a stranger can reach and be rejected only *after* arriving. The only outbound calls are to the configured LLM API, over HTTPS that is enforced (a plain-HTTP `base_url` is refused) and optionally certificate-pinned.
 - **Pairing is bound to hardware, not to an account.** The QR carries a key that seals every frame — but a key can be photographed off a screen, so it stops being sufficient the moment a handset registers. From then on the machine also requires a signature from a key inside *that* phone's TEE or secure element, which cannot be read out of it, and **refuses any other handset outright** rather than merely noting it. A stranger needs the key *and* your physical phone.
 - **Two phones of the same model are still two phones.** Almost nothing Android reports about a handset is per-unit — two Pixel 8s agree on model, manufacturer, board and build fingerprint. Identity is the device key; the model is recorded as context and never consulted to decide anything.
-- **Anti brute-force** — after 5 invalid token attempts the token is burned; the daemon must be restarted to mint a new one.
+- **A confirmation can be a fingerprint, not a code.** A typed `CONFIRM-XXXXXX` proves someone read a screen — and a screen can be read over a shoulder, or the code demanded out loud. Once the paired handset has proved it can sign, a typed code stops clearing the bar for anything irreversible and the answer has to come from that phone's secure element. Until it has proved it, the code still works: a bar that strands the person it protects is not a security improvement.
 - **No remote code execution path.** User messages are forwarded to the LLM API and the reply is returned; no shell commands run on their own. The only privileged actions are the fixed kernel-module control verbs (reboot/poweroff/triplefault/CR write), SELinux policy modules (`/selinux allow`), `rmmod` of a foreign module you ordered removed, and session kills you denied — all reachable exclusively through the paired handset and a confirmation ritual — which can be a fingerprint rather than a typed code, since a code can be read over a shoulder or demanded out loud and a signature from a biometric-bound key cannot. **Every action that *can* require confirmation (reboot, poweroff, triplefault, control-register writes, SELinux policy changes, module removal, login-kill) always asks the user first** — nothing privileged is ever executed silently or by the LLM.
 - **Triplefault is one-shot, never a loop.** `/triplefault` / `/triplefault restart` forces a hard CPU reset (bogus IDT descriptor loaded with `lidt`, then `int3` → `#BP` → `#NP` → `#DF` → triple fault → `RESET`); `/triplefault shutdown` forces `kernel_power_off()`. Both only apply when the module is loaded and travel the full ARM → `confirm` ritual **every time**, so you can use it whenever you want — but the machine never reboots in a loop: the module latches it per-boot (`-EBUSY` on any duplicate, and the reset path ends in `cli; hlt`, never a spin), and the daemon latches it per session (re-armed only by a fresh daemon start after reboot or by an explicit `/triplefault allow` — also human-confirmed). Conversational orders ("fuerza un apagado con triplefault") are recognized and armed the same way; a mere question («¿qué es triplefault?») is never treated as an order.
 - **`/kernelpanic` is the ring-0 kill switch.** It calls the kernel's real `panic()` through the module — never ring-3 (`/proc/sysrq-trigger` needs `CAP_SYS_ADMIN`, which the unprivileged daemon doesn't have, plus `CONFIG_MAGIC_SYSRQ` + `sysrq=1`). `panic()` is terminal by definition: the machine halts, or the kernel reboots exactly once per its own `panic=N` policy — nothing in the module or daemon loops or retries. Same ARM → `confirm` ritual as the other fatal controls; conversational orders are recognized, questions aren't.
