@@ -79,7 +79,8 @@ Firma de release: `gui/android/keystore.properties` (fuera de git) apunta a tu
 > móvil puede ALCANZAR la máquina: en tu red funciona tal cual, y desde fuera
 > necesitas un camino que pongas tú, y hay tres que funcionan:
 >
-> - **VPN** (Tailscale/WireGuard) — la recomendada: `sudo tailscale up` en el
+> - **VPN** (Tailscale/WireGuard) — la recomendada, con su propio tutorial en
+>   [`tutorial-tailscale.md`](tutorial-tailscale.md): `sudo tailscale up` en el
 >   PC y la app de Tailscale en el móvil con la misma cuenta, `tailscale ip -4`
 >   te da la `100.x` y esa va en `bind`. Esa misma dirección vale en casa y
 >   fuera, así que no tocas nada al viajar, y el puerto no existe fuera de tu
@@ -103,6 +104,11 @@ Firma de release: `gui/android/keystore.properties` (fuera de git) apunta a tu
 cp daemon/config/config.example.toml daemon/config/config.toml
 nano daemon/config/config.toml
 ```
+
+> **Atajo:** `sudo ./scripts/configure-credentials.sh` hace esta sección entera
+> sin abrir el fichero — pregunta el proveedor, lee la clave sin mostrarla,
+> genera la clave de emparejamiento y valida el resultado. Si no tienes API ni
+> saldo, contesta «ninguno» y sigue funcionando todo menos la explicación.
 
 Edita como mínimo estas claves:
 

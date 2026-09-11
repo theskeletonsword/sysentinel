@@ -240,7 +240,14 @@ fi
 
 step "Listo — lo que queda es tuyo"
 cat <<'NEXT'
-    1. Configura el daemon:
+    1. Configura el daemon. Lo más fácil, sin abrir el fichero:
+           sudo ./scripts/configure-credentials.sh
+
+       Te pregunta el proveedor de LLM y su clave (si no tienes, contesta
+       "ninguno" y sigue funcionando todo menos la explicación), la dirección
+       por la que te ve el teléfono, y genera la clave de emparejamiento.
+
+       A mano, si prefieres:
            sudoedit /etc/sysentinel/config.toml
 
        Mínimo para que el teléfono funcione:

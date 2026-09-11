@@ -62,6 +62,12 @@ against GPL-only kernel symbols — declare the GPL flavour when building it.
 
 ---
 
+## Guides
+
+- [`tutorial.md`](tutorial.md) — full install, end to end.
+- [`tutorial-tailscale.md`](tutorial-tailscale.md) — linking the host and the phone over Tailscale, which is the recommended way to reach the machine from anywhere.
+- [`scripts/configure-credentials.sh`](scripts/configure-credentials.sh) — set the LLM key, the phone address and the pairing key without opening `config.toml`. Skipping the API key is a supported answer: everything works, alerts just carry the raw kernel message.
+
 ## Reporting a vulnerability
 
 **Everything here is in scope and every vulnerability is eligible for a

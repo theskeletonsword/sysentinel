@@ -91,6 +91,75 @@ struct Args {
     /// Suppress outbound alerts (useful for testing the LLM backend locally).
     #[arg(long)]
     dry_run: bool,
+
+    /// Load and validate the config, print what it resolves to, and exit.
+    ///
+    /// For anything that edits the file — `scripts/configure-credentials.sh`,
+    /// or a person with an editor — so a mistake is found before a restart
+    /// rather than after one.
+    #[arg(long)]
+    check_config: bool,
+}
+
+/// What `--check-config` prints: everything that matters, no secrets.
+///
+/// Says which knob resolves to what, because "the config parsed" is not the
+/// question anyone actually has — the question is whether the daemon is going
+/// to do what they meant. Keys are shown as present or absent and never
+/// echoed: this runs in a terminal, and terminals get photographed.
+fn print_config_summary(path: &std::path::Path, config: &config::Config) {
+    println!("config: {} — parses, and resolves to:", path.display());
+    println!();
+    println!("  LLM");
+    println!("    chain        {}", config.llm.backend.join(" → "));
+    println!("    model        {}", config.llm.model);
+    for (name, provider) in [
+        ("anthropic", config.llm.anthropic.as_ref()),
+        ("openai", config.llm.openai.as_ref()),
+        ("deepseek", config.llm.deepseek.as_ref()),
+        ("gemini", config.llm.gemini.as_ref()),
+    ] {
+        if let Some(p) = provider {
+            let key = if p.api_key.trim().is_empty() || p.api_key.starts_with("REPLACE_WITH") {
+                "NO key"
+            } else {
+                "key set"
+            };
+            println!("    {name:<12} {key}, {}", p.base_url);
+        }
+    }
+    if !config.llm.llm_enabled() {
+        println!("    (no LLM: alerts carry the raw kernel message, which still works)");
+    }
+    println!("    tls_pins     {}", if config.llm.tls_pins.is_empty() {
+        "none (ordinary public-CA validation)".to_string()
+    } else {
+        format!("{} pinned key(s)", config.llm.tls_pins.len())
+    });
+
+    println!();
+    println!("  Phone channel");
+    if !config.phone.enabled {
+        println!("    DISABLED — this daemon has no way to reach you");
+    } else {
+        println!("    bind         {}", config.phone.bind.as_deref().unwrap_or("(unset!)"));
+        match config.phone.advertise.as_deref() {
+            Some(a) => println!("    advertise    {a} (this is what the QR carries)"),
+            None => println!("    advertise    same as bind"),
+        }
+        println!("    pairing_key  {}", match config.phone.pairing_key.as_deref() {
+            Some(k) if k.len() == 64 => "set (64 hex)",
+            Some(_) => "SET BUT NOT 64 HEX — the daemon will refuse it",
+            None => "unset — the daemon will mint one and print it",
+        });
+        println!("    queue        {} (capacity {})", config.phone.queue_path, config.phone.queue_capacity);
+    }
+
+    println!();
+    println!("  Persona    {} · {}", config.persona.language, config.persona.tone);
+    println!("  Camera     {}", if config.camera.enabled { "on" } else { "off" });
+    println!("  Face       {}", if config.face.enabled { "on" } else { "off" });
+    println!("  IPC socket {}", if config.ipc.enabled { "on" } else { "off" });
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
@@ -105,6 +174,11 @@ fn main() -> Result<()> {
     let args   = Args::parse();
     let config = Config::load(&args.config)
         .with_context(|| format!("loading config from {}", args.config.display()))?;
+
+    if args.check_config {
+        print_config_summary(&args.config, &config);
+        return Ok(());
+    }
 
     // Resolve minimum severity for alerting.
     let min_severity = Severity::from_str_name(&config.general.min_severity)
