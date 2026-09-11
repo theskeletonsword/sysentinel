@@ -383,9 +383,27 @@ pub fn profile_path(settings_file: &str) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("/var/lib/sysentinel/home.json"))
 }
 
-pub fn load_profile(path: &Path) -> Option<HomeProfile> {
-    let raw = std::fs::read_to_string(path).ok()?;
-    serde_json::from_str(&raw).ok()
+/// Read the saved home profile, distinguishing "never defined" from "cannot
+/// read it".
+///
+/// The two must not collapse into one answer. `Ok(None)` sends `/definehome`
+/// down the path that *writes* a new profile — so a truncated or corrupted
+/// file used to mean the machine silently re-bound itself as home, and the
+/// tripwire that says "this login came from other hardware" quietly reset to
+/// whatever hardware happened to be running. A binding that disappears when a
+/// file goes bad is not a binding.
+pub fn load_profile(path: &Path) -> Result<Option<HomeProfile>> {
+    let raw = match std::fs::read_to_string(path) {
+        Ok(r) => r,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => {
+            return Err(anyhow::anyhow!(e))
+                .with_context(|| format!("reading {}", path.display()))
+        }
+    };
+    let profile = serde_json::from_str(&raw)
+        .with_context(|| format!("{} is not a readable home profile", path.display()))?;
+    Ok(Some(profile))
 }
 
 pub fn save_profile(path: &Path, id: &MachineIdentity) -> Result<()> {
@@ -443,8 +461,26 @@ pub fn save_profile(path: &Path, id: &MachineIdentity) -> Result<()> {
         }
     }
 
-    std::fs::write(path, serde_json::to_string_pretty(&profile)?)
-        .with_context(|| format!("writing {}", path.display()))
+    // Staged and renamed, 0600 from creation: a half-written profile is what
+    // the paragraph on `load_profile` is about, and this file records the
+    // machine's identity.
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let json = serde_json::to_string_pretty(&profile)?;
+    let tmp = path.with_extension("json.new");
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(&tmp)
+        .with_context(|| format!("writing {}", tmp.display()))?;
+    f.write_all(json.as_bytes())
+        .with_context(|| format!("writing {}", tmp.display()))?;
+    f.sync_all().with_context(|| format!("flushing {}", tmp.display()))?;
+    drop(f);
+    std::fs::rename(&tmp, path)
+        .with_context(|| format!("renaming {} into place", tmp.display()))
 }
 
 pub fn clear_profile(path: &Path) {
@@ -554,6 +590,25 @@ fn hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_damaged_home_profile_is_not_read_as_never_defined() {
+        // `Ok(None)` is what sends /definehome down the branch that WRITES a
+        // profile. A corrupt file taking that branch means the machine
+        // silently re-binds to whatever hardware is running, and the "this
+        // login came from other hardware" tripwire resets itself.
+        let dir = std::env::temp_dir().join(format!("sysentinel-home-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("home.json");
+
+        assert!(load_profile(&path).unwrap().is_none(), "absent means absent");
+
+        std::fs::write(&path, b"{ half a profile").unwrap();
+        let err = load_profile(&path).expect_err("a corrupt profile must be an error");
+        assert!(format!("{err:#}").contains("readable home profile"), "{err:#}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn fingerprint_is_stable_and_unique_tokens_differ() {

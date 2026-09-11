@@ -304,7 +304,22 @@ pub fn probe_device(path: &Path) -> Option<VolumeKind> {
 }
 
 /// Identify a block device by name (`sda`, `nvme0n1`).
+///
+/// The name is checked rather than trusted. Today's only caller walks sysfs,
+/// where the kernel chose the names — but this builds a path out of a string,
+/// and a caller that one day passes something with a `/` in it would be
+/// reading a file somewhere else entirely. Cheap to refuse here, invisible to
+/// find later.
 pub fn probe_block(name: &str) -> Option<VolumeKind> {
+    let plausible = !name.is_empty()
+        && name.len() <= 64
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    if !plausible {
+        log::warn!("fsprobe: refusing to probe a device named {name:?}");
+        return None;
+    }
     probe_device(Path::new(&format!("/dev/{name}")))
 }
 
@@ -319,6 +334,20 @@ mod tests {
         let mut b = vec![0u8; PROBE_BYTES];
         b[offset..offset + magic.len()].copy_from_slice(magic);
         b
+    }
+
+    #[test]
+    fn a_device_name_cannot_become_a_path() {
+        // Nothing passes user input here today. This is the guard that keeps
+        // it that way, because "/dev/{name}" is one careless caller away from
+        // reading an arbitrary file.
+        for bad in ["../etc/shadow", "sda/../../proc/self/mem", "", "sd a", "sda\n"] {
+            assert!(probe_block(bad).is_none(), "{bad:?} was accepted");
+        }
+        // Real names still work their way through (the probe itself returns
+        // None without permission, which is a different answer).
+        let _ = probe_block("sda");
+        let _ = probe_block("nvme0n1");
     }
 
     #[test]

@@ -178,7 +178,19 @@ impl TracefsFallback {
             Ok(c) => c,
             Err(_) => return recs,
         };
-        let fd = unsafe { libc::open(cpath.as_ptr(), libc::O_RDONLY | libc::O_NONBLOCK) };
+        // O_CLOEXEC: this daemon spawns children (objdump, audit2allow, the
+        // tpm2 tools), and without it every one of them inherits an open
+        // handle on the kernel trace pipe. Rust's own `File::open` sets it;
+        // reaching for libc here skipped it.
+        //
+        // SAFETY: `cpath` is a valid NUL-terminated path for the duration of
+        // the call, and the returned fd is checked before use.
+        let fd = unsafe {
+            libc::open(
+                cpath.as_ptr(),
+                libc::O_RDONLY | libc::O_NONBLOCK | libc::O_CLOEXEC,
+            )
+        };
         if fd < 0 {
             return recs;
         }

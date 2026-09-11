@@ -2854,7 +2854,23 @@ PMU).";
             }
             // ── Saved-profile status + firmware drift ────────────────────────
             "status" | "info" | "perfil" => {
-                match detecthome::load_profile(&home) {
+                let loaded = match detecthome::load_profile(&home) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        let _ = self.send(
+                            chat_id,
+                            &format!(
+                                "❌ El perfil guardado de este equipo no se puede leer:\n\
+                                 {e:#}\n\nNo lo voy a sobrescribir solo, porque eso \
+                                 borraría el vínculo sin que lo hayas pedido. Míralo, y \
+                                 si quieres volver a definirlo: `/definehome delete` y \
+                                 luego `/definehome`."
+                            ),
+                        );
+                        return;
+                    }
+                };
+                match loaded {
                     Some(profile) => {
                         let (silicon_stable, changed) =
                             detecthome::silicon_drift(&profile, &identity);
@@ -2937,11 +2953,28 @@ PMU).";
         }
 
         // ── Normal define/check flow ─────────────────────────────────────────
-        let saved = detecthome::load_profile(&home).map(|p| {
-            let (silicon_stable, changed) = detecthome::silicon_drift(&p, &identity);
-            let fp_match = p.fingerprint == fp;
-            (p, silicon_stable, changed, fp_match)
-        });
+        let saved = match detecthome::load_profile(&home) {
+            Ok(p) => p.map(|p| {
+                let (silicon_stable, changed) = detecthome::silicon_drift(&p, &identity);
+                let fp_match = p.fingerprint == fp;
+                (p, silicon_stable, changed, fp_match)
+            }),
+            Err(e) => {
+                // Never fall through to `None` here: that branch WRITES a new
+                // profile, so an unreadable file would re-bind the machine to
+                // whatever hardware is running and reset the tripwire.
+                log::error!("definehome: {e:#}");
+                let _ = self.send(
+                    chat_id,
+                    &format!(
+                        "❌ Hay un perfil guardado pero no lo puedo leer:\n{e:#}\n\n\
+                         No defino nada encima. `/definehome delete` lo borra a \
+                         propósito si es lo que quieres."
+                    ),
+                );
+                return;
+            }
+        };
 
         match saved {
             Some((profile, silicon_stable, changed, true)) => {
