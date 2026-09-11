@@ -82,7 +82,7 @@ class ChatActivity : AppCompatActivity() {
         // No pairing screen on this face: the key is long and typing it on an
         // old handset is miserable. Set it once from a desktop with adb:
         //   adb shell am start -n org.sysentinel.app/.ChatActivity \
-        //     -e host 10.0.0.5 -e port 8443 -e key <64 hex>
+        //     -e host 10.0.0.5 -e port 8443 -e key <64 hex> -e cert sha256/<base64>
         //
         // It also accepts a host with no key, to correct the ADDRESS after the
         // machine moves (LAN today, VPN from abroad tomorrow) without
@@ -111,14 +111,16 @@ class ChatActivity : AppCompatActivity() {
         val host = intent?.getStringExtra("host")
         if (host.isNullOrBlank()) return
         val key = intent?.getStringExtra("key")
-        val keyed = PhoneLink.parseKey(key ?: "") != null
-        // A key is required to pair; a bare host only moves an existing
-        // pairing to a new route.
+        val cert = intent?.getStringExtra("cert")?.trim().orEmpty()
+        val keyed = PhoneLink.parseKey(key ?: "") != null && cert.startsWith("sha256/")
+        // A key AND the machine's certificate pin are required to pair; a bare
+        // host only moves an existing pairing to a new route.
         if (!keyed && !pairing.isPaired) return
         val port = intent?.getStringExtra("port")?.toIntOrNull() ?: pairing.port
 
         val what = if (keyed) {
-            "Vincular este teléfono con $host:$port\n\ny guardar la clave que viene en la orden."
+            "Vincular este teléfono con $host:$port\n\ny guardar la clave y la huella " +
+                "TLS que vienen en la orden."
         } else {
             "Cambiar la dirección del equipo a $host:$port\n\nLa clave y el vínculo no se tocan."
         }
@@ -138,7 +140,10 @@ class ChatActivity : AppCompatActivity() {
             .setPositiveButton("Sí, fui yo") { d, _ ->
                 pairing.host = host
                 pairing.port = port
-                if (keyed) pairing.keyHex = key!!
+                if (keyed) {
+                    pairing.keyHex = key!!
+                    pairing.certPin = cert
+                }
                 intent?.removeExtra("host")
                 intent?.removeExtra("key")
                 d.dismiss()

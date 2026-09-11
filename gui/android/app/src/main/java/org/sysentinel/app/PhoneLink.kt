@@ -51,6 +51,14 @@ class PhoneLink(
     private val host: String,
     private val port: Int,
     private val key: ByteArray,
+    /**
+     * The machine's certificate pin from the QR.
+     *
+     * Empty only for a pairing made before the channel carried TLS, which
+     * [connect] refuses rather than silently falling back to a bare socket —
+     * downgrading quietly is how a security property disappears.
+     */
+    private val certPin: String = "",
 ) {
     companion object {
         private const val TAG = "sysentinel"
@@ -99,14 +107,38 @@ class PhoneLink(
      * @throws PhoneLinkException with something a person can act on.
      */
     fun connect(appVersion: String): Welcome {
-        val s = Socket()
+        if (certPin.isEmpty()) {
+            throw PhoneLinkException(
+                "Este emparejamiento es de antes de que el canal llevara TLS y no " +
+                    "tiene la huella del equipo guardada.\n\nVuelve a escanear el QR: " +
+                    "no voy a conectarme sin poder comprobar que al otro lado está " +
+                    "tu equipo y no otro."
+            )
+        }
+        val plain = Socket()
         try {
-            s.connect(InetSocketAddress(host, port), CONNECT_TIMEOUT_MS)
+            plain.connect(InetSocketAddress(host, port), CONNECT_TIMEOUT_MS)
         } catch (e: Exception) {
             throw PhoneLinkException(
                 "No pude conectar con $host:$port.\n\n" +
                     "Esta es una conexión directa: no hay relay. Comprueba que estás " +
                     "en la misma red que el equipo, o que la VPN está levantada.",
+                e,
+            )
+        }
+        plain.soTimeout = IO_TIMEOUT_MS
+        // TLS 1.3 first, pinned to the key the QR carried; the sealed frames
+        // then travel inside it. See PinnedTls for why the certificate is
+        // pinned rather than validated against a CA.
+        val s = try {
+            PinnedTls.wrap(plain, host, port, certPin)
+        } catch (e: PhoneLinkException) {
+            try { plain.close() } catch (_: Exception) {}
+            throw e
+        } catch (e: Exception) {
+            try { plain.close() } catch (_: Exception) {}
+            throw PhoneLinkException(
+                "No pude establecer TLS con $host:$port.\n\n${e.message ?: ""}",
                 e,
             )
         }

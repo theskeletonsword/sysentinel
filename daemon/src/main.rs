@@ -46,6 +46,7 @@ mod modulewatch;
 mod mood;
 mod phone;
 mod phonehome;
+mod phonetls;
 mod pmu;
 mod presence;
 mod procinfo;

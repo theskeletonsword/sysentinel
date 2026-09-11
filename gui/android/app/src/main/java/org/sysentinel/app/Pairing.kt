@@ -73,19 +73,33 @@ class Pairing(context: Context) {
     val wrappedInHardware: Boolean
         get() = prefs.contains(KEY_WRAPPED)
 
+    /**
+     * The machine's TLS certificate pin, `sha256/…`, from the pairing QR.
+     *
+     * Not a secret — it is a public key's fingerprint — so it is stored in the
+     * clear beside the host. Losing it is not dangerous; having the wrong one
+     * simply means refusing to connect, which is the correct direction to fail
+     * in.
+     */
+    var certPin: String
+        get() = prefs.getString(KEY_CERT, "") ?: ""
+        set(v) = prefs.edit().putString(KEY_CERT, v.trim()).apply()
+
     /** Highest alert id already acknowledged, so a reinstall does not re-ask. */
     var lastAckedId: Long
         get() = prefs.getLong(KEY_ACK, 0L)
         set(v) = prefs.edit().putLong(KEY_ACK, v).apply()
 
     val isPaired: Boolean
-        get() = host.isNotEmpty() && PhoneLink.parseKey(keyHex) != null
+        get() = host.isNotEmpty() &&
+            PhoneLink.parseKey(keyHex) != null &&
+            certPin.isNotEmpty()
 
     /** A link to the paired machine, or `null` when pairing is incomplete. */
     fun link(): PhoneLink? {
         val key = PhoneLink.parseKey(keyHex) ?: return null
         if (host.isEmpty()) return null
-        return PhoneLink(host, port, key)
+        return PhoneLink(host, port, key, certPin)
     }
 
     private companion object {
@@ -94,5 +108,6 @@ class Pairing(context: Context) {
         const val KEY_HEX = "key"
         const val KEY_WRAPPED = "key_wrapped"
         const val KEY_ACK = "acked"
+        const val KEY_CERT = "cert_pin"
     }
 }

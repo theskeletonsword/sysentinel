@@ -259,7 +259,7 @@ pub fn open(key: &[u8; 32], frame: &[u8]) -> Result<Vec<u8>> {
 }
 
 /// Read a length-prefixed frame.
-fn read_frame(stream: &mut TcpStream) -> Result<Vec<u8>> {
+fn read_frame<S: Read + Write>(stream: &mut S) -> Result<Vec<u8>> {
     let mut len = [0u8; 4];
     stream.read_exact(&mut len)?;
     let n = u32::from_be_bytes(len) as usize;
@@ -271,7 +271,7 @@ fn read_frame(stream: &mut TcpStream) -> Result<Vec<u8>> {
     Ok(buf)
 }
 
-fn write_frame(stream: &mut TcpStream, frame: &[u8]) -> Result<()> {
+fn write_frame<S: Read + Write>(stream: &mut S, frame: &[u8]) -> Result<()> {
     stream.write_all(&(frame.len() as u32).to_be_bytes())?;
     stream.write_all(frame)?;
     stream.flush()?;
@@ -577,6 +577,16 @@ pub fn start(
     // key would outlive the pairing.
     let profile = crate::phonehome::profile_path(&config.phone.queue_path);
     let advertise = config.phone.advertise.clone().unwrap_or_else(|| bind.clone());
+
+    // The machine's own TLS identity, minted once and kept. Its public key
+    // fingerprint travels in the QR, which is what lets the phone refuse
+    // anyone else answering on that address — there is no CA that will ever
+    // certify a LAN address, so the key is the identity.
+    let state_dir = profile
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| std::path::PathBuf::from("/var/lib/sysentinel"));
+    let tls = crate::phonetls::TlsIdentity::load_or_create(&state_dir)?;
     // An unreadable profile is not "nobody is paired": drawing the pairing QR
     // then would invite a re-pair the owner never asked for. Say so and draw
     // nothing.
@@ -593,7 +603,7 @@ pub fn start(
         }
     };
     if paired.is_none() {
-        let uri = pairing_uri(&advertise, &key_hex);
+        let uri = pairing_uri_pinned(&advertise, &key_hex, &tls.fingerprint);
         eprintln!("\n  Empareja tu teléfono — escanea esto con la app:\n");
         match pairing_qr(&uri) {
             Ok(qr) => eprintln!("{qr}"),
@@ -612,6 +622,7 @@ pub fn start(
     // loudly, and a listener opened after `start` returns can only log into a
     // void: the owner would read "phone channel up" and be wrong.
     let listener = bind_listener(&bind)?;
+    let tls_config = tls.server_config()?;
 
     let listener_queue = Arc::clone(&queue);
     let profile = crate::phonehome::profile_path(&config.phone.queue_path);
@@ -619,7 +630,7 @@ pub fn start(
         .name("phone".to_string())
         .spawn(move || {
             run_phone_loop(
-                listener, key, listener_queue, profile,
+                listener, tls_config, key, listener_queue, profile,
                 on_command, on_photo, on_confirm,
             )
         })
@@ -712,6 +723,31 @@ fn parse_key(hex: &str) -> Result<[u8; 32]> {
 ///
 /// Everything the handset needs and nothing it does not: where to connect and
 /// the key to seal the first frame with.
+/// The pairing URI with the machine's certificate pin attached.
+///
+/// The phone stores the pin and will not speak to anything that presents a
+/// different key on that address afterwards — which is the whole protection
+/// against somebody answering in the machine's place once the address is
+/// reachable from outside.
+pub fn pairing_uri_pinned(addr: &str, key_hex: &str, cert_pin: &str) -> String {
+    format!("{}&cert={}", pairing_uri(addr, key_hex), urlencode(cert_pin))
+}
+
+/// Percent-encode the few characters a `sha256/…` pin can contain that would
+/// otherwise end the query parameter.
+fn urlencode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 8);
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
 pub fn pairing_uri(addr: &str, key_hex: &str) -> String {
     // `addr` may be a listen address rather than somewhere to dial (0.0.0.0,
     // or loopback under a tunnel). It is left as-is and the operator is told
@@ -830,8 +866,13 @@ pub fn fresh_pairing_key() -> Result<String> {
 ///
 /// Takes an already-bound listener: whether the daemon can listen at all is
 /// decided in [`start`], where a failure can still reach the owner.
+#[allow(clippy::too_many_arguments)] // three callbacks, a listener, a TLS
+                                    // config and the state they need; bundling
+                                    // them into a struct would hide the wiring
+                                    // rather than simplify it
 pub fn run_phone_loop(
     listener: TcpListener,
+    tls: Arc<rustls::ServerConfig>,
     key: [u8; 32],
     queue: Arc<Mutex<AlertQueue>>,
     profile_path: PathBuf,
@@ -847,6 +888,7 @@ pub fn run_phone_loop(
     let on_command = Arc::new(on_command);
     let on_photo = Arc::new(on_photo);
     let on_confirm = Arc::new(on_confirm);
+    let tls_config = tls;
     let live = Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
     for stream in listener.incoming() {
@@ -875,6 +917,7 @@ pub fn run_phone_loop(
         }
 
         let queue = Arc::clone(&queue);
+        let tls = Arc::clone(&tls_config);
         let profile_path = profile_path.clone();
         let on_command = Arc::clone(&on_command);
         let on_photo = Arc::clone(&on_photo);
@@ -890,8 +933,14 @@ pub fn run_phone_loop(
                 // message would have cost every future alert, silently. Now it
                 // costs one connection.
                 let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    // TLS 1.3 first, then the sealed frames inside it. A peer
+                    // that cannot complete the handshake never reaches the
+                    // protocol at all.
+                    let conn = rustls::ServerConnection::new(tls)
+                        .context("phone: starting the TLS session")?;
+                    let mut tls_stream = rustls::StreamOwned::new(conn, s.try_clone()?);
                     serve(
-                        s, &key, &queue, &profile_path,
+                        &s, &mut tls_stream, &key, &queue, &profile_path,
                         on_command.as_ref(), on_photo.as_ref(), on_confirm.as_ref(),
                     )
                 }));
@@ -916,8 +965,10 @@ pub fn run_phone_loop(
     }
 }
 
-fn serve(
-    mut stream: TcpStream,
+#[allow(clippy::too_many_arguments)] // same reason as `run_phone_loop`
+fn serve<S: Read + Write>(
+    socket: &TcpStream,
+    mut stream: S,
     key: &[u8; 32],
     queue: &Arc<Mutex<AlertQueue>>,
     profile_path: &Path,
@@ -928,8 +979,11 @@ fn serve(
     // A tight deadline until the peer has proved it holds the key, a longer
     // one afterwards. An unauthenticated stranger should not be able to hold a
     // slot for half a minute just by connecting.
-    stream.set_read_timeout(Some(HANDSHAKE_TIMEOUT))?;
-    stream.set_write_timeout(Some(HANDSHAKE_TIMEOUT))?;
+    // Deadlines live on the socket, not on the TLS object above it: a peer
+    // that stalls mid-handshake has to hit the same wall as one that stalls
+    // mid-frame.
+    socket.set_read_timeout(Some(HANDSHAKE_TIMEOUT))?;
+    socket.set_write_timeout(Some(HANDSHAKE_TIMEOUT))?;
 
     // The first frame must open with the paired key. A peer that cannot
     // produce one gets no reply at all.
@@ -940,8 +994,8 @@ fn serve(
         anyhow::bail!("first frame was not a hello");
     };
     // Authenticated, so the clock can relax.
-    stream.set_read_timeout(Some(IO_TIMEOUT))?;
-    stream.set_write_timeout(Some(IO_TIMEOUT))?;
+    socket.set_read_timeout(Some(IO_TIMEOUT))?;
+    socket.set_write_timeout(Some(IO_TIMEOUT))?;
     // The version string comes off the wire. It is written to a log an
     // operator reads, so it is trimmed to something that cannot forge a log
     // line with its own newlines.
@@ -1100,7 +1154,7 @@ fn unreadable_profile_placeholder() -> crate::phonehome::PhoneProfile {
     }
 }
 
-fn respond(stream: &mut TcpStream, key: &[u8; 32], msg: &ToPhone) -> Result<()> {
+fn respond<S: Read + Write>(stream: &mut S, key: &[u8; 32], msg: &ToPhone) -> Result<()> {
     let json = serde_json::to_vec(msg)?;
     let sealed = seal(key, &json)?;
     write_frame(stream, &sealed)
@@ -1281,38 +1335,65 @@ mod tests {
         assert!(undialable("10.0.0.5").is_none());
     }
 
-    /// Speak the client half of the protocol over a socket.
-    fn hello_and_wait(addr: &str, key: &[u8; 32]) -> Result<ToPhone> {
-        let mut s = TcpStream::connect(addr)?;
-        s.set_read_timeout(Some(Duration::from_secs(5)))?;
+    /// The client half of the protocol, over real TLS with the pin the QR
+    /// would have carried — the same two layers the phone speaks.
+    type TestClient = rustls::StreamOwned<rustls::ClientConnection, TcpStream>;
+
+    fn connect(addr: &str, pin: &str) -> Result<TestClient> {
+        let sock = TcpStream::connect(addr)?;
+        sock.set_read_timeout(Some(Duration::from_secs(5)))?;
+        let cfg = crate::phonetls::client_config_pinned(pin)?;
+        let name = rustls::pki_types::ServerName::try_from("sysentinel")?;
+        let conn = rustls::ClientConnection::new(cfg, name)?;
+        Ok(rustls::StreamOwned::new(conn, sock))
+    }
+
+    fn say_hello(tls: &mut TestClient, key: &[u8; 32]) -> Result<ToPhone> {
         let frame = seal(key, &serde_json::to_vec(&FromPhone::Hello {
             app_version: "test".into(),
         })?)?;
-        write_frame(&mut s, &frame)?;
-        let reply = read_frame(&mut s)?;
+        write_frame(tls, &frame)?;
+        let reply = read_frame(tls)?;
         Ok(serde_json::from_slice(&open(key, &reply)?)?)
+    }
+
+    /// Stand up a listener the way `start` does, and hand back its address and
+    /// certificate pin.
+    fn serve_in_background(
+        dir: &Path,
+        key: [u8; 32],
+        queue: Arc<Mutex<AlertQueue>>,
+        profile: PathBuf,
+        on_command: impl Fn(&str) + Send + Sync + 'static,
+    ) -> (String, String) {
+        let identity = crate::phonetls::TlsIdentity::load_or_create(dir).unwrap();
+        let pin = identity.fingerprint.clone();
+        let tls = identity.server_config().unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        std::thread::spawn(move || {
+            run_phone_loop(
+                listener, tls, key, queue, profile,
+                on_command, |_| {}, |_, _| Ok(String::new()),
+            )
+        });
+        (addr, pin)
     }
 
     #[test]
     fn a_silent_peer_cannot_hold_the_channel_shut() {
         // The property under test is the one the whole daemon rests on: the
-        // owner can be reached. Serving connections one at a time on the accept
-        // loop meant anybody who could open a socket — no key, no words — could
-        // keep the real phone waiting behind them. Here, two squatters connect
-        // and say nothing, and a legitimate client must still get its welcome.
+        // owner can be reached. Serving connections one at a time on the
+        // accept loop meant anybody who could open a socket — no key, no
+        // words, and now not even a TLS handshake — could keep the real phone
+        // waiting behind them. Two squatters connect and say nothing, and a
+        // legitimate client must still get its welcome.
         let key = [9u8; 32];
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap().to_string();
         let dir = tmpdir("dos");
         let queue = Arc::new(Mutex::new(AlertQueue::load(&dir.join("q.json"), 10)));
         let profile = dir.join("phone-home.json");
         let _ = std::fs::remove_file(&profile);
-
-        std::thread::spawn(move || {
-            run_phone_loop(listener, key, queue, profile, |_| {}, |_| {}, |_, _| {
-                Ok(String::new())
-            })
-        });
+        let (addr, pin) = serve_in_background(&dir, key, queue, profile, |_| {});
 
         // Squatters: connected, saying nothing, holding their slots.
         let _squatters: Vec<TcpStream> = (0..2)
@@ -1320,7 +1401,8 @@ mod tests {
             .collect();
 
         let began = std::time::Instant::now();
-        let welcome = hello_and_wait(&addr, &key).expect("a real client must still be served");
+        let mut tls = connect(&addr, &pin).expect("a real client must still connect");
+        let welcome = say_hello(&mut tls, &key).expect("a real client must still be served");
         assert!(
             matches!(welcome, ToPhone::Welcome { .. }),
             "expected a welcome, got {welcome:?}"
@@ -1330,6 +1412,34 @@ mod tests {
             "served in {:?} — a silent peer was allowed to delay the owner",
             began.elapsed()
         );
+        // And it really was TLS 1.3 underneath, not a claim in a comment.
+        assert_eq!(tls.conn.protocol_version(), Some(rustls::ProtocolVersion::TLSv1_3));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_peer_that_cannot_prove_the_certificate_never_reaches_the_protocol() {
+        // Pinning is what stops something else answering on that address once
+        // it is reachable from outside. A client pinning the wrong key must
+        // not get as far as sending a frame.
+        let key = [11u8; 32];
+        let dir = tmpdir("wrongpin");
+        let queue = Arc::new(Mutex::new(AlertQueue::load(&dir.join("q.json"), 10)));
+        let profile = dir.join("phone-home.json");
+        let reached = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = Arc::clone(&reached);
+        let (addr, _pin) =
+            serve_in_background(&dir, key, queue, profile, move |_| {
+                counter.fetch_add(1, Ordering::SeqCst);
+            });
+
+        let mut tls =
+            connect(&addr, "sha256/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=").unwrap();
+        assert!(say_hello(&mut tls, &key).is_err(), "a wrong pin must not be served");
+        std::thread::sleep(Duration::from_millis(150));
+        assert_eq!(reached.load(Ordering::SeqCst), 0);
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1339,8 +1449,6 @@ mod tests {
         // "nobody is paired", which both let any key-holder issue commands
         // without identifying and let the next handset overwrite the profile.
         let key = [5u8; 32];
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap().to_string();
         let dir = tmpdir("corrupt");
         let queue = Arc::new(Mutex::new(AlertQueue::load(&dir.join("q.json"), 10)));
         let profile = dir.join("phone-home.json");
@@ -1349,29 +1457,18 @@ mod tests {
 
         let ordered = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let counter = Arc::clone(&ordered);
-        std::thread::spawn(move || {
-            run_phone_loop(
-                listener, key, queue, profile,
-                move |_| { counter.fetch_add(1, Ordering::SeqCst); },
-                |_| {},
-                |_, _| Ok(String::new()),
-            )
+        let (addr, pin) = serve_in_background(&dir, key, queue, profile, move |_| {
+            counter.fetch_add(1, Ordering::SeqCst);
         });
 
-        let mut s = TcpStream::connect(&addr).unwrap();
-        s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-        let hello = seal(&key, &serde_json::to_vec(&FromPhone::Hello {
-            app_version: "test".into(),
-        }).unwrap()).unwrap();
-        write_frame(&mut s, &hello).unwrap();
-        let welcome: ToPhone =
-            serde_json::from_slice(&open(&key, &read_frame(&mut s).unwrap()).unwrap()).unwrap();
+        let mut tls = connect(&addr, &pin).unwrap();
+        let welcome = say_hello(&mut tls, &key).unwrap();
         assert!(matches!(welcome, ToPhone::Welcome { .. }), "{welcome:?}");
 
         // Holding the pairing key is not enough while the daemon cannot tell
         // which handset it belongs to.
         let refusal: ToPhone =
-            serde_json::from_slice(&open(&key, &read_frame(&mut s).unwrap()).unwrap()).unwrap();
+            serde_json::from_slice(&open(&key, &read_frame(&mut tls).unwrap()).unwrap()).unwrap();
         match refusal {
             ToPhone::Error { message } => assert!(message.contains("ilegible"), "{message}"),
             other => panic!("expected a refusal, got {other:?}"),
@@ -1381,7 +1478,7 @@ mod tests {
         let say = seal(&key, &serde_json::to_vec(&FromPhone::Say {
             text: "/poweroff".into(),
         }).unwrap()).unwrap();
-        let _ = write_frame(&mut s, &say);
+        let _ = write_frame(&mut tls, &say);
         std::thread::sleep(Duration::from_millis(200));
         assert_eq!(ordered.load(Ordering::SeqCst), 0, "a command got through");
 
@@ -1424,6 +1521,27 @@ mod tests {
         // that is the mistake behind most bind failures here.
         let said = format!("{err:#}");
         assert!(said.contains("advertise"), "{said}");
+    }
+
+    #[test]
+    fn the_pairing_uri_is_exactly_what_the_app_parses() {
+        // The QR is the one place the two halves of this project have to agree
+        // character for character. The Android side (PairingUriTest) pins the
+        // same shape from the other direction; this pins it from here.
+        let key = "ab".repeat(32);
+        let pin = format!("sha256/{}=", "A".repeat(43));
+        let uri = pairing_uri_pinned("10.0.0.5:8443", &key, &pin);
+
+        assert!(uri.starts_with("sysentinel://pair?addr=10.0.0.5:8443&key="), "{uri}");
+        assert!(uri.contains(&format!("&key={key}&cert=")), "{uri}");
+        // The pin is percent-encoded: a raw '/' or '=' would end the value,
+        // and the app would compare a truncated string against the real one.
+        assert!(uri.ends_with(&format!("&cert=sha256%2F{}%3D", "A".repeat(43))), "{uri}");
+        assert!(!uri.contains("sha256/"), "the pin must not travel raw: {uri}");
+
+        // Nothing in it needs escaping beyond the pin.
+        assert_eq!(urlencode("10.0.0.5:8443"), "10.0.0.5%3A8443");
+        assert_eq!(urlencode(&key), key);
     }
 
     #[test]

@@ -301,6 +301,9 @@ private fun PairingScreen(pairing: Pairing, onDone: () -> Unit) {
     var host by remember { mutableStateOf(pairing.host) }
     var port by remember { mutableStateOf(pairing.port.toString()) }
     var key by remember { mutableStateOf(pairing.keyHex) }
+    // Comes from the QR only: it is the machine's public key fingerprint, and
+    // typing 44 characters of base64 by hand is not a thing anyone should do.
+    var certPin by remember { mutableStateOf(pairing.certPin) }
     var scanError by remember { mutableStateOf<String?>(null) }
     val keyLooksRight = PhoneLink.parseKey(key) != null
 
@@ -315,12 +318,14 @@ private fun PairingScreen(pairing: Pairing, onDone: () -> Unit) {
         }
         val parsed = PairingUri.parse(raw)
         if (parsed == null) {
-            scanError = "Ese QR no es de sysentinel, o le falta algo. " +
-                "Si el equipo escucha en 0.0.0.0, cámbialo por la IP concreta."
+            scanError = "Ese QR no es de sysentinel, o le falta algo (dirección, " +
+                "clave o la huella TLS del equipo). Si el equipo escucha en " +
+                "0.0.0.0, cámbialo por la IP concreta."
         } else {
             host = parsed.host
             port = parsed.port.toString()
             key = parsed.keyHex
+            certPin = parsed.certPin
             scanError = null
         }
     }
@@ -385,9 +390,12 @@ private fun PairingScreen(pairing: Pairing, onDone: () -> Unit) {
                 pairing.host = host
                 pairing.port = port.toIntOrNull() ?: 8443
                 pairing.keyHex = key
+                pairing.certPin = certPin
                 onDone()
             },
-            enabled = keyLooksRight && host.isNotBlank(),
+            // The pin has no hand-entry path on purpose, so saving without one
+            // would produce a pairing that cannot connect.
+            enabled = keyLooksRight && host.isNotBlank() && certPin.isNotBlank(),
         ) { Text("Guardar y conectar") }
     }
 }

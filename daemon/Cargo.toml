@@ -73,6 +73,10 @@ image      = { version = "0.25", default-features = false, features = ["jpeg"] }
 llama-cpp-2 = { version = "0.1", optional = true }
 qrcode = { version = "0.14.1", default-features = false }
 webpki-roots = "1.0.9"
+# Self-signed certificate generation for the phone channel's TLS. Pinned to
+# the aws-lc-rs backend so this repo has ONE crypto implementation rather than
+# three, and used precisely so that nothing here hand-writes X.509 DER.
+rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs"] }
 
 [features]
 default   = []

@@ -2815,7 +2815,23 @@ PMU).";
         // address whenever a tunnel or a VPN fronted the daemon — which is
         // precisely when someone reaches for `/pair`.
         let addr = self.config.phone.advertise.as_ref().unwrap_or(bind);
-        let uri = crate::phone::pairing_uri(addr, key);
+        // With the certificate pin, exactly as the startup QR: a QR without it
+        // produces an app that refuses to connect, which is the right refusal
+        // but a miserable way to discover this.
+        let state_dir = crate::phonehome::profile_path(&self.config.phone.queue_path)
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| std::path::PathBuf::from("/var/lib/sysentinel"));
+        let uri = match crate::phonetls::TlsIdentity::load_or_create(&state_dir) {
+            Ok(tls) => crate::phone::pairing_uri_pinned(addr, key, &tls.fingerprint),
+            Err(e) => {
+                let _ = self.send(
+                    chat_id,
+                    &format!("❌ No pude leer la identidad TLS del equipo: {e:#}"),
+                );
+                return;
+            }
+        };
         match crate::phone::pairing_qr(&uri) {
             Ok(qr) => {
                 // Printed on the machine, never sent: putting a pairing key

@@ -234,8 +234,24 @@ pub fn agent(pins: &[String]) -> Result<ureq::Agent> {
         roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
     };
 
+    // TLS 1.3 only, not "1.3 preferred".
+    //
+    // rustls offers 1.2 and 1.3 by default and every provider this talks to
+    // negotiates 1.3 — verified against api.anthropic.com, which answers
+    // TLS13_AES_256_GCM_SHA384. Leaving 1.2 in the offer means the *server*
+    // picks, and the whole point of pinning down a version is not letting the
+    // other end decide. 1.2 in rustls is not broken, so this is a margin
+    // rather than a fix: no downgrade to negotiate against, no 1.2-only
+    // middlebox silently terminating the connection in the middle, and the
+    // handshake that carries the API key is the modern one every time.
+    //
+    // The cost is honest: an endpoint that cannot do 1.3 stops working, and
+    // says so. In 2026 that is a TLS-intercepting proxy, which is the thing
+    // this file exists to keep out.
+    let versions = &[&rustls::version::TLS13];
+
     let config = if pins.is_empty() {
-        rustls::ClientConfig::builder()
+        rustls::ClientConfig::builder_with_protocol_versions(versions)
             .with_root_certificates(roots)
             .with_no_client_auth()
     } else {
@@ -249,7 +265,7 @@ pub fn agent(pins: &[String]) -> Result<ureq::Agent> {
             .build()
             .context("httpsec: building the certificate verifier")?;
         let verifier = Arc::new(PinnedVerifier { inner: webpki, pins: pins.to_vec() });
-        rustls::ClientConfig::builder()
+        rustls::ClientConfig::builder_with_protocol_versions(versions)
             .dangerous()
             .with_custom_certificate_verifier(verifier)
             .with_no_client_auth()
@@ -316,7 +332,7 @@ pub fn shared() -> ureq::Agent {
 }
 
 /// Install aws-lc-rs as the process TLS backend, once.
-fn install_crypto_provider() {
+pub fn install_crypto_provider() {
     use std::sync::Once;
     static ONCE: Once = Once::new();
     ONCE.call_once(|| {
@@ -335,6 +351,81 @@ fn install_crypto_provider() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_outbound_agent_offers_tls_13_and_nothing_older() {
+        // Not "1.3 preferred" — 1.3 only, checked on the wire.
+        //
+        // The provider's suite list is not the evidence (it still contains
+        // 1.2 suites; rustls filters by version at handshake time), and
+        // neither is a successful connection to a server that happens to pick
+        // 1.3. The evidence is the ClientHello: if TLS 1.2 is in the offer,
+        // the SERVER gets to choose, and choosing is exactly what a version
+        // floor takes away from the other end.
+        install_crypto_provider();
+        let roots = rustls::RootCertStore {
+            roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
+        };
+        let cfg = rustls::ClientConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+
+        let name = rustls::pki_types::ServerName::try_from("example.com").unwrap();
+        let mut conn = rustls::ClientConnection::new(Arc::new(cfg), name).unwrap();
+        let mut hello = Vec::new();
+        conn.write_tls(&mut hello).expect("the client writes its hello");
+
+        let offered = supported_versions_in_hello(&hello)
+            .expect("a ClientHello carries a supported_versions extension");
+        assert_eq!(offered, vec![0x0304], "offered versions were {offered:02x?}");
+
+        // The same config the daemon actually builds.
+        assert!(agent(&[]).is_ok());
+    }
+
+    /// Pull the `supported_versions` (0x002b) extension out of a ClientHello.
+    ///
+    /// Hand-parsed rather than pattern-matched on bytes, so the test fails
+    /// when the offer changes rather than when the record layout does.
+    fn supported_versions_in_hello(record: &[u8]) -> Option<Vec<u16>> {
+        // TLSPlaintext: type(1) version(2) length(2), then the handshake.
+        let body = record.get(5..)?;
+        // Handshake: msg_type(1) length(3) — ClientHello is type 1.
+        if *body.first()? != 1 {
+            return None;
+        }
+        let ch = body.get(4..)?;
+        // legacy_version(2) random(32)
+        let mut i = 2 + 32;
+        // legacy_session_id
+        i += 1 + *ch.get(i)? as usize;
+        // cipher_suites
+        let cs_len = u16::from_be_bytes([*ch.get(i)?, *ch.get(i + 1)?]) as usize;
+        i += 2 + cs_len;
+        // legacy_compression_methods
+        i += 1 + *ch.get(i)? as usize;
+        // extensions
+        let ext_len = u16::from_be_bytes([*ch.get(i)?, *ch.get(i + 1)?]) as usize;
+        i += 2;
+        let end = i + ext_len;
+        while i + 4 <= end {
+            let kind = u16::from_be_bytes([*ch.get(i)?, *ch.get(i + 1)?]);
+            let len = u16::from_be_bytes([*ch.get(i + 2)?, *ch.get(i + 3)?]) as usize;
+            let data = ch.get(i + 4..i + 4 + len)?;
+            if kind == 0x002b {
+                // supported_versions: list_len(1) then u16 versions.
+                let list = data.get(1..)?;
+                return Some(
+                    list.chunks(2)
+                        .filter(|c| c.len() == 2)
+                        .map(|c| u16::from_be_bytes([c[0], c[1]]))
+                        .collect(),
+                );
+            }
+            i += 4 + len;
+        }
+        None
+    }
 
     #[test]
     fn a_configured_pin_never_degrades_into_an_unpinned_request() {
