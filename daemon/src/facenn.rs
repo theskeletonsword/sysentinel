@@ -327,12 +327,18 @@ pub fn verify(cfg: &FaceConfig, store: &FaceStore, probe: &Path) -> Option<NnOut
         return None;
     }
 
-    let db_path = std::env::temp_dir().join(format!("sysentinel-face-db-{}.json", std::process::id()));
+    // Face templates are biometric data. They are staged for the tool in the
+    // daemon's 0700 scratch directory, not in a world-listable /tmp under a
+    // name derived from the pid.
     let db = store.esp_db();
-    if let Err(e) = write_private(&db_path, db.as_bytes()) {
-        log::warn!("face: cannot stage the template DB: {e}");
-        return None;
-    }
+    let staged = match crate::scratch::write("face-db.json", db.as_bytes()) {
+        Ok(f) => f.sensitive(),
+        Err(e) => {
+            log::warn!("face: cannot stage the template DB: {e:#}");
+            return None;
+        }
+    };
+    let db_path = staged.path().to_path_buf();
 
     // `--thresh -1` so the tool always reports its best match rather than
     // applying a cut of its own: the thresholds that matter are ours, and a
@@ -345,7 +351,7 @@ pub fn verify(cfg: &FaceConfig, store: &FaceStore, probe: &Path) -> Option<NnOut
         .arg("--thresh")
         .arg("-1")
         .output();
-    let _ = std::fs::remove_file(&db_path);
+    staged.wipe();
 
     let out = match out {
         Ok(o) => o,
@@ -475,6 +481,7 @@ fn classify(out: &ToolOut, thr: NnThresholds) -> NnOutcome {
 
 /// Write owner-only (0600), creating the file fresh so a pre-existing symlink
 /// cannot redirect the template database somewhere readable.
+#[cfg_attr(not(test), allow(dead_code))]
 fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;

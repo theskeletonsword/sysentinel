@@ -610,8 +610,15 @@ fn persistent_name(handle: u32) -> Result<String> {
 /// transient flush between them on the simulator, exactly like the validated
 /// script). Returns the 32-byte key.
 fn unseal(handle: u32, pubf: &Path, privf: &Path) -> Result<[u8; 32]> {
-    let ctx = std::env::temp_dir().join(format!("sysentinel-seal-{}.ctx", std::process::id()));
-    std::fs::remove_file(&ctx).ok();
+    // Both paths go through `scratch`, not `/tmp`.
+    //
+    // `tpm2_unseal -o <path>` creates the file itself, with its own umask, at
+    // whatever path we name. Named predictably in a shared directory that is
+    // two separate gifts to a local attacker: pre-create the path as a symlink
+    // and the 32-byte key lands in their directory, or simply read it in the
+    // window before we unlink it. The key that seals this machine's identity is
+    // not something to leave to another process's umask.
+    let ctx = crate::scratch::reserve("tpm-ctx").context("tpmkey: scratch for the seal context")?;
     run_tool(
         "tpm2_load",
         &[
@@ -622,23 +629,21 @@ fn unseal(handle: u32, pubf: &Path, privf: &Path) -> Result<[u8; 32]> {
             "-r",
             privf.to_str().unwrap(),
             "-c",
-            ctx.to_str().unwrap(),
+            ctx.as_str(),
         ],
     )
     .context("tpmkey: could not load the seal")?;
     flush_transients();
 
-let outf = std::env::temp_dir().join(format!("sysentinel-unseal-{}.bin", std::process::id()));
-    std::fs::remove_file(&outf).ok();
-    run_tool(
-        "tpm2_unseal",
-        &["-c", ctx.to_str().unwrap(), "-o", outf.to_str().unwrap()],
-    )
-    .context("tpmkey: could not unseal")?;
-    let _ = std::fs::remove_file(&ctx);
+    let outf = crate::scratch::reserve("tpm-unseal")
+        .context("tpmkey: scratch for the unsealed key")?
+        .sensitive();
+    run_tool("tpm2_unseal", &["-c", ctx.as_str(), "-o", outf.as_str()])
+        .context("tpmkey: could not unseal")?;
+    drop(ctx);
 
-    let bytes = std::fs::read(&outf).context("tpmkey: unseal produced no output file")?;
-    let _ = std::fs::remove_file(&outf);
+    let bytes = std::fs::read(outf.path()).context("tpmkey: unseal produced no output file")?;
+    outf.wipe();
     if bytes.len() != 32 {
         bail!("tpmkey: the seal did not return 32 bytes ({})", bytes.len());
     }

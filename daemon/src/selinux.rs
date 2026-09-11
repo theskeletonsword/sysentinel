@@ -129,14 +129,35 @@ pub fn explain_rule(avc: &AvcDenial) -> Result<String> {
 /// runs unprivileged the returned `Result` carries the exact `sudo` commands
 /// the user needs to run — the bot can just forward them.
 pub fn apply_allow(avc: &AvcDenial, module_name: &str) -> Result<String> {
+    // The name reaches the filesystem and the policy store, so it is checked
+    // rather than trusted. Callers pass `allow<id>` today; a later one passing
+    // something with a `/` or a `..` in it must not become a path.
+    anyhow::ensure!(
+        !module_name.is_empty()
+            && module_name.len() <= 32
+            && module_name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'),
+        "selinux: refusing the module name {module_name:?} — letters, digits and _ only"
+    );
     let module = format!("sysentinel_{module_name}");
-    let te_path = format!("/tmp/{module}.log");
 
-    std::fs::write(&te_path, &avc.raw)
-        .with_context(|| format!("writing {te_path}"))?;
+    // The AVC text went to `/tmp/<predictable>.log` before, written with
+    // `fs::write`, which follows symlinks: any local user could pre-create that
+    // path pointing at a file the daemon may write and have it clobbered.
+    let te = crate::scratch::write(&format!("{module}.log"), avc.raw.as_bytes())
+        .context("selinux: staging the AVC for audit2allow")?;
 
+    // `audit2allow -M <name>` writes `<name>.te` and `<name>.pp` into the
+    // CURRENT DIRECTORY, not beside `-i`. The old code looked for the .pp in
+    // /tmp, where audit2allow had never put it, so loading could only ever
+    // fail. Run it in the scratch directory and the two agree.
+    let workdir = te
+        .path()
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
     let module_build = std::process::Command::new("audit2allow")
-        .args(["-M", &module, "-i", &te_path])
+        .current_dir(&workdir)
+        .args(["-M", &module, "-i", te.as_str()])
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .output()
@@ -150,7 +171,8 @@ pub fn apply_allow(avc: &AvcDenial, module_name: &str) -> Result<String> {
         ));
     }
 
-    let pp_path = format!("/tmp/{module}.pp");
+    let pp = workdir.join(format!("{module}.pp"));
+    let pp_path = pp.display().to_string();
     let module_load = std::process::Command::new("semodule")
         .args(["-i", &pp_path])
         .stdout(std::process::Stdio::piped())
@@ -158,9 +180,16 @@ pub fn apply_allow(avc: &AvcDenial, module_name: &str) -> Result<String> {
         .output()
         .context("running semodule")?;
 
+    // audit2allow leaves a .te beside the .pp; neither is needed once the
+    // module is loaded, and the scratch directory is not a filing cabinet.
+    let te_artifact = workdir.join(format!("{module}.te"));
+    let _ = std::fs::remove_file(&te_artifact);
+
     if !module_load.status.success() {
         let stderr = String::from_utf8_lossy(&module_load.stderr).trim().to_string();
-        // Unprivileged daemon: transfer the exact actions to the user.
+        // Unprivileged daemon: transfer the exact actions to the user. The .pp
+        // stays for them to load — it lives in the daemon's 0700 scratch
+        // directory, which root can read and nobody else can.
         return Ok(format!(
             "Policy module built but needs root to load:\n\
              *audit2allow worked* (module `{module}`),\n\
@@ -169,6 +198,8 @@ pub fn apply_allow(avc: &AvcDenial, module_name: &str) -> Result<String> {
              ```\nsudo semodule -i {pp_path}\n```"
         ));
     }
+
+    let _ = std::fs::remove_file(&pp);
 
     Ok(format!(
         "✅ Policy loaded (`{module}`): the denied access is now allowed.\n\

@@ -139,9 +139,12 @@ fn find_in_dir(dir: &Path, name: &str, depth: usize) -> Option<PathBuf> {
     None
 }
 
-/// Decompress a (possibly .xz/.gz/.zst) module into a temp file so `objdump`
-/// can read it. Returns the temp path; caller removes it.
-fn materialize_ko(path: &Path) -> Option<PathBuf> {
+/// Decompress a (possibly .xz/.gz/.zst) module into private scratch space so
+/// `objdump` can read it.
+///
+/// `None` for an uncompressed module: there is nothing to stage, and the
+/// caller reads it where it lies.
+fn materialize_ko(path: &Path) -> Option<crate::scratch::ScratchFile> {
     let raw = path.to_string_lossy();
     let (decompressor, args): (&str, &[&str]) = if raw.ends_with(".xz") {
         ("xz", &["-d", "-c"])
@@ -150,20 +153,24 @@ fn materialize_ko(path: &Path) -> Option<PathBuf> {
     } else if raw.ends_with(".zst") {
         ("zstd", &["-d", "-c"])
     } else {
-        return Some(path.to_path_buf());
+        return None;
     };
 
     let out = Command::new(decompressor).args(args).arg(path).output().ok()?;
     if !out.status.success() {
         return None;
     }
-    let tmp = std::env::temp_dir().join(format!(
-        "sysentinel_ko_{}_{}",
-        std::process::id(),
-        path.file_name()?.to_string_lossy()
-    ));
-    std::fs::write(&tmp, out.stdout).ok()?;
-    Some(tmp)
+    // Not `/tmp`: the name used to be `sysentinel_ko_<pid>_<name>`, which any
+    // local user could pre-create as a symlink — and `fs::write` follows one,
+    // so analysing a module could be turned into overwriting an arbitrary file
+    // the daemon can reach. `scratch` writes with O_EXCL into a 0700 directory.
+    match crate::scratch::write("ko", &out.stdout) {
+        Ok(f) => Some(f),
+        Err(e) => {
+            log::warn!("modwatch: cannot stage {} for objdump: {e:#}", path.display());
+            None
+        }
+    }
 }
 
 /// `objdump -d` the module (Intel syntax). Returns disassembly, truncated.
@@ -171,12 +178,12 @@ pub fn objdump_text(path: &Path) -> Option<String> {
     if Command::new("objdump").arg("--version").output().is_err() {
         return None;
     }
-    let materialized = materialize_ko(path)?;
-    let inner = objdump_raw(&materialized);
-    if materialized != *path {
-        let _ = std::fs::remove_file(&materialized);
+    // A compressed module is staged; an uncompressed one is read where it is.
+    // The guard unlinks (and for nothing here, wipes) when this returns.
+    match materialize_ko(path) {
+        Some(staged) => objdump_raw(staged.path()),
+        None => objdump_raw(path),
     }
-    inner
 }
 
 fn objdump_raw(path: &Path) -> Option<String> {
