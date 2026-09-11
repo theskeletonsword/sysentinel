@@ -2,6 +2,24 @@
 //!
 //! Arbitrary command execution, gated by the kernel module being loaded.
 //!
+//! # NOT CURRENTLY COMPILED
+//!
+//! `main.rs` does not declare `mod exec;`, so none of this is in the binary
+//! and `/exec` is not a command the daemon answers. Two things follow, and
+//! both were found during a security review rather than by anyone using it:
+//!
+//! - `/settings exec_timeout` and `/settings exec_max_jobs` accept and persist
+//!   values for a feature that does not exist. They are knobs on nothing.
+//! - `Executor::stop_job` and `Executor::list` return placeholder data
+//!   (`Some("")`, an empty command string, `Instant::now()` as the start
+//!   time), so a job list would show ids with no commands. Whether they are
+//!   worth fixing depends on the answer below.
+//!
+//! Wiring this up means giving the paired phone a shell on the machine, which
+//! is a decision for whoever runs it and not something to switch on in
+//! passing. Left here, intact and honest about its state, rather than deleted
+//! or quietly enabled.
+//!
 //! The module presence is the environment's *ring-3 trust anchor*: when
 //! `sysentinel_metrics.ko` is up, the paired user gets `/exec <cmd>` — the
 //! "haz lo que quieras, hasta estresar hilos por gusto" front door. Every

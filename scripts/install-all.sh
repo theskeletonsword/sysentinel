@@ -210,7 +210,7 @@ if (( WITH_MODULE )); then
     info "módulo del kernel → /lib/modules/$(uname -r)/…"
     sudo_run make -C kernel_module modules_install
     sudo_run depmod -a
-    ok "módulo instalado (cárgalo con: sudo modprobe sysentinel_metrics)"
+    ok "módulo instalado (cárgalo con: sudo modprobe sysentinel_metrics write_gid=\$(id -g sysentinel))"
 fi
 
 info "daemon, config, unidad systemd…"
@@ -257,5 +257,10 @@ cat <<'NEXT'
        deja de bastar: el equipo exige además la firma de ESE móvil.
 
     4. Módulo del kernel (opcional, habilita el canal ring 0 → ring −3):
-           sudo modprobe sysentinel_metrics
+           sudo modprobe sysentinel_metrics write_gid=$(id -g sysentinel)
+
+       El write_gid es lo que deja al daemon mandar controles confirmados y
+       leer CR2/CR3. Sin él el módulo funciona igual, pero esos dos registros
+       salen como `restricted`: son direcciones, y publicarlas a cualquier
+       proceso local es justo lo que quiere un exploit para saltarse KASLR.
 NEXT

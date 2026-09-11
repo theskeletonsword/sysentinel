@@ -182,8 +182,14 @@ cat /proc/sysentinel_metrics
 sudo rmmod sysentinel_metrics
 ```
 
-El archivo vive en `/proc` (no `/dev`), es de solo lectura para cualquiera, y
-además acepta **escribir comandos privilegiados** (`reboot`, `poweroff`,
+El archivo vive en `/proc` (no `/dev`) y **lo puede leer cualquiera**, pero no
+entero: `cr2` y `cr3` salen como `restricted` para quien no sea root ni esté en
+`write_gid`. Son direcciones — `cr2` es la última dirección que falló y `cr3` la
+base física de las tablas de páginas — y publicárselas a cualquier proceso local
+es justo lo que necesita un exploit para saltarse la aleatorización del kernel.
+El resto de la línea (uptime, versión del ME, PSP, SMM) se ve igual.
+
+Además acepta **escribir comandos privilegiados** (`reboot`, `poweroff`,
 `cr0_wp on|off`, `cr3=0x…`), gatecircuited por el grupo `write_gid`:
 
 ```sh
