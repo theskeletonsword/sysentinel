@@ -400,11 +400,96 @@ fn decode_base64(s: &str) -> Option<Vec<u8>> {
 pub struct PhoneChannel {
     queue: Arc<Mutex<AlertQueue>>,
     enabled: bool,
+    /// Whether this particular setup put the socket somewhere strangers can
+    /// reach it. Not a property of the channel design — a property of the
+    /// address the owner chose. See [`address_is_exposed`].
+    exposed: bool,
 }
 
 impl PhoneChannel {
     pub fn new(enabled: bool, queue: Arc<Mutex<AlertQueue>>) -> Self {
-        PhoneChannel { queue, enabled }
+        PhoneChannel { queue, enabled, exposed: false }
+    }
+
+    /// Record how this channel is reachable, so the startup exposure note can
+    /// tell the truth about it.
+    pub fn with_exposure(mut self, exposed: bool) -> Self {
+        self.exposed = exposed;
+        self
+    }
+}
+
+/// Whether this address puts the listener where a stranger can knock.
+///
+/// # Why this is not simply "no"
+///
+/// The phone channel was written as the answer to a relay: no endpoint anyone
+/// can reach, no third party in the path. That is true on a LAN and true over
+/// a VPN — and it stops being true the moment somebody forwards a port or
+/// fronts the daemon with a tunnel, both of which the configuration now
+/// documents as supported ways to reach it from abroad.
+///
+/// Reporting "not reachable by third parties" in those setups is the daemon
+/// reassuring its owner about something that just changed underneath them.
+/// So the question is asked of the *address*, not of the design:
+///
+/// - a private or loopback address is not exposed — including the CGNAT range
+///   `100.64/10`, which is where Tailscale and friends live: an overlay
+///   address is only reachable from inside the overlay;
+/// - anything else is a public address, and a public address is a door;
+/// - and `advertise` differing from `bind` means something else is carrying
+///   the connection — a tunnel, a forwarded port, a DDNS name — which is a
+///   door too, and in the tunnel case a third party holding it open.
+fn address_is_exposed(bind: &str, advertise: Option<&str>) -> bool {
+    if let Some(adv) = advertise {
+        if adv != bind {
+            return true;
+        }
+    }
+    !host_is_private(host_part(bind))
+}
+
+/// The host half of `host:port`, with IPv6 brackets removed.
+fn host_part(addr: &str) -> &str {
+    let host = match addr.rsplit_once(':') {
+        Some((h, port)) if port.chars().all(|c| c.is_ascii_digit()) => h,
+        _ => addr,
+    };
+    host.trim().trim_start_matches('[').trim_end_matches(']')
+}
+
+fn host_is_private(host: &str) -> bool {
+    if host == "localhost" || host == "::1" || host == "0.0.0.0" || host == "::" {
+        // A wildcard is not itself a public address; the daemon already
+        // refuses to put one in a QR, and judging exposure from it would be
+        // guessing at which interfaces the machine has.
+        return true;
+    }
+    if let Some(rest) = host.strip_prefix("127.") {
+        return rest.split('.').count() == 3;
+    }
+    // IPv6 unique-local and link-local.
+    let lower = host.to_ascii_lowercase();
+    if lower.starts_with("fc") || lower.starts_with("fd") || lower.starts_with("fe80:") {
+        return true;
+    }
+    let octets: Vec<u16> = host
+        .split('.')
+        .filter_map(|o| o.parse::<u16>().ok())
+        .collect();
+    if octets.len() != 4 || octets.iter().any(|o| *o > 255) {
+        // A name, not an address: we cannot tell where it points, and a name
+        // is usually a name precisely because it is reachable from elsewhere.
+        return false;
+    }
+    match (octets[0], octets[1]) {
+        (10, _) => true,
+        (172, b) if (16..=31).contains(&b) => true,
+        (192, 168) => true,
+        (169, 254) => true,
+        // CGNAT space: Tailscale's 100.x and any carrier-grade NAT address.
+        (100, b) if (64..=127).contains(&b) => true,
+        _ => false,
     }
 }
 
@@ -423,11 +508,14 @@ impl Notifier for PhoneChannel {
         self.enabled
     }
 
-    /// No. That is the entire point of this channel: no endpoint a stranger can
-    /// reach, no relay that sees the traffic, no token that speaks for the
-    /// machine if it leaks.
+    /// Depends on where the owner put it.
+    ///
+    /// The design has no relay and no bearer token, and on a LAN or a VPN
+    /// nothing can reach it. A forwarded port or a tunnel changes that, and
+    /// saying "no" anyway would be the daemon reassuring its owner about a
+    /// property they just gave away. See [`address_is_exposed`].
     fn third_party_reachable(&self) -> bool {
-        false
+        self.exposed
     }
 
     fn send_text(&self, text: &str) -> Result<()> {
@@ -537,7 +625,15 @@ pub fn start(
         })
         .context("spawning the phone listener")?;
 
-    Ok(PhoneChannel::new(true, queue))
+    let exposed = address_is_exposed(&bind, config.phone.advertise.as_deref());
+    if exposed {
+        log::warn!(
+            "phone: {bind} is reachable from outside your own network — the port \
+             exists for anyone who finds it. They get nowhere without the pairing \
+             key AND the registered handset's signature, but they can knock."
+        );
+    }
+    Ok(PhoneChannel::new(true, queue).with_exposure(exposed))
 }
 
 /// Open the listening socket, waiting out the one failure that is a race
@@ -1109,6 +1205,52 @@ mod tests {
         let d = std::env::temp_dir().join(format!("sysentinel-phone-{tag}-{}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    #[test]
+    fn the_daemon_admits_when_the_port_is_actually_exposed() {
+        // `third_party_reachable` said a flat "no", because the channel was
+        // designed against a relay. That answer is right on a LAN and wrong
+        // the moment somebody forwards a port — which the config documents as
+        // a supported way to reach it from abroad. The exposure note exists
+        // to say what a live channel gives away; it has to be true.
+
+        // Home and overlay networks: nothing is exposed.
+        for addr in [
+            "192.168.1.5:8443",
+            "10.0.0.5:8443",
+            "172.16.4.4:8443",
+            "127.0.0.1:8443",
+            "localhost:8443",
+            "169.254.7.7:8443",
+            "100.101.102.103:8443", // Tailscale / CGNAT: inside the overlay
+            "[fd7a:115c:a1e0::1]:8443",
+            "[::1]:8443",
+        ] {
+            assert!(!address_is_exposed(addr, None), "{addr} should not count as exposed");
+        }
+
+        // A public address is a door.
+        for addr in ["203.0.113.9:8443", "8.8.8.8:8443", "[2001:db8::5]:8443"] {
+            assert!(address_is_exposed(addr, None), "{addr} should count as exposed");
+        }
+
+        // And so is anything fronted by something else, even when the listen
+        // address is the most private one there is.
+        assert!(address_is_exposed("127.0.0.1:8443", Some("0.tcp.ngrok.io:19876")));
+        assert!(address_is_exposed("192.168.1.5:8443", Some("casa.duckdns.org:45678")));
+        // Advertising exactly what you bind is not a tunnel.
+        assert!(!address_is_exposed("192.168.1.5:8443", Some("192.168.1.5:8443")));
+
+        // A bare name could point anywhere, so it is treated as a door.
+        assert!(address_is_exposed("casa.example.net:8443", None));
+
+        // And the channel reports what it was told.
+        let dir = tmpdir("exposed");
+        let q = Arc::new(Mutex::new(AlertQueue::load(&dir.join("q.json"), 4)));
+        assert!(!PhoneChannel::new(true, Arc::clone(&q)).third_party_reachable());
+        assert!(PhoneChannel::new(true, q).with_exposure(true).third_party_reachable());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

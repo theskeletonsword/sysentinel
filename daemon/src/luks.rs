@@ -108,12 +108,19 @@ impl Marker {
             if v.is_empty() {
                 continue;
             }
+            // Every value here is repeated back to the owner and handed to a
+            // language model, and the file it came from lives on the ESP
+            // rather than anywhere this daemon controls. Control characters
+            // out, length capped: see `crate::safetext`.
             match k {
-                "boot_id" => m.boot_id = Some(v.to_string()),
+                "boot_id" => m.boot_id = Some(crate::safetext::label(v)),
                 "ts"      => m.ts = v.parse().ok(),
-                "photo"   => m.photo = (!v.is_empty() && v != "none").then(|| v.to_string()),
-                "cam"     => m.cam = Some(v.to_string()),
-                "hostname"|"host" => m.host = Some(v.to_string()),
+                "photo"   => {
+                    m.photo = (!v.is_empty() && v != "none")
+                        .then(|| crate::safetext::label(v))
+                }
+                "cam"     => m.cam = Some(crate::safetext::label(v)),
+                "hostname"|"host" => m.host = Some(crate::safetext::label(v)),
                 "ok"      => m.ok = v == "1" || v == "true",
                 _ => {}
             }
@@ -345,7 +352,10 @@ fn scan_for_markers(
             .map(format_timestamp)
             .unwrap_or_else(|| "?.?".to_string());
         let cam = marker.cam.clone().unwrap_or_else(|| "none".to_string());
-        let boot = if boot_id.len() > 12 { &boot_id[..12] } else { &boot_id };
+        // Cut on a character boundary: `boot_id` comes out of a file, and
+        // slicing a multi-byte character in half panics — which here would
+        // take down the LUKS watcher thread and nothing would say so.
+        let boot: String = boot_id.chars().take(12).collect();
 
         // Passive-ish ask → persona voice; the deny options stay appended.
         let facts = format!(
@@ -480,6 +490,36 @@ fn format_timestamp(ts: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_marker_cannot_panic_the_watcher_or_forge_a_line() {
+        // Markers come off the ESP, not from anywhere this daemon controls,
+        // and the watcher that reads them is a thread with nobody to catch
+        // its panic — it would simply stop watching, quietly.
+        let body = "ok=1\n\
+                    boot_id=áááááááááááááááá\n\
+                    ts=1757000000\n\
+                    photo=cam_x.jpg\n\
+                    cam=USB\u{1b}[2K\rCamera\n\
+                    hostname=feda\nalguien-entró\n";
+        let m = Marker::parse(body);
+
+        // Multi-byte and then cut to twelve characters: the old code sliced
+        // at byte 12, in the middle of one, and panicked.
+        let boot = m.boot_id.clone().unwrap();
+        let cut: String = boot.chars().take(12).collect();
+        assert_eq!(cut.chars().count(), 12);
+
+        // Nothing that reaches an alert may carry control characters.
+        for field in [m.cam.clone(), m.host.clone(), m.boot_id.clone()] {
+            let v = field.unwrap_or_default();
+            assert!(!v.contains('\u{1b}'), "{v:?}");
+            assert!(!v.contains('\r'), "{v:?}");
+            assert!(!v.contains('\n'), "{v:?}");
+        }
+        assert!(m.ok);
+        assert_eq!(m.ts, Some(1757000000));
+    }
 
     #[test]
     fn marker_parses_hook_output() {

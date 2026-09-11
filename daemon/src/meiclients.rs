@@ -348,6 +348,12 @@ fn split_client_dirname(name: &str) -> Option<(String, String)> {
         return None;
     }
     let split_at = name.len() - 36;
+    // `split_at` panics on a byte index inside a character. The kernel names
+    // these in ASCII, so this is about the function staying total rather than
+    // about a name that exists today.
+    if !name.is_char_boundary(split_at) {
+        return None;
+    }
     let (dev, uuid) = name.split_at(split_at);
     let dev = dev.strip_suffix('-')?;
     let uuid = uuid.to_ascii_lowercase();
