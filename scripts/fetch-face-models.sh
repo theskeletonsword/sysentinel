@@ -39,12 +39,21 @@ fetch_verify () { # (<url> <out> <sha256>)
     fi
     echo "downloading: $url"
     curl --fail --location --proto '=https' --tlsv1.3 -o "$out.tmp" "$url"
-    mv "$out.tmp" "$out"
+    # Verify BEFORE it takes the real name. This used to `mv` first and check
+    # afterwards, which left an unverified model sitting at the canonical path
+    # on mismatch — and this model is what decides whether a face at the
+    # keyboard is the owner's. A rejected download is deleted, not parked.
     local got
-    got="$(sha256sum "$out" | cut -d' ' -f1)"
-    [[ "$got" == "$want" ]] || { echo "error: sha256 mismatch for $out
+    got="$(sha256sum "$out.tmp" | cut -d' ' -f1)"
+    if [[ "$got" != "$want" ]]; then
+        rm -f "$out.tmp"
+        echo "error: sha256 mismatch for $out
   expected $want
-  got      $got" >&2; exit 1; }
+  got      $got
+  (the download was discarded, not installed)" >&2
+        exit 1
+    fi
+    mv "$out.tmp" "$out"
     echo "ok: $out (${got:0:12}…)"
 }
 

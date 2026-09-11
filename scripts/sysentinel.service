@@ -43,6 +43,32 @@ AmbientCapabilities=CAP_SYSLOG CAP_PERFMON CAP_KILL
 CapabilityBoundingSet=CAP_SYSLOG CAP_PERFMON CAP_KILL
 NoNewPrivileges=true
 
+# The daemon shells out to system tools by name (modinfo, objdump, audit2allow,
+# loginctl, tpm2_*). Naming the search path here means a directory that
+# something else made writable cannot decide what `objdump` is.
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
+# Nothing here needs to gain a SUID binary's identity, run realtime, change the
+# clock or the hostname, or open a socket family beyond the ones it uses.
+#
+# Deliberately NOT set: ProtectProc/ProcSubset (the watcher reports the top
+# processes and the module analyser walks /proc, so hiding other users' entries
+# would quietly break both), and SystemCallFilter (perf_event_open and the
+# hypercall paths are exactly the sort of thing a coarse @system-service filter
+# turns into a SIGSYS at the worst moment). Neither is refused on principle —
+# they need a test on real hardware before they go in, and a sandbox that kills
+# the watchdog is worse than the sandbox it replaced.
+RestrictSUIDSGID=true
+RestrictRealtime=true
+ProtectClock=true
+ProtectHostname=true
+LockPersonality=true
+RestrictNamespaces=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+SystemCallArchitectures=native
+# New files (the alert queue, the phone profile, scratch) start owner-only
+# instead of at whatever the inherited umask happened to be.
+UMask=0077
+
 # ── Filesystem sandboxing ─────────────────────────────────────────────────────
 ProtectSystem=strict
 # ProtectHome must be OFF: the module analyser searches /home and /root for a
@@ -52,8 +78,12 @@ ProtectHome=false
 # /var/tmp, /dev/shm) to find an intruder's module, not its own private copy.
 PrivateTmp=false
 ReadOnlyPaths=/
-# Daemon needs to write its pairing state file and logs.
+# Daemon needs to write its pairing state, its private scratch directory and
+# its logs.
 ReadWritePaths=/var/lib/sysentinel /var/log/sysentinel
+# The GUI control socket lives here when [ipc] is on.
+RuntimeDirectory=sysentinel
+RuntimeDirectoryMode=0750
 # /dev/kmsg, /proc, /sys are always accessible via the kernel.
 
 # ── Networking ───────────────────────────────────────────────────────────────

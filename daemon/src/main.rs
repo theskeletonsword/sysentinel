@@ -50,6 +50,7 @@ mod pmu;
 mod presence;
 mod procinfo;
 mod ring3;
+mod safetext;
 mod scratch;
 mod secureboot;
 mod selinux;

@@ -67,6 +67,16 @@ pub struct PhoneProfile {
     pub manufacturer: String,
     /// When this handset became the paired one.
     pub paired_at_unix: i64,
+    /// Whether this handset has ever produced a valid signature confirmation.
+    ///
+    /// It gates the "a typed code is no longer enough" rule in
+    /// [`crate::bot`]: the stronger requirement only switches on once the
+    /// phone has *demonstrated* it can sign, so a handset with no biometric
+    /// enrolled — or one whose Keystore key did not survive an update — can
+    /// never lock the owner out of their own machine. Defaults to false for
+    /// profiles written before this field existed.
+    #[serde(default)]
+    pub signing_proven: bool,
 }
 
 impl PhoneProfile {
@@ -242,6 +252,29 @@ pub fn verify_challenge(public_key_der: &[u8], challenge: &[u8], signature: &[u8
     key.verify(challenge, signature).is_ok()
 }
 
+/// Record that this handset has signed something, once.
+///
+/// Separate from [`save`] so the caller does not have to reconstruct a
+/// profile; a failure here is logged and never blocks the confirmation that
+/// just succeeded.
+pub fn mark_signing_proven(path: &Path) {
+    match load(path) {
+        Ok(Some(mut p)) if !p.signing_proven => {
+            p.signing_proven = true;
+            if let Err(e) = save(path, &p) {
+                log::warn!("phonehome: cannot record that the handset can sign: {e:#}");
+            } else {
+                log::info!(
+                    "phonehome: this handset has proved it can sign — a typed code \
+                     alone no longer authorises an irreversible control"
+                );
+            }
+        }
+        Ok(_) => {}
+        Err(e) => log::warn!("phonehome: {e:#}"),
+    }
+}
+
 /// A fresh challenge for the handset to sign.
 ///
 /// Random and per-connection: a challenge the phone could predict, or one
@@ -277,6 +310,7 @@ mod tests {
             model: model.into(),
             manufacturer: "Google".into(),
             paired_at_unix: 1_700_000_000,
+            signing_proven: false,
         }
     }
 
@@ -401,6 +435,47 @@ mod tests {
         assert_eq!(load(&path).unwrap().unwrap(), p);
         // The staging file must not survive a successful save.
         assert!(!path.with_extension("json.new").exists());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn signing_only_counts_once_the_handset_has_actually_signed() {
+        // This flag is what switches a typed code from "enough" to "not
+        // enough" for an irreversible order. It must start false — a handset
+        // with no biometric enrolled, or whose Keystore key did not survive a
+        // system update, would otherwise be able to lock the owner out of
+        // their own machine, and a bar that strands the person it protects is
+        // not a security improvement.
+        let dir = std::env::temp_dir().join(format!("sysentinel-ph-sign-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("phone-home.json");
+
+        let (_, key) = a_phone();
+        let p = profile_for(key, "Pixel 8");
+        assert!(!p.signing_proven);
+        save(&path, &p).unwrap();
+        assert!(!load(&path).unwrap().unwrap().signing_proven);
+
+        mark_signing_proven(&path);
+        assert!(load(&path).unwrap().unwrap().signing_proven);
+        // Idempotent, and everything else about the profile survives.
+        mark_signing_proven(&path);
+        let after = load(&path).unwrap().unwrap();
+        assert!(after.signing_proven);
+        assert_eq!(after.public_key_der, p.public_key_der);
+        assert_eq!(after.paired_at_unix, p.paired_at_unix);
+
+        // A profile written before this field existed reads as "not proven"
+        // rather than failing to parse.
+        std::fs::write(
+            &path,
+            br#"{"public_key_der":[1,2,3],"claimed_backing":"tee",
+                 "attestation_verified":false,"model":"m","manufacturer":"g",
+                 "paired_at_unix":1}"#,
+        )
+        .unwrap();
+        assert!(!load(&path).unwrap().unwrap().signing_proven);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

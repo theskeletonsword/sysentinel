@@ -239,20 +239,18 @@ fn bind(path: &Path, group: Option<u32>) -> std::io::Result<UnixListener> {
         }
     }
 
-    // Bind under a umask that denies everyone else, rather than binding and
-    // then tightening. `bind` creates the socket with 0777 & !umask, so
-    // without this there is a window — short, but a window — in which any
-    // local process can connect to a socket whose permissions ARE the access
-    // control for a root daemon.
+    // `bind` creates the socket with 0777 & !umask and it is tightened on the
+    // next line, so for that instant its own mode is whatever the umask says.
+    // The directory above is what closes that window: at 0750 nobody outside
+    // the group can reach the socket to connect to it, whatever mode it is
+    // wearing at that moment.
     //
-    // SAFETY: umask only reads and replaces a per-process value and cannot
-    // fail. It is restored immediately, and the daemon binds its sockets
-    // during single-threaded startup.
-    let previous = unsafe { libc::umask(0o177) };
-    let listener = UnixListener::bind(path);
-    // SAFETY: as above; put back exactly what was there.
-    unsafe { libc::umask(previous) };
-    let listener = listener?;
+    // Deliberately NOT done with umask(): it is per *process*, not per thread,
+    // and this daemon binds while its watchers are already running. Narrowing
+    // it here would briefly make every file and directory they create in
+    // parallel come out with the wrong permissions — including directories
+    // without an execute bit, which then cannot be written into at all.
+    let listener = UnixListener::bind(path)?;
 
     // The socket's permissions ARE the access control: the daemon behind it is
     // root. Owner-only unless a group was named on purpose.

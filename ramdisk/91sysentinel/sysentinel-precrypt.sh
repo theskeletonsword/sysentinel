@@ -77,6 +77,42 @@ _identify() {
     /usr/libexec/sysentinel-face --embed "$photo" --match "$db" --thresh 0.5 --brief 2>/dev/null | head -n1 | awk '{ n=$2; s=$3; if (n == "none") print "none 0"; else print n, s }'
 }
 
+# ── Is this vfat device the machine's own ESP, or somebody's USB stick? ──────
+#
+# `blkid -t TYPE=vfat` lists every vfat filesystem attached to the machine, and
+# nearly every USB stick in existence is vfat. Taken at face value that means a
+# stick left in the machine before boot gets to:
+#
+#   - supply `sysentinel/faces.json`, the template database this hook uses to
+#     decide WHOSE face is at the keyboard, so an attacker can enrol their own
+#     face as the owner's; and
+#   - receive the marker and the photograph, so the picture of whoever unlocked
+#     the disk goes home in their pocket.
+#
+# Removable media is refused. `/sys/class/block/<disk>/removable` is the same
+# question the daemon asks in daemon/src/esp.rs, and not being able to answer
+# counts as removable: "I could not tell" is not a reason to hand over the
+# owner's face.
+_is_fixed_media() {
+    local dev name base
+    dev="$1"
+    name=${dev#/dev/}
+    [ -e "/sys/class/block/$name" ] || return 1
+    if [ -e "/sys/class/block/$name/partition" ]; then
+        base=$(basename "$(readlink -f "/sys/class/block/$name/.." 2>/dev/null)" 2>/dev/null)
+    else
+        base=$name
+    fi
+    [ -n "$base" ] || return 1
+    [ "$(cat "/sys/class/block/$base/removable" 2>/dev/null)" = "0" ] || return 1
+    return 0
+}
+
+# A real ESP carries an EFI directory. Checked once it is reachable.
+_has_efi_dir() {
+    [ -d "$1/EFI" ] || [ -d "$1/efi" ]
+}
+
 # Is this device already mounted? prints its mountpoint ("" if not).
 _existing_mountpoint() {
     mount 2>/dev/null | awk -v d="$1" '$1 == d { print $3; exit }'
@@ -117,8 +153,9 @@ main() {
     for i in 1 2 3 4 5 6 7 8 9 10; do
         [ "$wrote" -gt 0 ] && break
         for dev in $(blkid -t TYPE=vfat -o device 2>/dev/null); do
+            _is_fixed_media "$dev" || continue
             mp=$(_existing_mountpoint "$dev")
-            if [ -n "$mp" ]; then
+            if [ -n "$mp" ] && _has_efi_dir "$mp"; then
                 if [ "$photo" != none ] && [ "$face" = none ] && [ -r "$mp/sysentinel/faces.json" ]; then
                     read -r face face_score <<-EOF
 					$(_identify "$out" "$mp/sysentinel/faces.json")
@@ -132,6 +169,10 @@ main() {
                 fi
                 [ "$was_ro" = 1 ] && mount -o remount,ro "$dev" 2>/dev/null || true
             elif mount -o rw "$dev" /run/sysentinel-cam/mnt 2>/dev/null; then
+                if ! _has_efi_dir /run/sysentinel-cam/mnt; then
+                    umount /run/sysentinel-cam/mnt 2>/dev/null || true
+                    continue
+                fi
                 if [ "$photo" != none ] && [ "$face" = none ] && [ -r "/run/sysentinel-cam/mnt/sysentinel/faces.json" ]; then
                     read -r face face_score <<-EOF
 					$(_identify "$out" "/run/sysentinel-cam/mnt/sysentinel/faces.json")

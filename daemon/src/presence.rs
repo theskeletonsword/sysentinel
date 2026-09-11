@@ -292,10 +292,13 @@ fn parse_input_devices(raw: &str) -> Vec<InputDevice> {
             }
             "N" => {
                 if let Some(d) = cur.as_mut() {
-                    d.name = rest
-                        .trim_start_matches("Name=")
-                        .trim_matches('"')
-                        .to_string();
+                    // The name is a string in the device's own USB descriptor.
+                    // A device that lies about being a keyboard will not be
+                    // honest about its name either, and this one goes into an
+                    // alert, a log line and an LLM prompt.
+                    d.name = crate::safetext::label(
+                        rest.trim_start_matches("Name=").trim_matches('"'),
+                    );
                 }
             }
             "H" => {

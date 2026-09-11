@@ -84,28 +84,67 @@ class ChatActivity : AppCompatActivity() {
         //   adb shell am start -n org.sysentinel.app/.ChatActivity \
         //     -e host 10.0.0.5 -e port 8443 -e key <64 hex>
         //
-        // This runs even when already paired, so the ADDRESS can be corrected
-        // later without re-pairing — the machine moved, or you are on the VPN
-        // now instead of the LAN. Pass host (and port) with no key for that.
-        applyPairingFromIntent()
+        // It also accepts a host with no key, to correct the ADDRESS after the
+        // machine moves (LAN today, VPN from abroad tomorrow) without
+        // re-pairing. Both go through a confirmation first — see below.
+        offerPairingFromIntent()
     }
 
     /**
-     * Accept pairing details from the launch intent, for adb setup.
+     * Offer to apply pairing details from the launch intent — never apply them
+     * silently.
      *
-     * A key is required to pair, but not to move: once this handset is paired,
-     * a host on its own re-points it at the same machine on a different route
-     * (LAN today, VPN from abroad tomorrow) and leaves the key alone.
+     * # Why there is a dialog in the middle of an adb convenience
+     *
+     * This activity is `exported` because it is the launcher activity, which
+     * means *any* app on the phone can start it with extras of its own
+     * choosing. Applied without asking, `-e host attacker.example` would
+     * quietly re-point this handset at somebody else's machine — every alert
+     * and every command going to them instead — and with a `key` it would pair
+     * outright. An adb setup step that costs one tap is still a convenience; a
+     * silent takeover by any installed app is not a trade worth making.
+     *
+     * The dialog shows the address, so the answer is visible rather than
+     * implied.
      */
-    private fun applyPairingFromIntent() {
+    private fun offerPairingFromIntent() {
         val host = intent?.getStringExtra("host")
         if (host.isNullOrBlank()) return
         val key = intent?.getStringExtra("key")
         val keyed = PhoneLink.parseKey(key ?: "") != null
+        // A key is required to pair; a bare host only moves an existing
+        // pairing to a new route.
         if (!keyed && !pairing.isPaired) return
-        pairing.host = host
-        pairing.port = intent?.getStringExtra("port")?.toIntOrNull() ?: pairing.port
-        if (keyed) pairing.keyHex = key!!
+        val port = intent?.getStringExtra("port")?.toIntOrNull() ?: pairing.port
+
+        val what = if (keyed) {
+            "Vincular este teléfono con $host:$port\n\ny guardar la clave que viene en la orden."
+        } else {
+            "Cambiar la dirección del equipo a $host:$port\n\nLa clave y el vínculo no se tocan."
+        }
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("¿Fuiste tú?")
+            .setMessage(
+                "$what\n\nEsto llegó en la orden con la que se abrió la app. Si no " +
+                    "acabas de hacerlo tú desde un PC, di que no."
+            )
+            .setCancelable(false)
+            .setNegativeButton("No") { d, _ ->
+                // Do not keep offering it every time the app is reopened.
+                intent?.removeExtra("host")
+                intent?.removeExtra("key")
+                d.dismiss()
+            }
+            .setPositiveButton("Sí, fui yo") { d, _ ->
+                pairing.host = host
+                pairing.port = port
+                if (keyed) pairing.keyHex = key!!
+                intent?.removeExtra("host")
+                intent?.removeExtra("key")
+                d.dismiss()
+                engine.start(listener)
+            }
+            .show()
     }
 
     override fun onStart() {

@@ -849,7 +849,7 @@ fn serve(
     // The version string comes off the wire. It is written to a log an
     // operator reads, so it is trimmed to something that cannot forge a log
     // line with its own newlines.
-    log::info!("phone: authenticated client (app {})", sanitise_for_log(&app_version));
+    log::info!("phone: authenticated client (app {})", crate::safetext::label(&app_version));
 
     let queued = queue.lock().expect("phone queue").len();
     let host = std::fs::read_to_string("/proc/sys/kernel/hostname")
@@ -1000,25 +1000,7 @@ fn unreadable_profile_placeholder() -> crate::phonehome::PhoneProfile {
         model: "?".to_string(),
         manufacturer: "?".to_string(),
         paired_at_unix: 0,
-    }
-}
-
-/// Make a string from the wire safe to put in a log line.
-///
-/// Anything a peer controls that ends up in a log can forge log entries: a
-/// newline plus a plausible-looking timestamp is all it takes to write a line
-/// an operator will read as the daemon's own. Control characters go, and the
-/// length is capped, because the only legitimate value here is a version.
-fn sanitise_for_log(s: &str) -> String {
-    let cleaned: String = s
-        .chars()
-        .filter(|c| !c.is_control())
-        .take(32)
-        .collect();
-    if cleaned.is_empty() {
-        "?".to_string()
-    } else {
-        cleaned
+        signing_proven: false,
     }
 }
 
@@ -1089,6 +1071,9 @@ fn identify_handset(
                 model: model.to_string(),
                 manufacturer: manufacturer.to_string(),
                 paired_at_unix: now_unix(),
+                // Nothing has been signed with it yet beyond the pairing
+                // challenge; the stronger confirmation rule waits until it has.
+                signing_proven: false,
             };
             let detail = profile.describe();
             match phonehome::save(profile_path, &profile) {
@@ -1274,12 +1259,11 @@ mod tests {
         // Whatever the far side says about itself ends up in a log an operator
         // reads. A newline there is a forged entry.
         let nasty = "1.0\n2026-09-11 03:14 ERROR phone: pairing revoked by owner";
-        let safe = sanitise_for_log(nasty);
+        let safe = crate::safetext::label(nasty);
         assert!(!safe.contains('\n'), "{safe}");
         assert!(safe.starts_with("1.0"), "{safe}");
-        assert!(safe.len() <= 32, "{safe}");
-        assert_eq!(sanitise_for_log(""), "?");
-        assert_eq!(sanitise_for_log("0.1.0"), "0.1.0");
+        assert_eq!(crate::safetext::label(""), "?");
+        assert_eq!(crate::safetext::label("0.1.0"), "0.1.0");
     }
 
     #[test]

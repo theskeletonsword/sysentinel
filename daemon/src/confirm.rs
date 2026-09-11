@@ -97,8 +97,10 @@ impl ConfirmMethod {
     /// The policy hook for the duress case in [`crate::facenn`]: when the
     /// camera has just seen the owner with strangers, a typed code is exactly
     /// the wrong proof, because it is what somebody standing there can demand
-    /// out loud. Consumed by the phone client; exercised by the tests below.
-    #[allow(dead_code)]
+    /// out loud.
+    ///
+    /// Enforced in `bot.rs`: once the paired handset has proved it can sign,
+    /// a typed code stops clearing the bar for anything irreversible.
     pub fn proves_presence(&self) -> bool {
         matches!(self, ConfirmMethod::Tee | ConfirmMethod::StrongBox)
     }
@@ -180,7 +182,8 @@ impl Confirmation {
 
     /// Whether it clears `required`. The bar for an operation is set by policy;
     /// this is how a confirmation is measured against it.
-    #[allow(dead_code)]
+    #[allow(dead_code)] // measured in the tests; the live gate asks
+                        // `proves_presence` directly
     pub fn satisfies(&self, required: ConfirmMethod) -> bool {
         self.effective() >= required
     }

@@ -328,6 +328,30 @@ enum ControlKind {
 }
 
 impl ControlKind {
+    /// Whether this is the kind of order that should require the owner to be
+    /// *there*, not merely to know a code.
+    ///
+    /// Every one of these is irreversible from the owner's side: the machine
+    /// goes down, or a control register changes under a running kernel. A
+    /// `CONFIRM-XXXXXX` typed into a chat is the floor of
+    /// [`crate::confirm::ConfirmMethod`] precisely because it survives being
+    /// read over a shoulder or demanded out loud — which is the situation
+    /// where somebody wants your machine off.
+    fn wants_presence(&self) -> bool {
+        // All of them, today. Written as a match rather than `true` so that
+        // adding a reversible control later is a decision someone has to make
+        // here, in front of the reasoning, instead of inheriting it.
+        match self {
+            ControlKind::Reboot
+            | ControlKind::PowerOff
+            | ControlKind::TripleFaultRestart
+            | ControlKind::TripleFaultShutdown
+            | ControlKind::KernelPanic
+            | ControlKind::Cr0Wp(_)
+            | ControlKind::SetCr(_, _) => true,
+        }
+    }
+
     /// Human-readable label used in confirmation prompts and logs.
     fn label(&self) -> String {
         match self {
@@ -1035,12 +1059,34 @@ impl CommandBot {
                 armed
             };
             if let Some(p) = control {
-                // Record what actually backed this. Today that is always a
-                // typed code, which is replayable by anyone the owner said it
-                // to — the audit trail should say so rather than logging a
-                // bare "confirmed". A phone-backed confirmation will land here
-                // with a stronger method and no other change.
+                // A typed code is the floor of the ladder in `confirm.rs`, and
+                // until now that ladder was computed, logged and never
+                // consulted. It is consulted here.
                 let proof = crate::confirm::Confirmation::one_time_code();
+                if p.kind.wants_presence() && self.signature_required() {
+                    log::warn!(
+                        "bot: refusing a typed-code confirmation for {:?} — this \
+                         handset can sign, so the code is not enough",
+                        p.kind
+                    );
+                    let _ = self.send(
+                        chat_id,
+                        &format!(
+                            "🔒 «{}» necesita tu huella, no un código.\n\n\
+                             Un código se lee por encima del hombro y se puede \
+                             exigir en voz alta; una firma desde el elemento \
+                             seguro de TU teléfono, no. Confirma desde la app y \
+                             listo.\n\n\
+                             (La orden sigue armada.)",
+                            p.kind.label()
+                        ),
+                    );
+                    // Put it back: refusing the weaker proof must not cancel
+                    // the order the owner actually gave.
+                    let mut guard = self.state.lock().expect("bot state mutex");
+                    guard.pending_control = Some(p);
+                    return true;
+                }
                 log::warn!(
                     "bot: control {:?} confirmed (chat={chat_id}) — {}",
                     p.kind,
@@ -1244,12 +1290,34 @@ impl CommandBot {
                 armed
             };
             if let Some(p) = control {
-                // Record what actually backed this. Today that is always a
-                // typed code, which is replayable by anyone the owner said it
-                // to — the audit trail should say so rather than logging a
-                // bare "confirmed". A phone-backed confirmation will land here
-                // with a stronger method and no other change.
+                // A typed code is the floor of the ladder in `confirm.rs`, and
+                // until now that ladder was computed, logged and never
+                // consulted. It is consulted here.
                 let proof = crate::confirm::Confirmation::one_time_code();
+                if p.kind.wants_presence() && self.signature_required() {
+                    log::warn!(
+                        "bot: refusing a typed-code confirmation for {:?} — this \
+                         handset can sign, so the code is not enough",
+                        p.kind
+                    );
+                    let _ = self.send(
+                        chat_id,
+                        &format!(
+                            "🔒 «{}» necesita tu huella, no un código.\n\n\
+                             Un código se lee por encima del hombro y se puede \
+                             exigir en voz alta; una firma desde el elemento \
+                             seguro de TU teléfono, no. Confirma desde la app y \
+                             listo.\n\n\
+                             (La orden sigue armada.)",
+                            p.kind.label()
+                        ),
+                    );
+                    // Put it back: refusing the weaker proof must not cancel
+                    // the order the owner actually gave.
+                    let mut guard = self.state.lock().expect("bot state mutex");
+                    guard.pending_control = Some(p);
+                    return true;
+                }
                 log::warn!(
                     "bot: control {:?} confirmed (chat={chat_id}) — {}",
                     p.kind,
@@ -2640,6 +2708,23 @@ PMU).";
     ///
     /// The nonce still has to match the armed control and still expires, so a
     /// signature captured from an earlier confirmation buys nothing.
+    /// Whether a typed code has stopped being enough for an irreversible order.
+    ///
+    /// True only once the paired handset has actually produced a signature, so
+    /// a phone with no biometric enrolled — or one whose Keystore key did not
+    /// survive a system update — can never lock the owner out of their own
+    /// machine. Raising the bar is worth nothing if it can strand the person
+    /// it is protecting.
+    fn signature_required(&self) -> bool {
+        let profile = crate::phonehome::profile_path(&self.config.phone.queue_path);
+        match crate::phonehome::load(&profile) {
+            Ok(Some(p)) => p.signing_proven,
+            // Unreadable: the connection layer already refuses commands in
+            // that state, so this is belt and braces rather than the gate.
+            Ok(None) | Err(_) => false,
+        }
+    }
+
     pub fn confirm_by_signature(&self, nonce: &str, signature: &[u8]) -> Result<String> {
         let profile = crate::phonehome::profile_path(&self.config.phone.queue_path);
         // An unreadable profile fails the confirmation rather than passing it:
@@ -2678,6 +2763,10 @@ PMU).";
             control.kind,
             proof.audit_line()
         );
+        // This handset has now demonstrated it can sign, which is what
+        // switches on the "a typed code is not enough" rule. Recorded only
+        // after a signature actually verified.
+        crate::phonehome::mark_signing_proven(&profile);
         let label = control.kind.label().to_string();
         self.execute_control(0, control);
         Ok(format!("{label} — {}", proof.audit_line()))
@@ -3917,6 +4006,27 @@ mod tests {
 
 
 
+
+    #[test]
+    fn every_irreversible_control_wants_a_present_human() {
+        // The ladder in confirm.rs was computed, logged, and never consulted.
+        // It is consulted now, and this is the list it is consulted about:
+        // each of these takes the machine down or writes a control register
+        // under a running kernel, and none of them can be undone by the owner
+        // afterwards.
+        for kind in [
+            ControlKind::Reboot,
+            ControlKind::PowerOff,
+            ControlKind::TripleFaultRestart,
+            ControlKind::TripleFaultShutdown,
+            ControlKind::KernelPanic,
+            ControlKind::Cr0Wp(false),
+            ControlKind::Cr0Wp(true),
+            ControlKind::SetCr(3, 0),
+        ] {
+            assert!(kind.wants_presence(), "{kind:?} should want a present owner");
+        }
+    }
 
     #[test]
     fn confirmation_phrases() {

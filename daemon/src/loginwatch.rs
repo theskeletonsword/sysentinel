@@ -161,13 +161,24 @@ fn read_exact_rec(f: &mut std::fs::File, rec: &mut libc::utmpx, len: usize) -> u
     filled
 }
 
+/// One NUL-terminated utmp field, as something safe to show.
+///
+/// `ut_host` is whatever the far end of an SSH session called itself, so these
+/// are not the machine's own words: a newline in there forges a log line, and
+/// a terminal escape rewrites the one above it. See [`crate::safetext`].
 fn cstr(arr: &[libc::c_char]) -> String {
     let bytes: Vec<u8> = arr
         .iter()
         .take_while(|&&c| c != 0)
         .map(|&c| c as u8)
         .collect();
-    String::from_utf8_lossy(&bytes).into_owned()
+    let raw = String::from_utf8_lossy(&bytes).into_owned();
+    if raw.is_empty() {
+        // An empty field is normal (a local login has no host) and must stay
+        // empty rather than becoming a literal "?".
+        return raw;
+    }
+    crate::safetext::label(&raw)
 }
 
 fn user_name(rec: &libc::utmpx) -> String {
