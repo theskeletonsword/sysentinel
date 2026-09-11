@@ -8,6 +8,7 @@ import androidx.activity.compose.setContent
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -115,7 +116,11 @@ private fun ChatScreen(
 
     Scaffold(
         containerColor = Ground,
-        topBar = { IdentityBar(identity, status, statusOk) },
+        topBar = {
+            IdentityBar(identity, status, statusOk, pairing.host, pairing.port) {
+                showPairing = true
+            }
+        },
         bottomBar = {
             Composer(
                 draft = draft,
@@ -147,12 +152,22 @@ private fun ChatScreen(
 /**
  * The header states what this handset can actually prove, not what it wishes
  * it could. A phone with no secure element says so plainly.
+ *
+ * It also shows the address it is dialing, and lets you tap it to change it.
+ * That matters away from home: the pairing is between this handset and that
+ * machine and does not expire, but the *route* to the machine does change —
+ * the LAN address you scanned in the living room is not reachable from another
+ * country. Editing the address is not re-pairing; the key and the device
+ * identity stay exactly as they were.
  */
 @Composable
 private fun IdentityBar(
     identity: DeviceIdentity.Identity,
     status: String,
     statusOk: Boolean,
+    host: String,
+    port: Int,
+    onEditAddress: () -> Unit,
 ) {
     val (label, colour) = when (identity.backing) {
         DeviceIdentity.Backing.STRONGBOX ->
@@ -177,6 +192,12 @@ private fun IdentityBar(
             status,
             color = if (statusOk) Color(0xFF4ADE80) else Color(0xFFF87171),
             fontSize = 11.sp,
+        )
+        Text(
+            "equipo: $host:$port · cambiar",
+            color = Accent,
+            fontSize = 10.sp,
+            modifier = Modifier.clickable { onEditAddress() },
         )
     }
 }
@@ -223,7 +244,10 @@ private fun PairingScreen(pairing: Pairing, onDone: () -> Unit) {
         Text("Emparejar", color = Accent, fontSize = 22.sp)
         Text(
             "Conexión directa con tu equipo: no hay relay ni servidor de por medio. " +
-                "Tienen que verse en la misma red, o a través de tu VPN.",
+                "La primera vez, ponte en el mismo WiFi que el PC y escanea su QR. " +
+                "Después da igual dónde estés: el vínculo no caduca, sólo hace falta " +
+                "que puedas llegar al equipo — misma red, o tu VPN. Si cambia la " +
+                "dirección, corrígela aquí; no hay que volver a emparejar.",
             color = Color(0xFF6B7C8F),
             fontSize = 12.sp,
         )

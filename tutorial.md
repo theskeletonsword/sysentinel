@@ -57,19 +57,30 @@ conectado directo contra el daemon. Compila e instala el APK antes de seguir,
 para tenerlo a mano cuando aparezca el QR de pareo:
 
 ```sh
-cd gui/android
-./gradlew assembleModernRelease        # armv8a, GUI moderna
-./gradlew assembleLegacyRelease        # armeabi-v7a, GUI clásica
-adb install -r app/build/outputs/apk/modern/release/app-modern-release.apk
+make apk-release          # las dos variantes, desde la raíz del repo
+# o, con más control:
+cd gui/android && gradle assembleModernRelease   # armv8a, GUI moderna
+cd gui/android && gradle assembleLegacyRelease   # armeabi-v7a, GUI clásica
+
+adb install -r gui/android/app/build/outputs/apk/modern/release/app-modern-release.apk
 ```
 
-Firma de release: `gui/android/keystore.properties` (fuera de git) apunta a tu
-`.jks`. Sin ese archivo Gradle produce un APK sin firmar.
+Necesita un JDK, el Android SDK y **Gradle 9+** (el 8 no sabe leer Java 25).
+No hay wrapper en el repo: usa tu `gradle`, o `make apk-release`, que es lo
+mismo con `GRADLE=` configurable.
 
-> El teléfono tiene que poder ALCANZAR esta máquina. En tu LAN funciona tal
-> cual; desde fuera necesitas un camino que pongas tú (WireGuard, Tailscale,
-> una VPN a casa). Sin eso el daemon encola las alertas y las entrega cuando
-> vuelvas a estar en alcance — no las pierde.
+Firma de release: `gui/android/keystore.properties` (fuera de git) apunta a tu
+`.jks`. Sin ese archivo los APK salen SIN firmar y `apksigner` te lo dirá.
+
+> **Enlazar y alcanzar son dos cosas distintas.** Enlazar se hace UNA vez, en
+> casa, con el móvil en el mismo WiFi que el PC (sección 6). A partir de ahí el
+> vínculo no caduca y no depende de la red: da igual que estés en Italia, en
+> España o en Marte, sigue siendo tu PC. Lo que sí cambia con el sitio es si el
+> móvil puede ALCANZAR la máquina: en tu red funciona tal cual, y desde fuera
+> necesitas un camino que pongas tú (WireGuard o Tailscale — y si pones `bind`
+> en la dirección de la VPN, la misma dirección vale en casa y fuera, así que
+> no tocas nada al viajar). Sin camino, el daemon encola las alertas y te las
+> entrega enteras al reconectar: no las pierde.
 
 ---
 
@@ -269,6 +280,16 @@ journalctl -u sysentinel -f
    - `/resetcontext` → limpia `context.txt` (contexto de conversación).
    - `/unpair` → olvida el teléfono registrado.
    - Cualquier mensaje de texto → consulta al LLM con memoria + conversación.
+
+5. **Ya está, para siempre.** Desde ese momento puedes irte donde quieras: el
+   enlace es entre ESTA máquina y ESE teléfono, no entre dos direcciones IP.
+   Si la dirección cambia (estás fuera y entras por la VPN), corrígela en la
+   app — toca `equipo: …` en la cabecera — y sigue todo igual; no se vuelve a
+   emparejar. En la variante `legacy` (armeabi-v7a) eso se hace por adb:
+
+   ```sh
+   adb shell am start -n org.sysentinel.app/.ChatActivity -e host 100.101.102.103 -e port 8443
+   ```
 
 Quien vea la pantalla del QR puede leer la clave: por eso deja de bastar en
 cuanto hay un móvil registrado. Las acciones privilegiadas piden tu huella o

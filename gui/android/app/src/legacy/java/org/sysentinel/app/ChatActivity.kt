@@ -79,24 +79,33 @@ class ChatActivity : AppCompatActivity() {
             }
         }
 
-        if (!pairing.isPaired) {
-            // No pairing screen on this face: the key is long and typing it on
-            // an old handset is miserable. Set it once on a desktop with adb:
-            //   adb shell am start -n org.sysentinel.app/.ChatActivity \
-            //     -e host 10.0.0.5 -e port 8443 -e key <64 hex>
-            applyPairingFromIntent()
-        }
+        // No pairing screen on this face: the key is long and typing it on an
+        // old handset is miserable. Set it once from a desktop with adb:
+        //   adb shell am start -n org.sysentinel.app/.ChatActivity \
+        //     -e host 10.0.0.5 -e port 8443 -e key <64 hex>
+        //
+        // This runs even when already paired, so the ADDRESS can be corrected
+        // later without re-pairing — the machine moved, or you are on the VPN
+        // now instead of the LAN. Pass host (and port) with no key for that.
+        applyPairingFromIntent()
     }
 
-    /** Accept pairing details from the launch intent, for adb setup. */
+    /**
+     * Accept pairing details from the launch intent, for adb setup.
+     *
+     * A key is required to pair, but not to move: once this handset is paired,
+     * a host on its own re-points it at the same machine on a different route
+     * (LAN today, VPN from abroad tomorrow) and leaves the key alone.
+     */
     private fun applyPairingFromIntent() {
         val host = intent?.getStringExtra("host")
+        if (host.isNullOrBlank()) return
         val key = intent?.getStringExtra("key")
-        if (!host.isNullOrBlank() && PhoneLink.parseKey(key ?: "") != null) {
-            pairing.host = host
-            pairing.port = intent?.getStringExtra("port")?.toIntOrNull() ?: 8443
-            pairing.keyHex = key!!
-        }
+        val keyed = PhoneLink.parseKey(key ?: "") != null
+        if (!keyed && !pairing.isPaired) return
+        pairing.host = host
+        pairing.port = intent?.getStringExtra("port")?.toIntOrNull() ?: pairing.port
+        if (keyed) pairing.keyHex = key!!
     }
 
     override fun onStart() {

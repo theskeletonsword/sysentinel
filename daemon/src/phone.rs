@@ -10,12 +10,27 @@
 //! who talked to whom and when.
 //!
 //! It costs something, and pretending otherwise would be worse than the
-//! problem: **the relay is what made the phone reachable from anywhere.** This is a direct connection. On a LAN it works; across the
-//! internet it needs a path you supply — WireGuard, Tailscale, a VPN home.
-//! Without one, the daemon can queue but not deliver while the owner is out,
-//! which is exactly when a machine is most likely to be touched. That is the
-//! honest trade: a third party you must trust, in exchange for reachability you
-//! would otherwise arrange yourself.
+//! problem: **the relay is what made the phone reachable from anywhere.** This
+//! is a direct connection, so reachability is now the owner's to arrange —
+//! WireGuard, Tailscale, a VPN home. Without one the daemon queues but cannot
+//! deliver while the owner is out, which is exactly when a machine is most
+//! likely to be touched.
+//!
+//! # Pairing once, reachable afterwards
+//!
+//! Those two things are separate, and conflating them confuses everyone who
+//! sets this up. **Pairing** happens once, on the same network as the machine:
+//! scan the QR, the handset registers a key its TEE holds, and from then on
+//! this daemon speaks to *that* handset and refuses every other one. It does
+//! not expire, and it is not a property of the network it was done on.
+//!
+//! **Reachability** is the separate question of whether the phone can open a
+//! socket to this machine right now — and that does change with the network.
+//! The address in the QR is whatever `bind` says, carried verbatim, so a LAN
+//! address pairs fine at home and is unreachable from another country. Binding
+//! to a VPN address instead makes the one address work from both, which is why
+//! the config recommends it; the app can also be re-pointed by hand, which
+//! changes where it dials and leaves the pairing alone.
 //!
 //! # The queue is the point
 //!

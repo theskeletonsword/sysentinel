@@ -333,22 +333,52 @@ timeout = 10
 # máquina no alcanza y no necesita a un tercero para entregar un mensaje.
 
 # ── [phone] ─────────────────────────────────────────────────────────────────
-# El único canal: la app del teléfono, conectada directo.
+# El único canal: la app del teléfono, conectada directo contra esta máquina.
 #
 # Qué gana: no hay token al portador que hable por la máquina si se filtra, no
 # hay endpoint que un desconocido alcance (y sea rechazado sólo DESPUÉS de
 # llegar), y no hay un tercero que vea quién habló con quién y cuándo.
 #
-# Qué cuesta, y conviene saberlo antes: un relay ajeno era lo que hacía al
-# teléfono alcanzable desde cualquier parte. Esto es una conexión directa.
-# En tu LAN funciona; a través de internet necesita un camino que pongas tú —
-# WireGuard, Tailscale, una VPN a casa. Sin eso el daemon encola pero no
-# entrega mientras estás fuera, que es justo cuando más probable es que alguien
-# toque el equipo. Ese es el trato honesto.
 #
-# Las alertas se escriben a disco ANTES de intentar entregarlas y sólo se
-# borran cuando el teléfono las confirma, así que "no había nadie escuchando"
-# retrasa una alerta en vez de destruirla.
+# CÓMO SE ENLAZA (se hace UNA vez, en casa)
+# ─────────────────────────────────────────
+#   1. Pon el teléfono en el MISMO WiFi que el PC.
+#   2. `bind` = la IP de este PC en esa red, con puerto:  "192.168.1.5:8443"
+#      (mírala con `ip -4 addr` o `hostname -I`).
+#   3. Arranca el daemon: dibuja un QR en la consola. Escanéalo con la app.
+#   4. La app genera una llave DENTRO del TEE del teléfono (StrongBox/Titan si
+#      el modelo lo tiene) y la registra. Hecho.
+#
+# A partir de ahí el vínculo es entre ESTA máquina y ESE teléfono. No caduca,
+# no hay que repetirlo, y no depende de la red: ya estés en el sofá, en Italia,
+# en España o en Marte, hablas con tu PC igual. Lo único que hace falta es que
+# el móvil pueda ALCANZAR la máquina — y eso es ruta, no emparejamiento.
+#
+#
+# CÓMO SE ALCANZA DESDE FUERA (elige uno)
+# ───────────────────────────────────────
+#   a) MISMA RED (casa, oficina): nada que hacer. Funciona tal cual.
+#
+#   b) VPN — WireGuard o Tailscale. ES LA BUENA, y no por purismo: la
+#      dirección de la VPN es LA MISMA en casa y desde Marte. Pon `bind` en
+#      esa dirección (p. ej. la 100.x.y.z de Tailscale) y el QR que escaneaste
+#      en el sofá sigue sirviendo desde otro continente, sin tocar nada.
+#      Además el puerto no queda expuesto a internet: sólo lo ve tu VPN.
+#
+#   c) Port forward en el router + DDNS. Funciona, pero deja este puerto a la
+#      vista de internet entero. Entrar no entran (sin la clave y sin la firma
+#      del móvil registrado no pasan del primer frame), pero van a tocarlo, y
+#      te estás jugando la superficie a que el parseo del primer frame no
+#      tenga un fallo. Si puedes, (b).
+#
+# ¿Y si ya emparejaste con la IP de casa y te vas de viaje? No hay que volver
+# a emparejar: en la app se edita host y puerto a mano. La clave y la identidad
+# del teléfono siguen valiendo — lo que cambia es a dónde marca.
+#
+# Y si en algún momento no hay ruta (avión, sin datos, VPN caída): las alertas
+# se escriben a disco ANTES de intentar entregarlas y sólo se borran cuando el
+# teléfono las confirma. "No había nadie escuchando" retrasa una alerta, no la
+# destruye: te llegan enteras al reconectar.
 #
 # Ojo: esto hace que un daemon con privilegios escuche en un socket. Es una
 # superficie que antes no existía. Por eso está apagado, y por eso `bind` no
@@ -357,21 +387,23 @@ timeout = 10
 
 [phone]
 enabled = false
-# bind: la dirección por la que el TELÉFONO te ve. No pongas 0.0.0.0 aquí: es
-# una dirección de escucha, no un destino, y el QR la lleva tal cual — el móvil
-# no sabría a dónde marcar. El daemon te avisa si lo detecta.
-# bind = "10.0.0.5:8443"
+# bind: la dirección por la que el TELÉFONO te ve, no "por dónde escucho".
+# No pongas 0.0.0.0: el QR lleva esa cadena tal cual y el móvil no sabría a
+# dónde marcar. El daemon te avisa si lo detecta.
+#   LAN:        bind = "192.168.1.5:8443"
+#   Tailscale:  bind = "100.101.102.103:8443"   ← la misma desde cualquier país
+# bind = "192.168.1.5:8443"
 # pairing_key: arranca sin ella y el daemon te genera una.
 # pairing_key = "…64 hex…"
 #
-# EMPAREJAR: sin teléfono registrado, el daemon dibuja un QR en la consola al
-# arrancar. Escanéalo desde la app y listo — nadie teclea 64 hexadecimales.
-# `/pair` lo vuelve a mostrar (en la consola del equipo, nunca por el canal:
-# mandar la clave por el canal que esa clave abre sería justo al revés).
+# EMPAREJAR: sin teléfono registrado, el daemon dibuja el QR en la consola al
+# arrancar. `/pair` lo vuelve a mostrar (en la consola del equipo, nunca por el
+# canal: mandar la clave por el canal que esa clave abre sería justo al revés).
 #
 # Quien vea esa pantalla puede leer la clave. Por eso deja de bastar en cuanto
 # hay un teléfono registrado: a partir de ahí el equipo exige además la firma
-# de ESE móvil, y rechaza la conexión de cualquier otro.
+# de ESE móvil, y rechaza la conexión de cualquier otro — aunque sea el mismo
+# modelo.
 queue_capacity = 500
 queue_path = "/var/lib/sysentinel/phone-queue.json"
 
