@@ -359,11 +359,37 @@ timeout = 10
 # ───────────────────────────────────────
 #   a) MISMA RED (casa, oficina): nada que hacer. Funciona tal cual.
 #
-#   b) VPN — WireGuard o Tailscale. ES LA BUENA, y no por purismo: la
+#   b) VPN — Tailscale o WireGuard. ES LA BUENA, y no por purismo: la
 #      dirección de la VPN es LA MISMA en casa y desde Marte. Pon `bind` en
-#      esa dirección (p. ej. la 100.x.y.z de Tailscale) y el QR que escaneaste
-#      en el sofá sigue sirviendo desde otro continente, sin tocar nada.
-#      Además el puerto no queda expuesto a internet: sólo lo ve tu VPN.
+#      esa dirección y el QR que escaneaste en el sofá sigue sirviendo desde
+#      otro continente, sin tocar nada. Además el puerto no queda expuesto a
+#      internet: sólo existe dentro de tu red privada, así que los escaneos de
+#      internet no lo ven siquiera. Y funciona bajo CGNAT, igual que el túnel,
+#      porque la conexión también sale desde aquí.
+#
+#      Con Tailscale, entero:
+#
+#        # en el PC y en el teléfono (app de Tailscale), con la MISMA cuenta:
+#        sudo tailscale up
+#        tailscale ip -4            # => 100.101.102.103  ← esta va en bind
+#
+#        bind = "100.101.102.103:8443"
+#
+#      Con MagicDNS puedes poner el nombre en `advertise` si prefieres leerlo
+#      ("mi-pc.tailnet-1234.ts.net:8443"); `bind` sigue siendo la IP, que es
+#      lo que esta máquina tiene de verdad.
+#
+#      Arranque: la 100.x no existe hasta que tailscaled está arriba, así que
+#      el daemon espera hasta un minuto a que aparezca antes de rendirse (y el
+#      unit ya va detrás de tailscaled.service). Si lo ves quejarse de que la
+#      dirección no existe, es eso.
+#
+#      Lo que cuesta, porque también lo tiene: Tailscale coordina las claves
+#      con un servidor suyo. El tráfico NO pasa por ahí (es WireGuard punto a
+#      punto, y si no hay ruta directa el relay DERP sólo ve cifrado), pero
+#      ese servidor sabe qué equipos tienes, cómo se llaman y cuándo se
+#      conectan. Si eso te sobra, WireGuard a pelo no tiene coordinador, y
+#      Headscale es el plano de control de Tailscale hecho en tu casa.
 #
 #   c) Port forward en el router + DDNS. Funciona perfectamente y no depende
 #      de nadie: tu router, tu nombre, tu casa. Es lo que hay que montar:

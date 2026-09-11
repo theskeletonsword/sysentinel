@@ -79,8 +79,11 @@ Firma de release: `gui/android/keystore.properties` (fuera de git) apunta a tu
 > móvil puede ALCANZAR la máquina: en tu red funciona tal cual, y desde fuera
 > necesitas un camino que pongas tú, y hay tres que funcionan:
 >
-> - **VPN** (WireGuard/Tailscale): pon `bind` en la dirección de la VPN y esa
->   misma dirección vale en casa y fuera, así que no tocas nada al viajar.
+> - **VPN** (Tailscale/WireGuard) — la recomendada: `sudo tailscale up` en el
+>   PC y la app de Tailscale en el móvil con la misma cuenta, `tailscale ip -4`
+>   te da la `100.x` y esa va en `bind`. Esa misma dirección vale en casa y
+>   fuera, así que no tocas nada al viajar, y el puerto no existe fuera de tu
+>   red privada. Funciona también bajo CGNAT.
 > - **Port forward + DDNS**: `bind` en la IP de la LAN y
 >   `advertise = "casa.duckdns.org:45678"` (el puerto EXTERNO del router). Ojo
 >   con el *hairpin NAT*: en muchos routers esto funciona desde la calle y

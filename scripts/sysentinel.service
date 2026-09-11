@@ -3,6 +3,13 @@
 Description=sysentinel — kernel log watchdog + interactive AI companion
 After=network-online.target
 Wants=network-online.target
+# If [phone] bind names a VPN address, that interface has to exist before the
+# daemon can listen on it. These order us after the usual suspects when they
+# are installed and are inert when they are not (neither is pulled in by a
+# Wants=). The daemon also waits a minute for the address on its own, so this
+# is belt and braces rather than the only defence.
+After=tailscaled.service
+After=wg-quick@wg0.service
 
 [Service]
 Type=simple

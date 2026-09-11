@@ -494,19 +494,8 @@ pub fn start(
 
     // Bind here, not inside the thread. The doc above promises this fails
     // loudly, and a listener opened after `start` returns can only log into a
-    // void: the owner would read "phone channel up" and be wrong. `bind` is a
-    // local interface, and the mistakes are always the same two — a DDNS name
-    // or the public IP of the router, neither of which is an address this
-    // machine holds — so the error says where those belong instead.
-    let listener = TcpListener::bind(&bind).map_err(|e| {
-        anyhow::anyhow!(
-            "phone: cannot listen on {bind}: {e}\n\
-             `bind` es una interfaz LOCAL de esta máquina (mírala con `ip -4 \
-             addr`). Si lo que pusiste es el nombre DDNS o la IP pública del \
-             router, eso no se escucha aquí: deja `bind` en la IP de la LAN y \
-             pon esa dirección en `advertise`, que es la que va al QR."
-        )
-    })?;
+    // void: the owner would read "phone channel up" and be wrong.
+    let listener = bind_listener(&bind)?;
 
     let listener_queue = Arc::clone(&queue);
     let profile = crate::phonehome::profile_path(&config.phone.queue_path);
@@ -521,6 +510,64 @@ pub fn start(
         .context("spawning the phone listener")?;
 
     Ok(PhoneChannel::new(true, queue))
+}
+
+/// Open the listening socket, waiting out the one failure that is a race
+/// rather than a mistake.
+///
+/// `bind` names an interface of this machine, and interfaces arrive in their
+/// own time. A Tailscale or WireGuard address does not exist until that
+/// daemon has come up, and nothing orders it before this one at boot: the
+/// kernel then says `EADDRNOTAVAIL`, which reads exactly like a typo and is
+/// not one. Waiting a bounded minute turns "dead until someone notices and
+/// restarts it" into "up a few seconds late".
+///
+/// Every other error is a decision, not a race — the port is taken, the port
+/// is privileged, the address belongs to somebody else — and waiting cannot
+/// change any of them, so they fail immediately. The two mistakes people
+/// actually make are naming their DDNS hostname or the router's public
+/// address, neither of which this machine holds, so the message says where
+/// those belong instead of only objecting.
+fn bind_listener(bind: &str) -> Result<TcpListener> {
+    const PATIENCE: Duration = Duration::from_secs(60);
+    const RETRY_EVERY: Duration = Duration::from_secs(2);
+
+    let started = std::time::Instant::now();
+    let mut announced = false;
+    loop {
+        match TcpListener::bind(bind) {
+            Ok(l) => return Ok(l),
+            Err(e)
+                if e.kind() == std::io::ErrorKind::AddrNotAvailable
+                    && started.elapsed() < PATIENCE =>
+            {
+                if !announced {
+                    log::info!(
+                        "phone: {bind} no existe todavía — esperando a que aparezca \
+                         la interfaz (¿tailscaled/wg-quick aún arrancando?)"
+                    );
+                    announced = true;
+                }
+                std::thread::sleep(RETRY_EVERY);
+            }
+            Err(e) => {
+                let waited = if announced {
+                    format!(" (esperé {}s)", started.elapsed().as_secs())
+                } else {
+                    String::new()
+                };
+                anyhow::bail!(
+                    "phone: cannot listen on {bind}: {e}{waited}\n\
+                     `bind` es una interfaz LOCAL de esta máquina (mírala con \
+                     `ip -4 addr`). Si es la dirección de una VPN, comprueba que \
+                     tailscaled / wg-quick esté arriba. Si lo que pusiste es el \
+                     nombre DDNS o la IP pública del router, eso no se escucha \
+                     aquí: deja `bind` en la IP local y pon esa dirección en \
+                     `advertise`, que es la que va al QR."
+                );
+            }
+        }
+    }
 }
 
 /// Parse the 64-hex-character pairing key.
@@ -943,6 +990,24 @@ mod tests {
         // The port is optional in what we are handed; the host still decides.
         assert!(undialable("0.0.0.0").is_some());
         assert!(undialable("10.0.0.5").is_none());
+    }
+
+    #[test]
+    fn a_bind_that_waiting_cannot_fix_fails_at_once() {
+        // EADDRNOTAVAIL is a race worth waiting out; EADDRINUSE is not, and
+        // sitting on it for a minute would delay a daemon that is never going
+        // to start. Hold the port, then ask for it.
+        let held = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = held.local_addr().unwrap().to_string();
+
+        let began = std::time::Instant::now();
+        let err = bind_listener(&addr).expect_err("the port is taken");
+        assert!(began.elapsed() < Duration::from_secs(5), "it should not have waited");
+
+        // And it should say where a DDNS name or a public IP belongs, since
+        // that is the mistake behind most bind failures here.
+        let said = format!("{err:#}");
+        assert!(said.contains("advertise"), "{said}");
     }
 
     #[test]
