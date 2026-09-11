@@ -193,6 +193,26 @@ sysentinel/
 
 ## Quick start
 
+```sh
+./scripts/install-all.sh        # add --dry-run first to see every step
+```
+
+Builds and installs the whole pack — ONNX face models, daemon, kernel module,
+static initramfs tools, dracut hooks, systemd unit, desktop GUI — instead of
+running five scripts in the right order by hand. Checks the entire toolchain
+before building anything, because an installer that stops halfway can leave an
+initramfs referring to tools it never got.
+
+It refuses to run as root and calls `sudo` only for the steps that install:
+building under `sudo` would run every `build.rs` in the dependency tree, and
+every proc macro, as root. `--no-module`, `--no-initramfs`, `--no-gui` and
+`--no-models` skip parts; `--dry-run` prints everything and does nothing.
+
+The last mile is deliberately left to you — the listen address and the pairing
+are choices, not steps.
+
+## Quick start (piece by piece)
+
 ### 1 — Daemon (user-space)
 
 ```sh

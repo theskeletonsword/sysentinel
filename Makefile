@@ -3,7 +3,7 @@
 # Top-level convenience Makefile. Each component also builds
 # standalone from within its own directory.
 
-.PHONY: all daemon kernel-module ramdisk gui apk apk-release check licence-map licence-audit clean install install-dracut uninstall
+.PHONY: all daemon kernel-module ramdisk gui apk apk-release install-all check licence-map licence-audit clean install install-dracut uninstall
 
 all: daemon kernel-module ramdisk
 
@@ -73,6 +73,12 @@ clean:
 	cargo clean --manifest-path gui/linux/Cargo.toml
 	cd ramdisk && cargo clean
 	$(MAKE) -C kernel_module clean
+
+# Everything, in order: models, daemon, kernel module, initramfs tools, dracut
+# hooks and the desktop GUI. Builds unprivileged and sudoes only to install.
+# `make install` remains the daemon-only path.
+install-all:
+	./scripts/install-all.sh
 
 install: all
 	./scripts/install.sh
