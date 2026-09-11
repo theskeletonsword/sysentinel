@@ -9,7 +9,13 @@
 // commands) to `rs_exec_command()`.
 //
 // Permission model:
-//   - read: 0644, anyone.
+//   - read: 0644, anyone — but the snapshot is rendered according to WHO is
+//     reading. CR2 (last page-fault address) and CR3 (page-table base) are
+//     held back from callers that have not cleared the write gate, because
+//     those two are what a local exploit wants in order to defeat kernel
+//     address randomisation. Everything else in the line is feature bits and
+//     firmware versions, and stays readable so an unprivileged daemon can
+//     still report status.
 //   - write: the module itself gate-keeps via `capable(CAP_SYS_ADMIN)` or
 //     membership of the GID in the `write_gid` module parameter
 //     (0 = root only). There is no /dev node and no udev rule involved.
@@ -29,7 +35,8 @@
 
 // Rust-side callbacks (defined in sysentinel_core.rs, #[no_mangle]).
 // Return 0 / positive on success, a negative errno otherwise.
-extern long rs_render_snapshot(unsigned char *buf, unsigned long cap);
+extern long rs_render_snapshot(unsigned char *buf, unsigned long cap,
+			       int privileged);
 extern long rs_exec_command(const char *cmd);
 
 static struct proc_dir_entry *sysentinel_entry;
@@ -41,6 +48,13 @@ static unsigned int write_gid = 0;
 module_param(write_gid, uint, 0644);
 MODULE_PARM_DESC(write_gid,
 		 "GID allowed to send control commands; 0 = root only");
+
+// Does the caller clear the same bar that guards control commands?
+static bool sysentinel_caller_is_privileged(void)
+{
+	return capable(CAP_SYS_ADMIN) ||
+	       in_group_p(make_kgid(&init_user_ns, write_gid));
+}
 
 static ssize_t sysentinel_proc_read(struct file *f, char __user *buf,
 				    size_t count, loff_t *off)
@@ -55,7 +69,8 @@ static ssize_t sysentinel_proc_read(struct file *f, char __user *buf,
 	if (!line)
 		return -ENOMEM;
 
-	n = rs_render_snapshot((unsigned char *)line, PAGE_SIZE);
+	n = rs_render_snapshot((unsigned char *)line, PAGE_SIZE,
+			       sysentinel_caller_is_privileged() ? 1 : 0);
 	if (n < 0)
 		goto out;
 
@@ -75,8 +90,7 @@ static ssize_t sysentinel_proc_write(struct file *f, const char __user *buf,
 		return -EINVAL;
 
 	// Inode mode grants read to everyone; writes are gate-kept here.
-	if (!capable(CAP_SYS_ADMIN) &&
-	    !in_group_p(make_kgid(&init_user_ns, write_gid)))
+	if (!sysentinel_caller_is_privileged())
 		return -EPERM;
 
 	if (copy_from_user(cmd, buf, count))

@@ -179,7 +179,17 @@ fn main() -> Result<()> {
                 move |nonce, sig| for_confirm.confirm_by_signature(nonce, sig),
             ) {
                 Ok(ch) => notifiers.push(Box::new(ch)),
-                Err(e) => log::error!("phone channel unavailable: {e:#}"),
+                // Not a warning to scroll past. The owner asked for this
+                // channel and it is the only one: continuing would mean
+                // running blind for as long as nobody happens to read the
+                // log, and systemd's Restart=on-failure only helps if we
+                // actually fail. Refuse to start, loudly.
+                Err(e) => anyhow::bail!(
+                    "phone channel is enabled but did not start: {e:#}\n\
+                     Refusing to run without the only way to reach you. Fix \
+                     [phone] in config.toml, or set enabled = false if you \
+                     really mean to watch without being able to report."
+                ),
             }
         }
 

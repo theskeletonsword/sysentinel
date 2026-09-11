@@ -504,8 +504,65 @@ impl Default for FaceConfig {
 
 // ── Validation + loading ──────────────────────────────────────────────────────
 
+/// Refuse to start on a config file other people can write, and say so loudly
+/// when they can read it.
+///
+/// This file holds the phone channel's pairing key and the LLM API keys, and
+/// nothing checked it. The two cases are not the same:
+///
+/// - **Writable by others** is an error. Whoever can edit this can point
+///   `[llm].base_url` at their own server and collect every API key and every
+///   description of what just happened on the machine; can hand the local
+///   control socket to their own group via `[ipc].group`; can replace the
+///   pairing key with one they know. That is a privilege escalation wearing a
+///   config file, and starting anyway would be pretending not to notice.
+/// - **Readable by others** is a warning. It leaks the pairing key, which is
+///   serious — but the daemon refusing to run would leave the owner with no
+///   watchdog at all, and the honest trade is to start and say it out loud.
+///
+/// The group case is deliberately allowed to be readable: the shipped install
+/// is root:sysentinel 0640 so the service user can read it.
+fn check_permissions(path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let md = match std::fs::metadata(path) {
+        Ok(m) => m,
+        // A missing file is the caller's problem to report, with its own
+        // message about where the config should be.
+        Err(_) => return Ok(()),
+    };
+    let mode = md.permissions().mode() & 0o777;
+
+    anyhow::ensure!(
+        mode & 0o002 == 0,
+        "{} is world-writable (mode {mode:04o}). Anyone on this machine could \
+         redirect the LLM endpoint, hand out the control socket or replace the \
+         pairing key. Fix it with: chmod 640 {}",
+        path.display(),
+        path.display()
+    );
+    anyhow::ensure!(
+        mode & 0o020 == 0,
+        "{} is group-writable (mode {mode:04o}). Every member of that group can \
+         rewrite this daemon's configuration. Fix it with: chmod 640 {}",
+        path.display(),
+        path.display()
+    );
+    if mode & 0o004 != 0 {
+        log::warn!(
+            "{} is world-readable (mode {mode:04o}): the phone pairing key and \
+             every API key in it are readable by any local user. chmod 640 {} \
+             and chown root:sysentinel it.",
+            path.display(),
+            path.display()
+        );
+    }
+    Ok(())
+}
+
 impl Config {
     pub fn load(path: &Path) -> Result<Self> {
+        check_permissions(path)?;
         let raw = std::fs::read_to_string(path)
             .with_context(|| format!("reading config file at {}", path.display()))?;
         let cfg: Config = toml::from_str(&raw)
@@ -640,6 +697,36 @@ mod tests {
         let raw = format!("{HEADER}\n[llm]\nmodel = \"m\"\nbackend = [\"deepseek\", \"wat\"]\n");
         let c: Config = toml::from_str(&raw).expect("config parses");
         assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn a_config_others_can_write_is_refused_and_one_they_can_read_is_flagged() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("sysentinel-cfgperm-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(&path, b"[general]\n").unwrap();
+
+        // World-writable: this is somebody else's LLM endpoint waiting to
+        // happen, so it must not start.
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o666)).unwrap();
+        let err = check_permissions(&path).expect_err("world-writable must be refused");
+        assert!(format!("{err:#}").contains("world-writable"), "{err:#}");
+
+        // Group-writable is the same problem with a smaller audience.
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o660)).unwrap();
+        assert!(check_permissions(&path).is_err(), "group-writable must be refused");
+
+        // World-readable leaks the pairing key but still runs: a daemon that
+        // refuses to start leaves the owner with no watchdog at all.
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(check_permissions(&path).is_ok());
+
+        // What the installer actually ships.
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
+        assert!(check_permissions(&path).is_ok());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

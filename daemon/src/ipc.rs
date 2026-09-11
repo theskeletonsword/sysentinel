@@ -31,7 +31,7 @@
 //! the chat. A local front-end is a convenience; it is not a proof of identity,
 //! and it does not get to skip the step that is.
 
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
@@ -202,8 +202,33 @@ pub fn handle(
 fn bind(path: &Path, group: Option<u32>) -> std::io::Result<UnixListener> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
+        // The directory is the outer gate, and it was left at whatever the
+        // umask gave it. 0750 means nobody outside the intended group can even
+        // reach the socket to connect to it — which also covers the instant
+        // between creating the socket and setting its mode.
+        //
+        // The group has to be able to traverse, or the GUI it was granted
+        // access for cannot get in, so the directory is handed to the same
+        // group as the socket.
+        let _ = std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o750));
+        if let Some(gid) = group {
+            let c = std::ffi::CString::new(parent.as_os_str().as_encoded_bytes())?;
+            // SAFETY: `c` is a valid NUL-terminated path; -1 as the uid leaves
+            // the owner alone.
+            unsafe {
+                if libc::chown(c.as_ptr(), u32::MAX, gid) != 0 {
+                    log::warn!(
+                        "ipc: cannot hand {} to gid {gid}: {}",
+                        parent.display(),
+                        std::io::Error::last_os_error()
+                    );
+                }
+            }
+        }
     }
-    if let Ok(md) = std::fs::metadata(path) {
+    if let Ok(md) = std::fs::symlink_metadata(path) {
+        // symlink_metadata, not metadata: a symlink pointing at something else
+        // must not be followed into a delete.
         if md.file_type().is_socket() {
             std::fs::remove_file(path)?;
         } else {
@@ -214,7 +239,20 @@ fn bind(path: &Path, group: Option<u32>) -> std::io::Result<UnixListener> {
         }
     }
 
-    let listener = UnixListener::bind(path)?;
+    // Bind under a umask that denies everyone else, rather than binding and
+    // then tightening. `bind` creates the socket with 0777 & !umask, so
+    // without this there is a window — short, but a window — in which any
+    // local process can connect to a socket whose permissions ARE the access
+    // control for a root daemon.
+    //
+    // SAFETY: umask only reads and replaces a per-process value and cannot
+    // fail. It is restored immediately, and the daemon binds its sockets
+    // during single-threaded startup.
+    let previous = unsafe { libc::umask(0o177) };
+    let listener = UnixListener::bind(path);
+    // SAFETY: as above; put back exactly what was there.
+    unsafe { libc::umask(previous) };
+    let listener = listener?;
 
     // The socket's permissions ARE the access control: the daemon behind it is
     // root. Owner-only unless a group was named on purpose.
@@ -298,8 +336,28 @@ fn serve_connection(
     let reader = BufReader::new(stream);
     let mut writer = write_half;
 
-    for line in reader.lines() {
-        let Ok(line) = line else { break };
+    // Bounded: `lines()` will happily grow one allocation until the daemon
+    // dies, and the peers here are local processes that may be buggy as easily
+    // as hostile. A request is a small JSON object; a megabyte is generous.
+    const MAX_REQUEST: u64 = 1 << 20;
+    let mut reader = reader;
+    loop {
+        let mut line = String::new();
+        let read = {
+            let mut limited = (&mut reader).take(MAX_REQUEST);
+            limited.read_line(&mut line)
+        };
+        match read {
+            Ok(0) => break,
+            Ok(n) if n as u64 >= MAX_REQUEST => {
+                let _ = writer.write_all(
+                    b"{\"error\":{\"message\":\"request too long\"}}\n",
+                );
+                break;
+            }
+            Ok(_) => {}
+            Err(_) => break,
+        }
         if line.trim().is_empty() {
             continue;
         }
@@ -342,6 +400,27 @@ mod tests {
     fn an_unknown_request_is_an_error_not_a_panic() {
         assert!(serde_json::from_str::<Request>(r#"{"op":"rm_rf"}"#).is_err());
         assert!(serde_json::from_str::<Request>("not json").is_err());
+    }
+
+    #[test]
+    fn the_socket_is_never_briefly_world_reachable() {
+        // The socket's mode IS the access control for a root daemon, and it
+        // used to be created with the umask's permissions and tightened a
+        // moment later. Bind it and check what the filesystem shows, with no
+        // chance to fix it up first — and check the directory too, since that
+        // is what closes the window.
+        let dir = std::env::temp_dir().join(format!("sysentinel-ipc-mode-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("gui.sock");
+        let listener = bind(&path, None).expect("bind");
+
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "socket mode");
+        let dmode = std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
+        assert_eq!(dmode, 0o750, "directory mode");
+
+        drop(listener);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

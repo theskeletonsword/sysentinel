@@ -204,6 +204,55 @@ fn read_only_mounts() -> std::collections::HashSet<String> {
         .collect()
 }
 
+/// Decodificar una imagen que viene de fuera, con techo.
+///
+/// # Por qué no `image::load_from_memory` a secas
+///
+/// Un JPEG de unos pocos KB puede declarar 60000×60000 píxeles. El decodificador
+/// hace lo que le piden y reserva ~10 GB antes de que nadie mire el resultado:
+/// el proceso muere por OOM y con él el vigilante. La foto la manda el teléfono
+/// emparejado y la escribe la webcam, o sea que no es la superficie más
+/// expuesta del sistema — pero "confío en quien me la manda" no es una razón
+/// para no poner un límite que no le estorba a nadie: 64 megapíxeles son más
+/// que cualquier cámara que vaya a haber al otro lado.
+pub const MAX_PIXELS: u64 = 64 * 1024 * 1024;
+
+fn limits() -> image::Limits {
+    let mut l = image::Limits::default();
+    // `image` razona en bytes de buffer; a 4 bytes por píxel esto es el techo
+    // de píxeles de arriba, y además corta las asignaciones intermedias.
+    l.max_alloc = Some(MAX_PIXELS * 4);
+    l.max_image_width = Some(16384);
+    l.max_image_height = Some(16384);
+    l
+}
+
+/// Decode bytes that arrived from outside this machine.
+pub fn decode_bounded(bytes: &[u8]) -> anyhow::Result<image::DynamicImage> {
+    use image::ImageReader;
+    let mut reader = ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .map_err(|e| anyhow::anyhow!("no pude reconocer el formato: {e}"))?;
+    reader.limits(limits());
+    reader
+        .decode()
+        .map_err(|e| anyhow::anyhow!("no pude decodificar la imagen: {e}"))
+}
+
+/// Same, for a file the daemon was pointed at (a webcam capture, an initramfs
+/// evidence photo).
+pub fn open_bounded(path: &Path) -> anyhow::Result<image::DynamicImage> {
+    use image::ImageReader;
+    let mut reader = ImageReader::open(path)
+        .map_err(|e| anyhow::anyhow!("no pude abrir {}: {e}", path.display()))?
+        .with_guessed_format()
+        .map_err(|e| anyhow::anyhow!("no pude reconocer el formato: {e}"))?;
+    reader.limits(limits());
+    reader
+        .decode()
+        .map_err(|e| anyhow::anyhow!("no pude decodificar {}: {e}", path.display()))
+}
+
 // ── Hashing en sí ─────────────────────────────────────────────────────────────
 
 /// Distancia de Hamming entre dos hashes de 64 bits.
@@ -361,7 +410,7 @@ pub fn verdict_text(
     if store.is_empty() {
         return None;
     }
-    let img = image::open(photo_path).ok()?;
+    let img = open_bounded(photo_path).ok()?;
     let m = match_face(hash_image(&img), &store.entries, thr);
     use std::fmt::Write as _;
     let mut line = String::new();
@@ -425,6 +474,38 @@ mod tests {
         }
         image::DynamicImage::ImageRgb8(img)
     }
+
+    #[test]
+    fn an_oversized_image_is_refused_rather_than_allocated() {
+        // The decompression bomb: a few KB of JPEG that decodes to something
+        // enormous. Unbounded, the decoder reserves the memory first and asks
+        // questions never — which kills the watchdog with a photo. Encoded at
+        // 17000 px wide, which costs nothing to build and is over the cap.
+        let wide = image::DynamicImage::new_rgb8(17_000, 8);
+        let mut buf = std::io::Cursor::new(Vec::new());
+        wide.write_to(&mut buf, image::ImageFormat::Jpeg).unwrap();
+        assert!(buf.get_ref().len() < 100 * 1024, "the point is that it is small");
+
+        let err = decode_bounded(buf.get_ref()).expect_err("must refuse");
+        assert!(format!("{err:#}").contains("exceeds limit"), "{err:#}");
+
+        // An ordinary photo still decodes.
+        let small = image::DynamicImage::new_rgb8(64, 64);
+        let mut ok = std::io::Cursor::new(Vec::new());
+        small.write_to(&mut ok, image::ImageFormat::Jpeg).unwrap();
+        assert!(decode_bounded(ok.get_ref()).is_ok());
+
+        // And so does one read from disk, by the same route.
+        let dir = std::env::temp_dir().join(format!("sysentinel-bomb-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("wide.jpg");
+        std::fs::write(&path, buf.get_ref()).unwrap();
+        assert!(open_bounded(&path).is_err(), "the file path must be bounded too");
+        std::fs::write(&path, ok.get_ref()).unwrap();
+        assert!(open_bounded(&path).is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
 
     #[test]
     fn embedding_roundtrip_and_esp_db() {

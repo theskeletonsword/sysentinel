@@ -186,6 +186,9 @@ struct Snapshot {
     /// AMD PSP presence (see `psp` module).
     psp: psp::PspStatus,
     /// Current CR register values (x86_64 only; None on other arches).
+    /// Whether the reader may see the control registers that are addresses.
+    /// Not hardware state: it is who is asking, decided by the procfs shim.
+    privileged: bool,
     cr0: Option<u64>,
     cr2: Option<u64>,
     cr3: Option<u64>,
@@ -216,7 +219,7 @@ impl Snapshot {
     /// accessible to any kernel context, or already-computed cached values
     /// (hypervisor kind, ME version set during module init). No blocking I/O
     /// or memory allocation is performed on the read path.
-    fn gather() -> Self {
+    fn gather(privileged: bool) -> Self {
         // ── Uptime ───────────────────────────────────────────────────────────
         // kernel::time::Ktime::ktime_get_boottime() returns nanoseconds since
         // boot. API shape varies by kernel version; check your tree's
@@ -282,6 +285,7 @@ impl Snapshot {
             kvm_features,
             me_fw,
             psp,
+            privileged,
             cr0: current_cr(0),
             cr2: current_cr(2),
             cr3: current_cr(3),
@@ -368,14 +372,32 @@ impl Snapshot {
             }
         }
 
-        let mut wrote_cr = false;
+        // Control registers, with the two that are addresses held back from
+        // unprivileged readers.
+        //
+        // The procfs file is 0644 so any local process can read the snapshot,
+        // and most of it is harmless — uptime, module count, firmware
+        // versions. CR2 and CR3 are not. CR2 is the last page-fault linear
+        // address and CR3 is the physical base of the page tables, which is
+        // exactly the pair a local exploit wants in order to defeat kernel
+        // address randomisation. Publishing them to every process on the
+        // machine hands that away for free, and the kernel itself restricts
+        // far less useful things (kptr_restrict, dmesg_restrict) for the same
+        // reason. CR0/CR4/CR8 are feature and flag bits, already inferable
+        // from /proc/cpuinfo, and stay visible so `/status` keeps working for
+        // an unprivileged daemon.
         for reg in [0u8, 2, 3, 4, 8] {
-            if let Some(v) = cr_value(&self, reg) {
-                let _ = write!(w, " cr{}={:#018x}", reg, v);
-                wrote_cr = true;
+            let sensitive = matches!(reg, 2 | 3);
+            match cr_value(&self, reg) {
+                Some(_) if sensitive && !self.privileged => {
+                    let _ = write!(w, " cr{}=restricted", reg);
+                }
+                Some(v) => {
+                    let _ = write!(w, " cr{}={:#018x}", reg, v);
+                }
+                None => {}
             }
         }
-        let _ = wrote_cr;
 
         // AMD PSP: engaged only when the ring −3 dispatcher picked the PSP; on
         // Intel the token is absent entirely (that silicon talks to the ME, not
@@ -555,6 +577,10 @@ fn neg_errno(e: Error) -> core::ffi::c_long {
 /// Render a fresh snapshot into `buf` (best effort up to `cap` bytes).
 /// Returns the byte count on success, a negative errno on error.
 ///
+/// `privileged` is non-zero when the reader cleared the same gate that guards
+/// writes (CAP_SYS_ADMIN, or membership of `write_gid`). It decides whether the
+/// address-bearing control registers are rendered or held back.
+///
 /// # Safety
 ///
 /// `buf` must point to a writable region of at least `cap` bytes.
@@ -562,12 +588,13 @@ fn neg_errno(e: Error) -> core::ffi::c_long {
 pub unsafe extern "C" fn rs_render_snapshot(
     buf: *mut u8,
     cap: usize,
+    privileged: core::ffi::c_int,
 ) -> core::ffi::c_long {
     if cap == 0 {
         return neg_errno(EINVAL);
     }
     // SAFETY: caller supplies a valid, writable buffer (documented above).
-    let snap = Snapshot::gather();
+    let snap = Snapshot::gather(privileged != 0);
     let line = snap.render();
     let n = line.len().min(cap);
     unsafe { core::ptr::copy_nonoverlapping(line.as_ptr(), buf, n) };

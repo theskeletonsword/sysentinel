@@ -1650,6 +1650,22 @@ impl CommandBot {
                 }
                 let _ = self.send(chat_id, &msg);
             }
+            None if kernel_snap::KernelSnapshot::cr_is_restricted() => {
+                // Not "unavailable" — withheld. CR2 and CR3 are addresses, so
+                // the module shows them only to a reader that clears the same
+                // bar as a control command.
+                let _ = self.send(
+                    chat_id,
+                    &format!(
+                        "cr{reg} no se publica a lectores sin privilegio: es una \
+                         dirección, y regalarla a cualquier proceso local es \
+                         justo lo que quiere un exploit para saltarse KASLR.\n\n\
+                         Para que este daemon pueda leerla, carga el módulo con su \
+                         grupo:\n`sudo modprobe sysentinel_metrics \
+                         write_gid=$(id -g sysentinel)`"
+                    ),
+                );
+            }
             None => {
                 let hint = crate::ring3::load_hint();
                 let _ = self.send(
@@ -2678,7 +2694,12 @@ PMU).";
             let _ = self.send(chat_id, "El canal del teléfono no está configurado.");
             return;
         };
-        let uri = crate::phone::pairing_uri(bind, key);
+        // `advertise` when it is set, exactly like the QR drawn at startup.
+        // Using `bind` here produced a QR pointing at a loopback or LAN
+        // address whenever a tunnel or a VPN fronted the daemon — which is
+        // precisely when someone reaches for `/pair`.
+        let addr = self.config.phone.advertise.as_ref().unwrap_or(bind);
+        let uri = crate::phone::pairing_uri(addr, key);
         match crate::phone::pairing_qr(&uri) {
             Ok(qr) => {
                 // Printed on the machine, never sent: putting a pairing key
@@ -3209,10 +3230,13 @@ PMU).";
             return;
         }
 
-        let img = match image::load_from_memory(bytes) {
+        // Bounded: a few KB of JPEG can declare a 60000×60000 image, and an
+        // unbounded decoder will reserve gigabytes for it before anyone looks
+        // at the result — killing the watchdog with a photo.
+        let img = match crate::fhash::decode_bounded(bytes) {
             Ok(i) => i,
             Err(e) => {
-                let _ = self.send(0, &format!("❌ No pude leer esa imagen: {e}"));
+                let _ = self.send(0, &format!("❌ No pude leer esa imagen: {e:#}"));
                 return;
             }
         };

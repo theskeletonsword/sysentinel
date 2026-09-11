@@ -33,6 +33,10 @@ pub struct KernelSnapshot {
     pub cr3:            Option<u64>,
     pub cr4:            Option<u64>,
     pub cr8:            Option<u64>,
+    /// The module answered `restricted` for an address-bearing register:
+    /// this reader is not privileged enough to see CR2/CR3, which is a
+    /// different thing from the module not being loaded.
+    pub cr_restricted:  bool,
     pub kvm_features:   Option<String>,
     pub me_fw:          Option<String>,
     pub psp:            Option<String>,
@@ -40,6 +44,18 @@ pub struct KernelSnapshot {
 
 impl KernelSnapshot {
     const DEV_PATH: &'static str = "/proc/sysentinel_metrics";
+
+    fn note_if_restricted(&mut self, value: &str) {
+        if value == "restricted" {
+            self.cr_restricted = true;
+        }
+    }
+
+    /// Whether the module withheld an address-bearing register from this
+    /// reader. True means "not allowed", not "not available".
+    pub fn cr_is_restricted() -> bool {
+        Self::read().map(|s| s.cr_restricted).unwrap_or(false)
+    }
 
     /// Read and decode a fresh snapshot from the kernel module.
     ///
@@ -58,9 +74,15 @@ impl KernelSnapshot {
                 "mem_total_kb" => snap.mem_total_kb = v.parse().ok(),
                 // The module escapes spaces in the hypervisor string with '_'.
                 "hypervisor"   => snap.hypervisor = Some(v.replace('_', " ")),
+                // `restricted` rather than a value means the module declined
+                // to show this register to whoever is reading: CR2 and CR3 are
+                // addresses, and publishing them to every local process is a
+                // gift to a local exploit. Recorded as a distinct state so the
+                // answer can be "you are not allowed to see it" instead of the
+                // misleading "the module is not loaded".
                 "cr0"          => snap.cr0 = parse_hex(v),
-                "cr2"          => snap.cr2 = parse_hex(v),
-                "cr3"          => snap.cr3 = parse_hex(v),
+                "cr2"          => { snap.cr2 = parse_hex(v); snap.note_if_restricted(v); }
+                "cr3"          => { snap.cr3 = parse_hex(v); snap.note_if_restricted(v); }
                 "cr4"          => snap.cr4 = parse_hex(v),
                 "cr8"          => snap.cr8 = parse_hex(v),
                 "kvm_features" => snap.kvm_features = Some(v.to_string()),
