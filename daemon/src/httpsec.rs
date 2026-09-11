@@ -265,8 +265,20 @@ pub fn agent(pins: &[String]) -> Result<ureq::Agent> {
 /// needlessly and throw away keep-alive.
 static AGENT: std::sync::OnceLock<ureq::Agent> = std::sync::OnceLock::new();
 
+/// Whether the operator asked for pinning at all.
+///
+/// Separate from the agent because the failure mode worth closing is "pins
+/// were configured and the pinned agent is not the one in use". Without this,
+/// [`shared`] quietly falls back to ordinary HTTPS, which is the one outcome a
+/// person who configured pins would never accept.
+static PINS_REQUESTED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 /// Build the shared agent. Call once at startup, before any request.
 pub fn init(pins: &[String]) -> Result<()> {
+    if !pins.is_empty() {
+        PINS_REQUESTED.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
     let a = agent(pins)?;
     if AGENT.set(a).is_err() {
         log::warn!("httpsec: the outbound agent was already built — ignoring");
@@ -286,6 +298,18 @@ pub fn init(pins: &[String]) -> Result<()> {
 pub fn shared() -> ureq::Agent {
     if let Some(a) = AGENT.get() {
         return a.clone();
+    }
+    if PINS_REQUESTED.load(std::sync::atomic::Ordering::SeqCst) {
+        // Falling back here would mean making the request the operator pinned,
+        // unpinned, and logging it where nobody is looking. An agent pointed
+        // at a loopback address that nothing answers fails the call instead,
+        // which is the outcome a pin is *for*.
+        log::error!(
+            "httpsec: pins are configured but the pinned agent is not built —              refusing to make an unpinned request"
+        );
+        return ureq::AgentBuilder::new()
+            .proxy(ureq::Proxy::new("http://127.0.0.1:1").expect("static proxy URL"))
+            .build();
     }
     log::warn!("httpsec: outbound agent used before init() — falling back to unpinned HTTPS");
     agent(&[]).unwrap_or_else(|_| ureq::Agent::new())
@@ -311,6 +335,26 @@ fn install_crypto_provider() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_configured_pin_never_degrades_into_an_unpinned_request() {
+        // The failure this closes: pins configured, the pinned agent somehow
+        // not built, and `shared()` quietly making the request anyway over
+        // ordinary public-CA HTTPS — logging it somewhere nobody is reading.
+        // A pin that silently stops applying is worse than no pin, because the
+        // operator believes it is there.
+        PINS_REQUESTED.store(true, std::sync::atomic::Ordering::SeqCst);
+        let agent = shared();
+        // AGENT is set by init() in a real run; in this test it is not, so
+        // this is the refusal path. It must not reach the network.
+        let err = agent
+            .get("https://api.anthropic.com/v1/messages")
+            .timeout(std::time::Duration::from_secs(2))
+            .call()
+            .expect_err("the refusal agent must not complete a request");
+        let _ = err;
+        PINS_REQUESTED.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
 
     #[test]
     fn plain_http_is_refused_with_a_reason() {
