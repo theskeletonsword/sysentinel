@@ -371,6 +371,40 @@ timeout = 10
 #      te estás jugando la superficie a que el parseo del primer frame no
 #      tenga un fallo. Si puedes, (b).
 #
+#   d) Un túnel tipo ngrok / Cloudflare / un forward por SSH. Funciona, y es
+#      la salida cuando no puedes tocar el router o estás detrás de CGNAT:
+#      el túnel sale DESDE aquí, así que no hace falta abrir nada.
+#
+#      Tiene que ser un túnel TCP, no HTTP: esto no habla HTTP.
+#
+#        ngrok tcp 8443          # => tcp://0.tcp.ngrok.io:19876
+#        bind      = "127.0.0.1:8443"        # el túnel es quien da la cara
+#        advertise = "0.tcp.ngrok.io:19876"  # esto es lo que va al QR
+#
+#      Lo que ngrok NO ve: nada de lo que os decís. Cada frame va sellado con
+#      AEAD bajo la clave de emparejamiento y él sólo reenvía bytes opacos —
+#      no es como el bot de chat que quitamos, donde el tercero leía el
+#      contenido. Lo que SÍ ve: que esta máquina tiene un túnel abierto, a qué
+#      hora se conecta tu teléfono y cuánto tráfico hay. En un vigilante, ese
+#      patrón ya es información: "el equipo habló con su dueño a las 03:14" es
+#      justo lo que produce una alarma.
+#
+#      Lo demás que cuesta, sin adornos:
+#        - Vuelve a haber un token al portador en esta máquina (el authtoken de
+#          ngrok), que es la clase de cosa de la que veníamos huyendo.
+#        - El endpoint es público: cualquiera puede marcar a ese host:puerto.
+#          No entra — sin la clave y sin la firma del móvil registrado se queda
+#          en el primer frame — pero te tocan la puerta desconocidos.
+#        - En el plan gratis la dirección CAMBIA cada vez que reinicias el
+#          túnel, así que el QR y lo guardado en la app se quedan viejos y hay
+#          que corregir la dirección a mano cada vez. Dirección fija = de pago.
+#        - Depende de que un tercero siga en pie y no te limite.
+#
+#      Por eso está el cuarto y no el primero: Tailscale resuelve el MISMO
+#      problema de CGNAT (sin abrir puertos, saliendo desde aquí), te da una
+#      dirección estable, y no publica ningún endpoint. Usa (d) si no puedes
+#      instalar (b), o para algo puntual.
+#
 # ¿Y si ya emparejaste con la IP de casa y te vas de viaje? No hay que volver
 # a emparejar: en la app se edita host y puerto a mano. La clave y la identidad
 # del teléfono siguen valiendo — lo que cambia es a dónde marca.
@@ -393,6 +427,14 @@ enabled = false
 #   LAN:        bind = "192.168.1.5:8443"
 #   Tailscale:  bind = "100.101.102.103:8443"   ← la misma desde cualquier país
 # bind = "192.168.1.5:8443"
+#
+# advertise: sólo si el QR tiene que decir algo DISTINTO de `bind`. Es el caso
+# del túnel: escuchas en loopback y el que da la cara es el túnel, así que la
+# dirección a la que marca el teléfono no es ninguna de esta máquina. Sin
+# poner, el QR lleva `bind` tal cual (que es lo correcto en LAN y en VPN).
+# El daemon te avisa si la dirección que va al QR es un comodín (0.0.0.0) o
+# loopback, porque desde el teléfono eso no es ningún sitio.
+# advertise = "0.tcp.ngrok.io:19876"
 # pairing_key: arranca sin ella y el daemon te genera una.
 # pairing_key = "…64 hex…"
 #

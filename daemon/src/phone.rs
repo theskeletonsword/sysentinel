@@ -475,18 +475,17 @@ pub fn start(
     // level that would swallow it and does not end up in a log file where the
     // key would outlive the pairing.
     let profile = crate::phonehome::profile_path(&config.phone.queue_path);
+    let advertise = config.phone.advertise.clone().unwrap_or_else(|| bind.clone());
     if crate::phonehome::load(&profile).is_none() {
-        let uri = pairing_uri(&bind, &key_hex);
+        let uri = pairing_uri(&advertise, &key_hex);
         eprintln!("\n  Empareja tu teléfono — escanea esto con la app:\n");
         match pairing_qr(&uri) {
             Ok(qr) => eprintln!("{qr}"),
             Err(e) => log::warn!("phone: cannot draw the pairing QR: {e}"),
         }
         eprintln!("  {uri}\n");
-        if bind.starts_with("0.0.0.0") || bind.starts_with("[::]") {
-            eprintln!(
-                "  ⚠ `bind` es una dirección de escucha, no un destino. El QR lleva esa cadena tal cual, así que el teléfono no sabrá a dónde marcar: pon la IP concreta por la que te ve el móvil.\n"
-            );
+        if let Some(why) = undialable(&advertise) {
+            eprintln!("  ⚠ {why}\n");
         }
         eprintln!(
             "  Quien vea esta pantalla puede leer la clave. Después del primer emparejamiento deja de bastar: el equipo exige además la firma del teléfono que registró.\n"
@@ -527,11 +526,57 @@ fn parse_key(hex: &str) -> Result<[u8; 32]> {
 ///
 /// Everything the handset needs and nothing it does not: where to connect and
 /// the key to seal the first frame with.
-pub fn pairing_uri(bind: &str, key_hex: &str) -> String {
-    // `bind` may be 0.0.0.0; that is a listen address, not somewhere to dial,
-    // so it is left as-is and the operator is told to fix it. Guessing an
-    // interface here would produce a QR that silently does not work.
-    format!("sysentinel://pair?addr={bind}&key={key_hex}")
+pub fn pairing_uri(addr: &str, key_hex: &str) -> String {
+    // `addr` may be a listen address rather than somewhere to dial (0.0.0.0,
+    // or loopback under a tunnel). It is left as-is and the operator is told
+    // to fix it: guessing an interface here would produce a QR that silently
+    // does not work, which is worse than one that visibly does not.
+    format!("sysentinel://pair?addr={addr}&key={key_hex}")
+}
+
+/// Why the address going into the QR is not somewhere a phone can dial.
+///
+/// The distinction this catches is `bind` vs `advertise`. A wildcard means
+/// "every interface", which is not a destination; loopback means "this
+/// machine", which from the handset's point of view is the handset. Both are
+/// perfectly good things to *listen* on — loopback especially, when a tunnel
+/// (ngrok, Cloudflare, an SSH forward) is the thing facing the network — so
+/// neither is an error. What is an error is shipping one of them to the phone
+/// as a place to connect, and that is what gets said out loud.
+fn undialable(addr: &str) -> Option<String> {
+    let host = match addr.rsplit_once(':') {
+        // `[::1]:8443` → `::1`; a bare IPv6 with no port stays as it is.
+        Some((h, port)) if port.chars().all(|c| c.is_ascii_digit()) => h,
+        _ => addr,
+    };
+    let host = host.trim().trim_start_matches('[').trim_end_matches(']');
+
+    let wildcard = host == "0.0.0.0" || host == "::" || host.is_empty();
+    let loopback = host == "localhost"
+        || host == "::1"
+        || host.strip_prefix("127.").is_some_and(|rest| {
+            rest.split('.').count() == 3 && rest.split('.').all(|o| {
+                !o.is_empty() && o.len() <= 3 && o.chars().all(|c| c.is_ascii_digit())
+            })
+        });
+
+    if wildcard {
+        Some(format!(
+            "`{addr}` es una dirección de escucha, no un destino. El QR la \
+             lleva tal cual, así que el teléfono no sabrá a dónde marcar: pon \
+             en `bind` la IP concreta por la que te ve el móvil, o deja `bind` \
+             como está y pon esa dirección en `advertise`."
+        ))
+    } else if loopback {
+        Some(format!(
+            "`{addr}` es esta misma máquina, y desde el teléfono eso es el \
+             teléfono. Si delante hay un túnel (ngrok, Cloudflare, un forward \
+             por SSH), escuchar en loopback está bien — pero pon la dirección \
+             pública del túnel en `advertise`, que es la que va al QR."
+        ))
+    } else {
+        None
+    }
 }
 
 /// Render the pairing URI as a QR code for a terminal.
@@ -856,6 +901,41 @@ mod tests {
         let d = std::env::temp_dir().join(format!("sysentinel-phone-{tag}-{}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    #[test]
+    fn the_qr_refuses_to_send_a_phone_somewhere_it_cannot_dial() {
+        // A wildcard is where to listen, not where to connect.
+        for a in ["0.0.0.0:8443", "[::]:8443", ":::8443"] {
+            assert!(undialable(a).is_some(), "{a} should be flagged");
+        }
+        // Loopback is this machine, which from the handset means the handset.
+        for a in ["127.0.0.1:8443", "127.1.2.3:8443", "localhost:8443", "[::1]:8443"] {
+            assert!(undialable(a).is_some(), "{a} should be flagged");
+        }
+        // A LAN address, a VPN address, a tunnel hostname: all dialable.
+        for a in [
+            "192.168.1.5:8443",
+            "100.101.102.103:8443",
+            "0.tcp.ngrok.io:19876",
+            "casa.example.net:8443",
+            "[2001:db8::5]:8443",
+        ] {
+            assert!(undialable(a).is_none(), "{a} must NOT be flagged: {:?}", undialable(a));
+        }
+        // `127.0.0.1` is loopback; `127.0.0.1.example.net` is a hostname that
+        // merely starts with those characters, and belongs to someone else.
+        assert!(undialable("127.0.0.1.example.net:8443").is_none());
+        // The port is optional in what we are handed; the host still decides.
+        assert!(undialable("0.0.0.0").is_some());
+        assert!(undialable("10.0.0.5").is_none());
+    }
+
+    #[test]
+    fn the_pairing_uri_carries_the_advertised_address_verbatim() {
+        // Behind a tunnel the QR must say the tunnel, not the listen address.
+        let uri = pairing_uri("0.tcp.ngrok.io:19876", &"ab".repeat(32));
+        assert!(uri.starts_with("sysentinel://pair?addr=0.tcp.ngrok.io:19876&key="), "{uri}");
     }
 
     #[test]

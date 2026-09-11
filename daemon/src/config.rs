@@ -391,6 +391,16 @@ pub struct PhoneConfig {
     /// decision, and it should be made deliberately.
     #[serde(default)]
     pub bind: Option<String>,
+    /// Address written into the pairing QR, when it differs from `bind`.
+    ///
+    /// `bind` answers "which interface do I listen on"; the QR answers "where
+    /// should the handset dial". They are the same string on a LAN or a VPN,
+    /// which is why one field served both — but behind a tunnel (ngrok,
+    /// Cloudflare, an SSH forward) the daemon listens on loopback while the
+    /// phone must reach a public name, and a QR carrying `127.0.0.1` is a QR
+    /// that cannot work. Unset means "same as `bind`".
+    #[serde(default)]
+    pub advertise: Option<String>,
     /// 64 hex characters: the key shared with the paired phone. Sealing a frame
     /// with it IS the authentication, so it is the whole secret.
     #[serde(default)]

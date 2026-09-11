@@ -79,8 +79,11 @@ Firma de release: `gui/android/keystore.properties` (fuera de git) apunta a tu
 > móvil puede ALCANZAR la máquina: en tu red funciona tal cual, y desde fuera
 > necesitas un camino que pongas tú (WireGuard o Tailscale — y si pones `bind`
 > en la dirección de la VPN, la misma dirección vale en casa y fuera, así que
-> no tocas nada al viajar). Sin camino, el daemon encola las alertas y te las
-> entrega enteras al reconectar: no las pierde.
+> no tocas nada al viajar). Si no puedes tocar el router o estás detrás de
+> CGNAT, sirve un túnel TCP (`ngrok tcp 8443`) con `bind = "127.0.0.1:8443"` y
+> `advertise` = la dirección que te dé el túnel; lee antes las pegas en
+> `config.example.toml`, que son reales. Sin camino, el daemon encola las
+> alertas y te las entrega enteras al reconectar: no las pierde.
 
 ---
 
