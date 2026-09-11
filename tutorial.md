@@ -77,13 +77,20 @@ Firma de release: `gui/android/keystore.properties` (fuera de git) apunta a tu
 > vínculo no caduca y no depende de la red: da igual que estés en Italia, en
 > España o en Marte, sigue siendo tu PC. Lo que sí cambia con el sitio es si el
 > móvil puede ALCANZAR la máquina: en tu red funciona tal cual, y desde fuera
-> necesitas un camino que pongas tú (WireGuard o Tailscale — y si pones `bind`
-> en la dirección de la VPN, la misma dirección vale en casa y fuera, así que
-> no tocas nada al viajar). Si no puedes tocar el router o estás detrás de
-> CGNAT, sirve un túnel TCP (`ngrok tcp 8443`) con `bind = "127.0.0.1:8443"` y
-> `advertise` = la dirección que te dé el túnel; lee antes las pegas en
-> `config.example.toml`, que son reales. Sin camino, el daemon encola las
-> alertas y te las entrega enteras al reconectar: no las pierde.
+> necesitas un camino que pongas tú, y hay tres que funcionan:
+>
+> - **VPN** (WireGuard/Tailscale): pon `bind` en la dirección de la VPN y esa
+>   misma dirección vale en casa y fuera, así que no tocas nada al viajar.
+> - **Port forward + DDNS**: `bind` en la IP de la LAN y
+>   `advertise = "casa.duckdns.org:45678"` (el puerto EXTERNO del router). Ojo
+>   con el *hairpin NAT*: en muchos routers esto funciona desde la calle y
+>   falla probándolo en tu propia casa.
+> - **Túnel TCP** (`ngrok tcp 8443`, Cloudflare, SSH): `bind = "127.0.0.1:8443"`
+>   y `advertise` = lo que te dé el túnel. Es la salida bajo CGNAT.
+>
+> Las pegas de cada uno están escritas sin adornos en `config.example.toml`.
+> Sin camino, el daemon encola las alertas y te las entrega enteras al
+> reconectar: no las pierde.
 
 ---
 

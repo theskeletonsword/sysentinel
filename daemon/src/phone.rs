@@ -492,14 +492,29 @@ pub fn start(
         );
     }
 
+    // Bind here, not inside the thread. The doc above promises this fails
+    // loudly, and a listener opened after `start` returns can only log into a
+    // void: the owner would read "phone channel up" and be wrong. `bind` is a
+    // local interface, and the mistakes are always the same two — a DDNS name
+    // or the public IP of the router, neither of which is an address this
+    // machine holds — so the error says where those belong instead.
+    let listener = TcpListener::bind(&bind).map_err(|e| {
+        anyhow::anyhow!(
+            "phone: cannot listen on {bind}: {e}\n\
+             `bind` es una interfaz LOCAL de esta máquina (mírala con `ip -4 \
+             addr`). Si lo que pusiste es el nombre DDNS o la IP pública del \
+             router, eso no se escucha aquí: deja `bind` en la IP de la LAN y \
+             pon esa dirección en `advertise`, que es la que va al QR."
+        )
+    })?;
+
     let listener_queue = Arc::clone(&queue);
-    let bind_for_thread = bind.clone();
     let profile = crate::phonehome::profile_path(&config.phone.queue_path);
     std::thread::Builder::new()
         .name("phone".to_string())
         .spawn(move || {
             run_phone_loop(
-                &bind_for_thread, key, listener_queue, profile,
+                listener, key, listener_queue, profile,
                 on_command, on_photo, on_confirm,
             )
         })
@@ -641,8 +656,11 @@ pub fn fresh_pairing_key() -> Result<String> {
 // ── Listener ──────────────────────────────────────────────────────────────────
 
 /// Serve the phone until the process ends.
+///
+/// Takes an already-bound listener: whether the daemon can listen at all is
+/// decided in [`start`], where a failure can still reach the owner.
 pub fn run_phone_loop(
-    bind: &str,
+    listener: TcpListener,
     key: [u8; 32],
     queue: Arc<Mutex<AlertQueue>>,
     profile_path: PathBuf,
@@ -650,14 +668,10 @@ pub fn run_phone_loop(
     on_photo: impl Fn(&[u8]) + Send + Sync + 'static,
     on_confirm: impl Fn(&str, &[u8]) -> Result<String> + Send + Sync + 'static,
 ) {
-    let listener = match TcpListener::bind(bind) {
-        Ok(l) => l,
-        Err(e) => {
-            log::error!("phone: cannot listen on {bind}: {e} — the phone channel is down");
-            return;
-        }
-    };
-    log::info!("phone: listening on {bind} — direct, no relay, no third party");
+    match listener.local_addr() {
+        Ok(a) => log::info!("phone: listening on {a} — direct, no relay, no third party"),
+        Err(_) => log::info!("phone: listening — direct, no relay, no third party"),
+    }
 
     for stream in listener.incoming() {
         match stream {

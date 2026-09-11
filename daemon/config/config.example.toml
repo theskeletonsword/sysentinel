@@ -365,11 +365,40 @@ timeout = 10
 #      en el sofá sigue sirviendo desde otro continente, sin tocar nada.
 #      Además el puerto no queda expuesto a internet: sólo lo ve tu VPN.
 #
-#   c) Port forward en el router + DDNS. Funciona, pero deja este puerto a la
-#      vista de internet entero. Entrar no entran (sin la clave y sin la firma
-#      del móvil registrado no pasan del primer frame), pero van a tocarlo, y
-#      te estás jugando la superficie a que el parseo del primer frame no
-#      tenga un fallo. Si puedes, (b).
+#   c) Port forward en el router + DDNS. Funciona perfectamente y no depende
+#      de nadie: tu router, tu nombre, tu casa. Es lo que hay que montar:
+#
+#        - En el router: redirige un puerto externo a esta máquina.
+#          El externo NO tiene por qué ser el mismo que el interno; si lo
+#          cambias, el que va en `advertise` es el EXTERNO.
+#            TCP  45678  ->  192.168.1.5:8443
+#        - DDNS (el del propio router, o duckdns/no-ip/desec/Cloudflare) para
+#          no perseguir la IP cada vez que el ISP te la cambia.
+#        - Aquí:
+#            bind      = "192.168.1.5:8443"     # la interfaz local
+#            advertise = "casa.duckdns.org:45678"  # lo que va al QR
+#
+#      `bind` NUNCA lleva el nombre DDNS ni la IP pública: eso no es una
+#      dirección de esta máquina y el daemon no arranca (te lo dice así).
+#
+#      Dos cosas que muerden, y ninguna es culpa tuya:
+#
+#        - HAIRPIN NAT. Muchos routers no dejan que un equipo de dentro salga
+#          a la IP pública y vuelva a entrar. O sea: funciona desde la calle y
+#          falla EN TU CASA, que es donde lo vas a probar primero. Si te pasa,
+#          no está roto: en casa usa la dirección LAN y fuera la DDNS (se
+#          cambia en la app, toca `equipo: …`), o mira si tu router tiene
+#          "NAT loopback"/"hairpin" para activarlo.
+#        - CGNAT. Si tu ISP te da IP compartida (mira si la WAN del router es
+#          10.x / 100.64-127.x / 192.168.x), no hay puerto que redirigir
+#          porque la IP pública no es tuya. Ahí toca (b) o (d).
+#
+#      Lo que cuesta: deja ese puerto a la vista de internet entero. Entrar no
+#      entran (sin la clave y sin la firma del móvil registrado no pasan del
+#      primer frame), pero van a tocarlo — escaneos automáticos, todo el día —
+#      y te estás jugando la superficie a que el parseo de ese primer frame no
+#      tenga un fallo. Un puerto alto y raro no es seguridad, pero te quita de
+#      encima el ruido de los escaneos a puertos típicos.
 #
 #   d) Un túnel tipo ngrok / Cloudflare / un forward por SSH. Funciona, y es
 #      la salida cuando no puedes tocar el router o estás detrás de CGNAT:
