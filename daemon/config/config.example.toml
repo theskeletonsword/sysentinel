@@ -7,7 +7,7 @@
 # ── [general] ────────────────────────────────────────────────────────────────
 
 [general]
-# Minimum severity that triggers a Telegram alert:
+# Minimum severity that triggers an alert:
 #   "info" | "warning" | "error" | "critical"
 min_severity     = "warning"
 # Fallback sleep between /dev/kmsg reads (ms) when blocking mode is unavailable.
@@ -77,7 +77,7 @@ memory_file  = "/var/lib/sysentinel/memory.txt"
 
 # Rolling conversation context (context window / conversation history). Each
 # user+assistant turn is appended here automatically. Cleared with
-# /resetcontext in Telegram.
+# /resetcontext from the phone.
 context_file = "/var/lib/sysentinel/context.txt"
 
 # Max turns kept in context.txt before old ones are pruned (15 = 7.5 q/a pairs).
@@ -85,7 +85,7 @@ context_file = "/var/lib/sysentinel/context.txt"
 # like DeepSeek.
 context_max_entries = 15
 
-# ── # ── TLS saliente ─────────────────────────────────────────────────────────────
+# ── TLS saliente ─────────────────────────────────────────────────────────────
 # Las llamadas al LLM son lo único que este daemon sigue mandando al servidor de
 # otra persona, y llevan tu API key en una cabecera y, en el cuerpo, lo que
 # acaba de pasar en la máquina. Dos cosas:
@@ -111,7 +111,7 @@ context_max_entries = 15
 #
 # tls_pins = ["sha256/yzfNb1bRcNF+H1Fts441Vj0MIuuxepdWKmqKJ/bVV6U="]
 
-[llm] ────────────────────────────────────────────────────────────────────
+# ── [llm] ───────────────────────────────────────────────────────────────────
 
 [llm]
 # Ordered fallback chain of LLM backends. Tried in order — if one fails (API
@@ -134,7 +134,7 @@ backend    = ["deepseek", "llama", "local", "none"]
 #   llama     : whichever GGUF the llama.cpp server is serving
 model      = "deepseek-chat"
 # Maximum tokens in the AI's reply. 512 is comfortable for most kernel events
-# and Telegram message limits. Raise for more detailed answers.
+# and the channel's message limit. Raise for more detailed answers.
 max_tokens = 512
 # Per-request timeout (seconds) for the HTTP backends. After this a backend is
 # considered failed and the fallback chain moves to the next one.
@@ -178,7 +178,7 @@ context_size = 2048
 # ── [hwdiag] ─────────────────────────────────────────────────────────────────
 
 [hwdiag]
-# Enable periodic hardware diagnostics summaries sent to Telegram.
+# Enable periodic hardware diagnostics summaries pushed to the phone.
 enabled          = false
 # How often to send diagnostics, in minutes.
 interval_minutes = 60
@@ -189,8 +189,8 @@ include_firmware = true
 
 [pmu]
 # Include PMU (Performance Monitoring Unit) counters in:
-#   - The system context sent to the LLM when you ask a question via Telegram.
-#   - The /status Telegram command.
+#   - The system context sent to the LLM when you ask a question.
+#   - The /status command.
 #   - Periodic hwdiag summaries.
 #
 # Software counters (context switches, page faults, CPU migrations) are always
@@ -221,7 +221,7 @@ sample_ms = 250
 
 # ── [camera] ─────────────────────────────────────────────────────────────────
 # Intrusion webcam: photos of whoever is at the keyboard, attached to the
-# Telegram alerts (sendPhoto). Three triggers:
+# outgoing alerts. Three triggers:
 #   - LUKS decrypt (photo taken by the initramfs hook BEFORE login; daemon
 #     finds it here and asks "¿fui yo?")
 #   - a successful login
@@ -323,29 +323,24 @@ w_ambiguous  = 22
 # Seconds to wait for a frame while a format is being tried.
 timeout = 10
 
-# ── Sobre Telegram como canal ────────────────────────────────────────────────
-# Poner `enabled = false` arriba apaga el canal por completo: sin token en uso,
-# sin long-poll, y sin un endpoint que un desconocido pueda alcanzar.
-#
-# Antes de hacerlo: comprueba que te queda ALGÚN canal. Un vigilante sin forma
-# de avisar no es un sistema endurecido, es uno que observa y nunca puede
+# ── Sobre los canales ────────────────────────────────────────────────────────
+# Antes de apagar un canal: comprueba que te queda ALGÚN otro. Un vigilante sin
+# forma de avisar no es un sistema endurecido, es uno que observa y nunca puede
 # contarlo. El daemon avisa en el log si se queda sordo, y también dice qué
-# expone cada canal vivo (el bot de Telegram es alcanzable por cualquiera que
-# lo encuentre, el token es una credencial al portador, y el tráfico cruza
-# servidores que no son tuyos).
+# expone cada canal vivo.
 #
 # El destino es la app del teléfono, que puede guardar una clave que esta
 # máquina no alcanza y no necesita a un tercero para entregar un mensaje.
 
 # ── [phone] ─────────────────────────────────────────────────────────────────
-# El canal que reemplaza a Telegram: la app del teléfono, conectada directo.
+# El único canal: la app del teléfono, conectada directo.
 #
 # Qué gana: no hay token al portador que hable por la máquina si se filtra, no
 # hay endpoint que un desconocido alcance (y sea rechazado sólo DESPUÉS de
 # llegar), y no hay un tercero que vea quién habló con quién y cuándo.
 #
-# Qué cuesta, y conviene saberlo antes: el relay de Telegram era lo que hacía
-# al teléfono alcanzable desde cualquier parte. Esto es una conexión directa.
+# Qué cuesta, y conviene saberlo antes: un relay ajeno era lo que hacía al
+# teléfono alcanzable desde cualquier parte. Esto es una conexión directa.
 # En tu LAN funciona; a través de internet necesita un camino que pongas tú —
 # WireGuard, Tailscale, una VPN a casa. Sin eso el daemon encola pero no
 # entrega mientras estás fuera, que es justo cuando más probable es que alguien
@@ -388,8 +383,8 @@ queue_path = "/var/lib/sysentinel/phone-queue.json"
 # desktop notifications, no popups, no sound. That is a security property, not
 # an omission — if someone is standing over you, a machine that pops
 # "ROSTRO NO REGISTRADO" onto the screen has announced that it informed on you,
-# and you are the one who pays for it. Alerts stay on Telegram, where only your
-# phone sees them. The GUI is somewhere you go and look, on purpose.
+# and you are the one who pays for it. Alerts stay on the phone channel, where
+# only your handset sees them. The GUI is somewhere you go and look, on purpose.
 #
 # The daemon behind this socket runs as root, so the socket's permissions ARE
 # the access control. Left alone it is 0600 root-only; naming a group hands it

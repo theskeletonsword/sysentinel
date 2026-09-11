@@ -90,7 +90,7 @@ pub fn classify(record: &KmsgRecord) -> Option<ClassifiedEvent> {
     // For "Other" we fall back to the raw syslog priority: only
     // surface it if the kernel itself flagged it as error-or-worse.
     // This keeps routine info/notice/warning chatter from flooding
-    // Telegram while still catching unanticipated error patterns.
+    // the channel while still catching unanticipated error patterns.
     let severity = match kind {
         EventKind::KernelPanic => Severity::Critical,
         EventKind::OomKill => Severity::Error,

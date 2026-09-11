@@ -7,7 +7,7 @@ name        = "sysentinel-daemon"
 version     = "0.2.0"
 edition     = "2021"
 license     = "Apache-2.0"
-description = "Kernel log watchdog + interactive AI companion daemon with Telegram, LLM, Intel ME, AMD PSP, and PMU support"
+description = "Kernel log watchdog + interactive AI companion daemon with phone channel, LLM, Intel ME, AMD PSP, and PMU support"
 authors     = ["sysentinel contributors"]
 repository  = "https://example.invalid/sysentinel"
 
@@ -62,7 +62,7 @@ libc       = "0.2"
 
 # ── Image encoding (camera evidence) ───────────────────────────────────────────
 # Pure-Rust V4L2 raw frames (YUYV/GREY) and any BMP written by emergency
-# tools get converted to JPEG for Telegram. vision analysis is NEVER used —
+# tools get converted to JPEG for the phone channel. vision analysis is NEVER used —
 # photos go straight to the chat as attachments (no expensive image tokens).
 image      = { version = "0.25", default-features = false, features = ["jpeg"] }
 

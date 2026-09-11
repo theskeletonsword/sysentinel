@@ -6,7 +6,7 @@
 #   1. Inside the initramfs (dracut module 91sysentinel): grabs the "intruder
 #      photo" right after a LUKS decrypt, before the root is pivoted.
 #   2. By the post-boot daemon: captures a frame for the login/btmp intruder
-#      alerts, then the daemon attaches it to the Telegram alert (sendPhoto).
+#      alerts, then the daemon attaches it to the outgoing alert.
 #
 # Auto-detects the FIRST usable capture device in /dev/video* — works for USB
 # and integrated (laptop) webcams alike. If no usable camera exists, it exits

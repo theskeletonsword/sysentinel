@@ -4,7 +4,7 @@
 //!
 //! A Unix domain socket speaking line-delimited JSON. One request per line, one
 //! response per line, no session state. It exists so a local front-end can show
-//! everything the Telegram bot can show, without the owner having to type into a
+//! everything the command layer can show, without the owner having to type into a
 //! chat window in front of colleagues.
 //!
 //! # It never notifies

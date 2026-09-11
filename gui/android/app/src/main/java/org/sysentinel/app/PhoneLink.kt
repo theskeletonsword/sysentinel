@@ -16,7 +16,7 @@ import javax.crypto.spec.SecretKeySpec
 
 /**
  * The client half of the daemon's phone channel — the thing that replaces
- * Telegram.
+ * a third-party chat relay.
  *
  * Wire format, matching `daemon/src/phone.rs`:
  *

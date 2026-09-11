@@ -1,17 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
 //!
-//! The phone as the daemon's channel — the one that replaces Telegram.
+//! The phone as the daemon's channel — the one that replaced the chat relay.
 //!
 //! # What this buys, and what it costs
 //!
-//! Against a Telegram bot it removes three real problems: there is no bearer
+//! Against a public chat bot it removes three real problems: there is no bearer
 //! token that speaks as the machine if it leaks, no endpoint a stranger can
 //! reach and be rejected only *after* arriving, and no third party that sees
 //! who talked to whom and when.
 //!
 //! It costs something, and pretending otherwise would be worse than the
-//! problem: **Telegram's relay is what made the phone reachable from
-//! anywhere.** This is a direct connection. On a LAN it works; across the
+//! problem: **the relay is what made the phone reachable from anywhere.** This is a direct connection. On a LAN it works; across the
 //! internet it needs a path you supply — WireGuard, Tailscale, a VPN home.
 //! Without one, the daemon can queue but not deliver while the owner is out,
 //! which is exactly when a machine is most likely to be touched. That is the

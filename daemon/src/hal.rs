@@ -492,7 +492,7 @@ impl HalInfo {
         )
     }
 
-    /// Telegram-friendly rendering for `/firmware` and `/definehome hal`.
+    /// Chat-friendly rendering for `/firmware` and `/definehome hal`.
     pub fn render_markdown(&self) -> String {
         let mut out = String::new();
         out.push_str("🔩 *HAL — ring −3 coprocessor*\n");

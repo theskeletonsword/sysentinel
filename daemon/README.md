@@ -8,7 +8,7 @@ Userspace watchdog that:
    "other" (kept only if the kernel itself flagged it error-or-worse).
 3. Optionally asks an LLM backend to explain the event in the tone/
    language you configured in `[persona]`.
-4. Sends the result as an outbound Telegram message.
+4. Pushes the result to the paired phone over the direct channel.
 
 ## Build
 
@@ -34,20 +34,20 @@ sudo $EDITOR /etc/sysentinel/config.toml
 ```
 
 Fill in:
-- `[telegram]` — your bot token (from `@BotFather`), your numeric
-  `telegram_id` (ask @userinfobot), and `chat_id` (leave `0` to use the
-  pairing flow). With `interactive = true` the daemon listens via
-  `getUpdates` and runs a **two-step identity proof** before letting any
-  chat talk to your machine:
-  1. A one-time token (bound to your `telegram_id`, 5-minute TTL,
-     Argon2id-hashed with a random `/dev/urandom` salt) is printed in the
-     log; send it to the bot.
-  2. The bot replies "Token accepted" and asks for an explicit **YES**
-     confirmation. Only then is the chat paired. Any other account is
-     rejected at the gateway, and 5 wrong tokens revoke the token.
+- `[phone]` — the only channel out. Set `enabled = true` and `bind` to
+  the address *the phone* sees this machine on (a listening address, not
+  `0.0.0.0`: the QR carries it verbatim and the handset has to dial it).
+  Leave `pairing_key` out and the daemon mints one, then draws a QR on the
+  machine's console at startup — `/pair` redraws it. The key is shown on
+  the console and never over the channel it opens.
+
+  Whoever sees that screen can read the key, so it stops being enough the
+  moment a handset registers: from then on the daemon also demands a
+  signature from a key held inside *that* phone's TEE, and refuses any
+  other handset outright.
 - `[memory]` — paths to `memory.txt` (long-term facts, edit by hand) and
   `context.txt` (rolling conversation history; cleared with
-  `/resetcontext` in Telegram).
+  `/resetcontext` from the phone).
 - `[llm]` — pick one backend and fill in its API key, or set
   `backend = "none"` to skip LLM explanations entirely and alert with
   the raw kernel message. Backends: `openai`, `anthropic` (Claude),

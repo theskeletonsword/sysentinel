@@ -37,7 +37,8 @@
 > mechanically by `make licence-audit LINUX_SRC=/path/to/linux`.
 
 **Your PC's AI companion** — a portable, transparent Linux system daemon that
-watches your kernel in real-time and lets you talk to your machine over Telegram.
+watches your kernel in real-time and lets you talk to your machine from your own
+phone — over a direct channel with no relay, no bot token and no third party.
 
 ```
      Kernel (ring 0)                 User-space (ring 3)
@@ -50,8 +51,8 @@ watches your kernel in real-time and lets you talk to your machine over Telegram
   └─────────────────────┘         │  ├─ LLM backend switcher                │
                                   │  │   Anthropic · OpenAI · DeepSeek      │
   Intel ME (bus mei_me) ──────────│  │   Gemini · local GGUF                │
-  AMD PSP  (CPUID/sysfs)──sysfs───│  └─ Telegram bot                        │
-                                  │      pairing token · whitelist · chat    │
+  AMD PSP  (CPUID/sysfs)──sysfs───│  └─ phone channel                       │
+                                  │      QR pair · device key · chat        │
                                   └─────────────────────────────────────────┘
 ```
 
@@ -67,8 +68,8 @@ against GPL-only kernel symbols — declare the GPL flavour when building it.
 |---|---|
 | **Kernel event watching** | Tails `/dev/kmsg` in real-time; detects OOM kills, kernel panics, segfaults, and oopses |
 | **LLM explanation** | Asks a configurable AI to explain the event in plain language, in your language and tone |
-| **Telegram alerts** | Sends an alert to your paired Telegram chat |
-| **Interactive chat** | Talk to your PC via Telegram — ask "why is my system slow?", "what happened last night?", "how's my CPU?" |
+| **Alerts to your phone** | Direct connection to the paired handset. No bearer token, no endpoint a stranger can reach, no relay that sees who talked to whom. Alerts are queued to disk and delivered when the phone reconnects, so a handset that was asleep delays an alert instead of losing it |
+| **Interactive chat** | Talk to your PC from the app or the desktop GUI — ask "why is my system slow?", "what happened last night?", "how's my CPU?" |
 | **Pairing flow** | One-time 5-minute token pair; strict `chat_id` whitelist thereafter |
 | **Intel ME status** | Live ring −3 alliance: the module binds the MKHI MEI client and re-runs `GET_FW_VERSION` over the HECI bus on every windowed `/proc` read (`me_live=ok(v18.1.2204.0,rt=…ms)`, `me_drift` flags version drift) |
 | **AMD PSP status** | Real PSP handshake (`PSP_CMD_HSTI_QUERY` → fused HSTI word via the ccp driver's exported platform-access API), shown as `psp=up(hsti=…,flags=tsme,rt=…ms)`; degrades to vendor presence where the mailbox is firewalled |
@@ -125,7 +126,9 @@ sysentinel/
 │       ├── config.rs             TOML config loading + validation
 │       ├── settings.rs           Live, chat-mutable runtime settings
 │       ├── bot.rs                Interactive bot: pairing, whitelist, AI chat
-│       ├── telegram.rs           Outbound sendMessage / sendPhoto helpers
+│       ├── phone.rs              The phone channel: framed AEAD, durable alert queue
+│       ├── phonehome.rs          `/definehome` for the handset — bound by a key, not a model
+│       ├── channel.rs            Pluggable transport: what reaches the owner, and what it exposes
 │       ├── exec.rs               Gated `/exec` with ARM → confirm + process-group kills
 │       │
 │       ├── kmsg.rs               /dev/kmsg real-time reader
@@ -222,16 +225,17 @@ cargo build --release -p sysentinel-daemon --manifest-path daemon/Cargo.toml
 # Install binary, config template, systemd unit
 sudo ./scripts/install.sh
 
-# Edit config (Telegram token + LLM API key)
+# Edit config ([phone] bind + LLM API key)
 sudo $EDITOR /etc/sysentinel/config.toml
 
 # Start service
 sudo systemctl enable --now sysentinel
 
-# Watch for the pairing token
+# Watch for the pairing QR
 journalctl -u sysentinel -f
-# → Look for: "sysentinel PAIRING TOKEN: SYN-XXXXXXXX"
-# → In Telegram, open your bot: it will ask for the token. Send it.
+# → The daemon draws a QR on its console while no handset is registered.
+# → Scan it from the app. After the first pairing the key alone stops being
+#   enough: the machine also demands a signature from THAT handset.
 # → The bot answers "Token accepted", then asks you to type YES to confirm.
 # → Reply YES, and you are paired.
 ```
@@ -261,7 +265,7 @@ sudo rmmod sysentinel_metrics
 
 ---
 
-## Interactive Telegram bot
+## Interactive chat
 
 Once paired, you can send any message to your bot:
 
@@ -368,7 +372,8 @@ language = "en"
 | `CAP_PERFMON` | Machine-wide hardware PMU counters (IPC, LLC misses) | Yes — falls back through per-process counters to software-only, reporting which scope it got |
 | `CAP_KILL` | Ring-3 session kill (`no` on a login alert, `/login kill`, timeout auto-close) | Yes — only when the kernel module is loaded with `write_gid` do kills go through the module instead |
 | None extra | ME/PSP queries read via the kernel-module devnode + sysfs (no `mei` group) | — |
-| Network (HTTPS) | Telegram + LLM cloud APIs | Only if using cloud backends |
+| Network (HTTPS) | LLM cloud APIs | Only if using cloud backends |
+| Network (listen) | The phone channel, on the address you set in `[phone] bind` | Only if `[phone] enabled` |
 
 The systemd unit grants `CAP_SYSLOG`, `CAP_PERFMON` and `CAP_KILL` via
 `AmbientCapabilities`, and applies strict filesystem sandboxing
@@ -382,18 +387,18 @@ the module analyser can find an intruder's `.ko` in `/home`/`/root`/`/tmp`.
 Key properties:
 - **No rootkit behaviour.** `lsmod`, `ps`, `find`, and standard monitoring tools always show this software plainly.
 - **No hidden files or processes.**
-- **Strictly outbound Telegram calls** — `sendMessage` and (when interactive) `getUpdates`. No inbound raw sockets.
-- **Pairing is a two-step identity proof.** (1) A one-time token (~40-bit, bound to your `telegram_id`, 5-minute TTL, Argon2id-hashed with a random `/dev/urandom` salt — never stored in plaintext). (2) After the token is accepted, the bot demands an explicit **YES** confirmation before granting kernel-level chat access. Any other Telegram account is rejected outright at the gateway.
-- **`telegram_id` whitelist** — enforced on every message before any logic runs; strangers get a terse "Access denied" with no information disclosure.
+- **No third-party relay.** The phone connects directly. There is no bot token to leak, and no endpoint a stranger can reach and be rejected only *after* arriving. The only outbound calls are to the configured LLM API, over HTTPS that is enforced (a plain-HTTP `base_url` is refused) and optionally certificate-pinned.
+- **Pairing is bound to hardware, not to an account.** The QR carries a key that seals every frame — but a key can be photographed off a screen, so it stops being sufficient the moment a handset registers. From then on the machine also requires a signature from a key inside *that* phone's TEE or secure element, which cannot be read out of it, and **refuses any other handset outright** rather than merely noting it. A stranger needs the key *and* your physical phone.
+- **Two phones of the same model are still two phones.** Almost nothing Android reports about a handset is per-unit — two Pixel 8s agree on model, manufacturer, board and build fingerprint. Identity is the device key; the model is recorded as context and never consulted to decide anything.
 - **Anti brute-force** — after 5 invalid token attempts the token is burned; the daemon must be restarted to mint a new one.
-- **No remote code execution path.** User messages are forwarded to the LLM API and the reply is returned; no shell commands are executed from Telegram. The only privileged actions are the fixed kernel-module control verbs (reboot/poweroff/triplefault/CR write), SELinux policy modules (`/selinux allow`), `rmmod` of a foreign module you ordered removed, and session kills you denied — all reachable exclusively through the paired chat and a confirmation ritual. **Every action that *can* require confirmation (reboot, poweroff, triplefault, control-register writes, SELinux policy changes, module removal, login-kill) always asks the user first** — nothing privileged is ever executed silently or by the LLM.
+- **No remote code execution path.** User messages are forwarded to the LLM API and the reply is returned; no shell commands run on their own. The only privileged actions are the fixed kernel-module control verbs (reboot/poweroff/triplefault/CR write), SELinux policy modules (`/selinux allow`), `rmmod` of a foreign module you ordered removed, and session kills you denied — all reachable exclusively through the paired handset and a confirmation ritual — which can be a fingerprint rather than a typed code, since a code can be read over a shoulder or demanded out loud and a signature from a biometric-bound key cannot. **Every action that *can* require confirmation (reboot, poweroff, triplefault, control-register writes, SELinux policy changes, module removal, login-kill) always asks the user first** — nothing privileged is ever executed silently or by the LLM.
 - **Triplefault is one-shot, never a loop.** `/triplefault` / `/triplefault restart` forces a hard CPU reset (bogus IDT descriptor loaded with `lidt`, then `int3` → `#BP` → `#NP` → `#DF` → triple fault → `RESET`); `/triplefault shutdown` forces `kernel_power_off()`. Both only apply when the module is loaded and travel the full ARM → `confirm` ritual **every time**, so you can use it whenever you want — but the machine never reboots in a loop: the module latches it per-boot (`-EBUSY` on any duplicate, and the reset path ends in `cli; hlt`, never a spin), and the daemon latches it per session (re-armed only by a fresh daemon start after reboot or by an explicit `/triplefault allow` — also human-confirmed). Conversational orders ("fuerza un apagado con triplefault") are recognized and armed the same way; a mere question («¿qué es triplefault?») is never treated as an order.
 - **`/kernelpanic` is the ring-0 kill switch.** It calls the kernel's real `panic()` through the module — never ring-3 (`/proc/sysrq-trigger` needs `CAP_SYS_ADMIN`, which the unprivileged daemon doesn't have, plus `CONFIG_MAGIC_SYSRQ` + `sysrq=1`). `panic()` is terminal by definition: the machine halts, or the kernel reboots exactly once per its own `panic=N` policy — nothing in the module or daemon loops or retries. Same ARM → `confirm` ritual as the other fatal controls; conversational orders are recognized, questions aren't.
 - **Login + module rituals.** A new login (GUI/SSH) is announced and armed; `si fui yo` keeps it, `no` closes it (SIGTERM→SIGKILL + `loginctl`, or the kernel module's `killsession` when loaded — see the `CAP_KILL` note in `scripts/sysentinel.service`). A **foreign** kernel module (one not in the official tree) is announced conversationally by the persona; you reply `sácalo` / `déjalo` / `no estoy seguro`. In the last case the bot runs `objdump` against the `.ko` and has the persona analyse the disassembly — **on API backends it warns conversationally that the analysis spends your tokens before running it**; on local backends it just does it.
 - **`/dmesg` for the lazy.** One command reads the kernel ring buffer, filters the noise, and the persona tells you what matters — you never touch a terminal.
 - **No undervolt hallucinations.** The persona only claims an undervolt/overvolt when a real V/F shift is verified: `intel-undervolt read` succeeds with a non-zero offset, or `/etc/intel-undervolt.conf` has non-zero offsets **and** its service is enabled — checked per vendor (Intel, AMD, Zhaoxin). Otherwise the persona states the machine runs at stock; `/undervolt` shows the live evidence and verdict. The old "RAPL powercap ⇒ undervolted" heuristic (which guessed `true` on almost every modern laptop) is gone.
 - **Ring-3 fallbacks when the module isn't loaded.** If `sysentinel_metrics.ko` can't load (unsigned under Secure Boot, blacklisted, not insmod'd), nothing is silently missing and nothing is faked: `/status`, the persona prompt and `/firmware` switch to userspace truth — hypervisor from `systemd-detect-virt`/procfs, ME/PSP from sysfs, PMU/IPC from `perf_event_open` (system-wide with `perf_event_paranoid ≤ 0`, per-process otherwise), login kill via `SIGKILL`+`loginctl`, hypercalls via tracefs. `/cr*` says plainly that CR reads need ring-0 and shows the Secure Boot-aware load instructions.
-- **Battery alerts, notebooks only.** `/battery` reports level and time-left on a laptop; on a desktop tower / "pc de mesa" it answers **no aplica** (there is no `power_supply Battery`). A watcher edge-triggers Telegram alerts as the battery drains: ≤20% low, ≤10% critical, ≤5% *agotándose* — re-armed above 25% or when charging. Toggle with `/settings battery`.
+- **Battery alerts, notebooks only.** `/battery` reports level and time-left on a laptop; on a desktop tower / "pc de mesa" it answers **no aplica** (there is no `power_supply Battery`). A watcher edge-triggers alerts as the battery drains: ≤20% low, ≤10% critical, ≤5% *agotándose* — re-armed above 25% or when charging. Toggle with `/settings battery`.
 - **Kernel module** is fully visible (`/proc/modules`, `/sys/module/sysentinel_metrics`), no symbol hiding, unloadable with `rmmod`.
 - **PMU counters** read hardware performance data only; no kernel memory access.
 - **Intel ME / AMD PSP** queries use public interfaces: ME firmware is read via the standard kernel MEI bus (`mei_me`) in the module and only a version string crosses to user-space through `/proc/sysentinel_metrics`; AMD PSP/TPM info comes from the kernel's TPM sysfs, correctly labelled by CPU vendor. The daemon never talks raw protocol to `/dev/mei0`, so it needs no root or `mei` group.

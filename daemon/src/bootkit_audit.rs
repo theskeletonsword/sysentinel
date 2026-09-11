@@ -105,7 +105,7 @@ impl Audit {
         }
     }
 
-    /// Telegram-friendly, markdown-safe report.
+    /// Chat-friendly, markdown-safe report.
     pub fn report(&self) -> String {
         let mut out = String::from("🛡 *Bootkit audit — boot chain*\n");
         out.push_str(&format!("_{}_\n\n", self.verdict().replace('\n', " ")));
@@ -117,7 +117,7 @@ impl Audit {
                 f.detail.replace('|', "·")
             ));
         }
-        // Keep it bounded — Telegram has a 4096-char limit.
+        // Keep it bounded — the channel has a per-message limit.
         if out.len() > 3500 {
             out.truncate(3500);
             out.push_str("\n… (truncated)");

@@ -188,7 +188,7 @@ impl FaceScene {
         }
     }
 
-    /// Headline for the Telegram alert.
+    /// Headline for the alert.
     pub fn headline(&self) -> String {
         match self {
             FaceScene::Empty => "👤 Sin caras en el encuadre".to_string(),

@@ -50,7 +50,8 @@ ReadWritePaths=/var/lib/sysentinel /var/log/sysentinel
 # /dev/kmsg, /proc, /sys are always accessible via the kernel.
 
 # ── Networking ───────────────────────────────────────────────────────────────
-# The daemon makes HTTPS calls to Telegram + LLM cloud APIs.
+# The daemon makes HTTPS calls to the configured LLM API, and listens on the
+# phone channel's bind address when [phone] is enabled.
 # PrivateNetwork would break outbound HTTPS — do not enable it.
 
 [Install]

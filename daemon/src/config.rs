@@ -301,7 +301,7 @@ fn default_hwdiag_interval() -> u64 { 60 }
 #[derive(Debug, Deserialize, Clone)]
 pub struct PmuConfig {
     /// Include PMU counters in the system context sent to the LLM and in
-    /// `/status` Telegram replies. Requires at least software-counter access
+    /// `/status` replies. Requires at least software-counter access
     /// (always available); hardware counters need CAP_PERFMON or
     /// `perf_event_paranoid ≤ 0`.
     #[serde(default = "default_true")]

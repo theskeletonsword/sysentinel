@@ -50,7 +50,7 @@
 //!
 //! Writing a short command performs a privileged action. Require real
 //! confirmation *in the client* before sending these — they are immediate
-//! (the Reactor/Telegram bot enforces a confirm step):
+//! (the Reactor / command layer enforces a confirm step):
 //!
 //! | Command       | Effect                                          |
 //! |---|---|

@@ -87,7 +87,7 @@ fn read_trimmed(path: &Path) -> Option<String> {
 
 /// Build a human-readable diagnostics summary.
 ///
-/// The summary is designed to be both sent directly to Telegram (wrapped in
+/// The summary is designed to be both sent directly to the phone (wrapped in
 /// a code block) and passed to the LLM backend for annotation.
 pub fn summarize(config: &Config) -> Result<String> {
     let mut out = String::new();

@@ -6,7 +6,7 @@
 //! (`u64`), sin modelo neuronal ni LLM, y en disco sólo viven los hashes:
 //!
 //!   * `p_hash` — pHash (DCT-II sobre el bloque 8×8 de bajas frecuencias):
-//!     el más robusto contra re-compresión JPEG (Telegram re-codifica las
+//!     el más robusto contra re-compresión JPEG (el canal re-codifica las
 //!     fotos), redimensionado y marcas de agua.
 //!   * `w_hash` — wHash (Haar 2D separable a 2 niveles; 8×8 central de la
 //!     sub-banda LL): robusto contra blur, ruido y ediciones pesadas.

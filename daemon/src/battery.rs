@@ -5,7 +5,7 @@
 //! "pc de mesa"). On a desktop there is **no battery** and nothing to report:
 //! the bot must say "no aplica".
 //!
-//! The daemon watches the battery on notebooks and pushes a Telegram alert
+//! The daemon watches the battery on notebooks and pushes an alert
 //! as it drains: low (≤20%), critical (≤10%), drained/agotada (≤5%).
 
 use std::path::Path;

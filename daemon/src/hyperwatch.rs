@@ -3,7 +3,7 @@
 //! Hypercall watcher — what did the VM just ask the hypervisor?
 //!
 //! INTERCEPT ONLY, ACT NEVER, SAY IT IN YOUR VOICE: this loop reports guest
-//! hypercalls to Telegram through the persona — the same conversational way
+//! hypercalls out through the persona — the same conversational way
 //! OOM / dmesg / SELinux alerts are told, never a cold log dump — and takes
 //! no further action. It must not terminate, stop, or "fix" a VM on
 //! bad-looking hypercalls — we cannot tell a guest experimenting from one

@@ -36,7 +36,7 @@ pub struct ExplainRequest<'a> {
     pub max_tokens:    u32,
 }
 
-/// Request for an interactive conversational turn (used by the Telegram bot).
+/// Request for an interactive conversational turn (used by the command layer).
 pub struct ChatRequest<'a> {
     /// System prompt encoding the persona/tone/language.
     pub system_prompt:  &'a str,
@@ -65,15 +65,15 @@ pub struct ChatRequest<'a> {
 ///
 /// `Send + Sync` bounds are required so the backend can be shared via
 /// `Arc<dyn LlmBackend + Send + Sync>` between the kmsg-watcher thread and
-/// the Telegram bot thread.
+/// the command-layer thread.
 pub trait LlmBackend: Send + Sync {
     /// Explain a classified kernel event in the configured tone.
-    /// Used by the alert path (kmsg watcher → Telegram notification).
+    /// Used by the alert path (kmsg watcher → outbound notification).
     fn explain(&self, request: &ExplainRequest) -> Result<String>;
 
     /// Answer a free-form conversational question with live system context,
     /// long-term memory, and the rolling conversation history.
-    /// Used by the interactive Telegram bot.
+    /// Used by the interactive command layer.
     ///
     /// The default implementation reformats everything into a single
     /// `explain` call, which works correctly for all current backends.

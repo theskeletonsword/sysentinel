@@ -1,7 +1,8 @@
 # Tutorial de instalación — sysentinel
 
-Instala **todo**: el daemon (vigilante de logs del kernel + compañero IA por
-Telegram), su servicio systemd y el módulo del kernel `/proc/sysentinel_metrics`.
+Instala **todo**: el daemon (vigilante de logs del kernel + compañero IA que
+te habla al teléfono), su servicio systemd y el módulo del kernel
+`/proc/sysentinel_metrics`.
 
 > Destinado a sistemas con kernel habilitado para Rust (`CONFIG_RUST=y`), por
 > ejemplo Fedora 44 con `kernel-devel` ≥ 7.1.8. El flujo es el mismo en otras
@@ -49,14 +50,26 @@ cd daemon && cargo test
 
 ---
 
-## 2. Crear y configurar el bot de Telegram
+## 2. La app del teléfono (el canal de salida)
 
-1. Abre Telegram y habla con **[@BotFather](https://t.me/BotFather)**.
-2. Envía `/newbot`, ponle nombre y username. BotFather te da un **token**
-   (formato `123456:AAH…`). Guárdalo.
-3. Consigue tu **ID de usuario** (lo usamos para AMARRAR el token de pareo a tu
-   cuenta): habla con **[@userinfobot](https://t.me/userinfobot)** —te responde
-   un número, p. ej. `6069669002`.
+No hay bot en ninguna red pública: el único canal es tu propio teléfono,
+conectado directo contra el daemon. Compila e instala el APK antes de seguir,
+para tenerlo a mano cuando aparezca el QR de pareo:
+
+```sh
+cd gui/android
+./gradlew assembleModernRelease        # armv8a, GUI moderna
+./gradlew assembleLegacyRelease        # armeabi-v7a, GUI clásica
+adb install -r app/build/outputs/apk/modern/release/app-modern-release.apk
+```
+
+Firma de release: `gui/android/keystore.properties` (fuera de git) apunta a tu
+`.jks`. Sin ese archivo Gradle produce un APK sin firmar.
+
+> El teléfono tiene que poder ALCANZAR esta máquina. En tu LAN funciona tal
+> cual; desde fuera necesitas un camino que pongas tú (WireGuard, Tailscale,
+> una VPN a casa). Sin eso el daemon encola las alertas y las entrega cuando
+> vuelvas a estar en alcance — no las pierde.
 
 ---
 
@@ -71,8 +84,8 @@ Edita como mínimo estas claves:
 
 | Clave | Qué poner |
 |---|---|
-| `[telegram] bot_token` | El token de @BotFather |
-| `[telegram] telegram_id` | Tu ID de usuario; **sin esto el daemon se niega a generar token de pareo** |
+| `[phone] enabled` | `true` para levantar el canal del teléfono |
+| `[phone] bind` | La dirección por la que el TELÉFONO ve esta máquina (p. ej. `10.0.0.5:8443`). **No pongas `0.0.0.0`**: el QR la lleva tal cual y el móvil no sabría a dónde marcar |
 | `[llm] backend` | `deepseek`, `openai`, `anthropic`, `gemini`, `local` o `none` |
 | `[llm.deepseek] api_key` (o el backend que uses) | Tu API key del proveedor |
 | `[persona] tone` / `language` | Tono y idioma de las respuestas |
@@ -191,7 +204,7 @@ make install        # compila + scripts/install.sh (requiere sudo)
 > El unit monta *hardening*: usuario sin privilegios, `NoNewPrivileges=true`,
 > filesystem read-only salvo rutas de estado, y solo `CAP_SYSLOG` +
 > `CAP_PERFMON` (ambient). No activa `PrivateNetwork` a propósito porque el
-> daemon hace HTTPS saliente a Telegram/LLM.
+> daemon hace HTTPS saliente al proveedor LLM y escucha en `[phone] bind`.
 
 ### 5.1 Configuración de producción
 
@@ -220,7 +233,7 @@ GID de su grupo:
 sudo modprobe sysentinel_metrics write_gid=$(id -g sysentinel)
 ```
 
-Con esto, ya en Telegram: `/cr0`, `/cr3`, `/cr4`, `/cr8` leen registros de
+Con esto, ya desde la app: `/cr0`, `/cr3`, `/cr4`, `/cr8` leen registros de
 control (sin confirmación, no cuesta tokens); `/reboot`, `/poweroff`,
 `/cr0 wp off`, `/cr3=0x…` **arman** una acción y exigen `confirm`.
 
@@ -234,43 +247,47 @@ journalctl -u sysentinel -f
 
 ---
 
-## 6. Pareo con Telegram
+## 6. Pareo con el teléfono
 
-1. En el log del servicio busca el token:
+1. Sin teléfono registrado, el daemon dibuja un **QR en la consola del equipo**
+   al arrancar. Si ya se fue del scrollback, pídelo de nuevo:
 
    ```sh
-   journalctl -u sysentinel -f | grep -i syn-
-   # => pair: token SYN-A1B2C3D4 minted for telegram_id 6069669002 (5 min)
+   journalctl -u sysentinel -f | grep -i 'pair'
    ```
 
-2. Abre tu bot y envía el token **desde tu propia cuenta** (la del
-   `telegram_id`): `SYN-A1B2C3D4`.
-3. El bot responde pidiendo confirmación. Envía `YES` para completar (o `DENY`
-   para quemar el intento).
+   `/pair` lo vuelve a dibujar — siempre en la consola local, nunca por el
+   canal: mandar la clave por el canal que esa clave abre sería al revés.
+
+2. Escanéalo desde la app. Nadie teclea 64 hexadecimales.
+3. La app genera acto seguido una llave dentro del TEE del teléfono
+   (StrongBox/Titan si el modelo lo tiene) y la registra. A partir de ahí el
+   equipo exige **también** la firma de ESE móvil y rechaza cualquier otro,
+   aunque sea el mismo modelo.
 4. Después de parear:
-   - `/start` → menú.
    - `/status` → estado del sistema (incluye contexto PMU si `[pmu] enabled`).
    - `/resetcontext` → limpia `context.txt` (contexto de conversación).
-   - `/unpair` → deshace el pareo (si existe).
+   - `/unpair` → olvida el teléfono registrado.
    - Cualquier mensaje de texto → consulta al LLM con memoria + conversación.
 
-Seguridad del token: expira a los 5 min, se quema tras 5 intentos fallidos,
-solo se acepta desde el `telegram_id` configurado, y se guarda hasheado con
-Argon2id (nunca en texto plano).
+Quien vea la pantalla del QR puede leer la clave: por eso deja de bastar en
+cuanto hay un móvil registrado. Las acciones privilegiadas piden tu huella o
+tu cara en el teléfono, no un `YES` tecleado que alguien puede exigirte en voz
+alta o leer por encima del hombro.
 
-Si no aparece token: revisa que `bot_token` y `telegram_id` estén configurados y
-que `enabled=true` e `interactive=true` en `[telegram]`.
+Si no aparece QR: revisa que `enabled=true` y que `bind` tenga una dirección
+real (no `0.0.0.0`) en `[phone]`.
 
 ---
 
-## 7. Pruébalo sin Telegram (opcional)
+## 7. Pruébalo sin teléfono (opcional)
 
 ```sh
 RUST_LOG=debug /usr/local/bin/sysentinel-daemon \
     --config /etc/sysentinel/config.toml --dry-run --verbose
 ```
 
-- `--dry-run` no envía alertas por Telegram (útil para probar el backend LLM).
+- `--dry-run` no entrega alertas al teléfono (útil para probar el backend LLM).
 - `--verbose` imprime cada evento clasificado de kmsg en stdout.
 - `RUST_LOG=debug` sube el nivel de log.
 
@@ -283,8 +300,8 @@ RUST_LOG=debug /usr/local/bin/sysentinel-daemon \
 | `make[5]: *** No rule to make target 'sysentinel_metrics.o'` | El `.rs` raíz no está junto al `.o` (debe estar en la raíz de `kernel_module/`, regla `$(obj)/%.o: $(obj)/%.rs`). Este repo ya lo tiene así. |
 | `E0514: found crate core compiled by an incompatible version of rustc` | `rustc` ≠ al del kernel (rustup vs `/usr/bin/rustc`). En Fedora el `Makefile` ya lo resuelve solo; en otras distros usa el build exacto del kernel. |
 | `error: no such file or directory: 'bindgen'` / `bindgen` no encontrado | Instala `bindgen` (Rust): `cargo install bindgen-cli` o `sudo dnf install bindgen rust-bindgen`. |
-| `connector must be configured with Long Polling` / bot no responde | Falta `interactive=true` en `[telegram]` o el `bot_token` es inválido. |
-| Bot responde "pareo denegado" o ignora el token | El token se envió desde una cuenta distinta a `telegram_id`, expiró (5 min) o se quemó por 5 fallos. Vuelve a generarlo (reinicia el daemon) y envíalo desde la cuenta correcta. |
+| La app no conecta | `[phone] bind` apunta a una dirección que el teléfono no alcanza (o es `0.0.0.0`). Comprueba desde el móvil que llegas a ese `IP:puerto`. |
+| La app dice que el equipo la rechaza | Ya hay OTRO teléfono registrado: el equipo exige la firma de ese. Haz `/unpair` desde el teléfono registrado, o borra el registro en el equipo, y vuelve a escanear. |
 | No llegan alertas | Revisa `enabled=true`, `min_severity`, y que el backend LLM tenga API key válida. |
 | `error: while loading config` | Falta una sección/clave; compara con `config.example.toml`. |
 | Módulo compila pero `modprobe` dice "invalid module format" | Modulo construido contra otro kernel. `make clean && make && make modules_install && depmod -a`. |

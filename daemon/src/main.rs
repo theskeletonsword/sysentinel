@@ -9,7 +9,7 @@
 //!    longer owns a transport; whatever carries a message calls into it.
 //! 3. **phone channel** (`phone.rs`) — the way out. A direct connection with
 //!    no relay, no bearer token and no endpoint a stranger can reach, which is
-//!    what replaced the Telegram bot this daemon used to poll.
+//!    what replaced the third-party chat bot this daemon used to poll.
 //! 4. **watchers** — login, LUKS, modules, hypercalls, battery, devices. None
 //!    of them knows what transport carries its alerts.
 
@@ -158,7 +158,7 @@ fn main() -> Result<()> {
         // stranger can reach, so it is the one meant to outlive the other.
         if config.phone.enabled {
             // The command layer, driven by whatever the phone says.
-            let commands = bot::TelegramBot::new(
+            let commands = bot::CommandBot::new(
                 config.clone(),
                 Arc::clone(&llm_backend),
                 system_prompt.clone(),

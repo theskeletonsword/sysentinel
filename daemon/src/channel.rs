@@ -9,9 +9,10 @@
 //! person who is somewhere else. That conversation needs a transport, and
 //! *which* transport is a security decision in its own right.
 //!
-//! # Why this is an abstraction and not just Telegram
+//! # Why this is an abstraction and not one hard-wired transport
 //!
-//! A Telegram bot has properties that matter here, and not in a good way:
+//! The obvious transport is a bot on a public chat network, and it has
+//! properties that matter here, not in a good way:
 //!
 //! - **The bot token is a bearer credential.** Anyone who reads it from the
 //!   config, a backup or a process dump can speak as the machine.
@@ -21,9 +22,10 @@
 //! - **The messages transit somebody else's servers**, which see who is talking
 //!   to whom, and when — the exact metadata a tripwire produces.
 //!
-//! None of that makes Telegram useless: it is out of band, it works on every
-//! phone, and it needs no infrastructure. It is a fine floor. It is a poor
-//! ceiling, which is why [`Notifier::third_party_reachable`] exists — a channel
+//! None of that makes such a relay useless: it is out of band, it works on
+//! every phone, and it needs no infrastructure. It is a fine floor. It is a
+//! poor ceiling, which is why [`Notifier::third_party_reachable`] exists — a
+//! channel
 //! is asked to admit what it exposes, and [`Channels::exposure_note`] says so
 //! out loud rather than leaving it implied.
 //!
@@ -275,12 +277,12 @@ mod tests {
     #[test]
     fn exposure_is_reported_only_for_channels_actually_in_use() {
         // An exposed channel that is switched off exposes nothing.
-        let c = Channels::new(vec![Box::new(Fake::new("telegram", false, true, false))]);
+        let c = Channels::new(vec![Box::new(Fake::new("relay", false, true, false))]);
         assert!(c.exposure_note().is_none());
 
-        let c = Channels::new(vec![Box::new(Fake::new("telegram", true, true, false))]);
+        let c = Channels::new(vec![Box::new(Fake::new("relay", true, true, false))]);
         let note = c.exposure_note().expect("an exposed live channel must be declared");
-        assert!(note.contains("telegram"), "{note}");
+        assert!(note.contains("relay"), "{note}");
         assert!(note.contains("terceros"), "{note}");
 
         // A channel nobody else can reach raises no note.

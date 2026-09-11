@@ -6,14 +6,11 @@
 //!
 //! # It owns no transport
 //!
-//! This used to be a Telegram bot: it long-polled `getUpdates`, held a bot
-//! token, and answered by POSTing to api.telegram.org. All of that is gone.
-//! What is left never learned what carried it — every reply funnels through
-//! [`TelegramBot::send`], which hands the text to `channel`, and every command
-//! arrives through [`TelegramBot::handle_owner_text`], which the phone calls.
-//!
-//! The struct still carries the old name so that renaming it can be its own
-//! mechanical commit rather than noise inside the removal.
+//! There was once a third-party chat relay here: a long-poll loop, a bearer
+//! token, and an HTTP POST per reply. None of it survives, and what is left
+//! never learned what carried it — every reply funnels through
+//! [`CommandBot::send`], which hands the text to `channel`, and every command
+//! arrives through [`CommandBot::handle_owner_text`], which the phone calls.
 //!
 //! # And it no longer asks who you are
 //!
@@ -479,13 +476,13 @@ impl SharedBotState {
 
 // ── Persisted state ───────────────────────────────────────────────────────────
 
-// `PersistedState` lived here. Its whole content was a Telegram chat id, and
+// `PersistedState` lived here. Its whole content was a relay chat id, and
 // there is nothing left to remember: the phone identifies itself by a key its
 // hardware holds, every time it connects, so pairing is not something the
 // daemon has to write down and trust on the next boot.
 
-/// Runs the interactive Telegram bot loop.
-pub struct TelegramBot {
+/// The interactive command layer: owner text in, answers and orders out.
+pub struct CommandBot {
     llm:           Arc<llm::RuntimeLlm>,
     /// Startup default; each turn resolves its own via `effective_system_prompt`.
     #[allow(dead_code)]
@@ -497,7 +494,7 @@ pub struct TelegramBot {
     memory:        MemoryStore,
 }
 
-impl TelegramBot {
+impl CommandBot {
     pub fn new(
         config:        Config,
         llm:           Arc<llm::RuntimeLlm>,
@@ -1045,7 +1042,7 @@ impl TelegramBot {
                 // with a stronger method and no other change.
                 let proof = crate::confirm::Confirmation::one_time_code();
                 log::warn!(
-                    "telegram: control {:?} confirmed (chat={chat_id}) — {}",
+                    "bot: control {:?} confirmed (chat={chat_id}) — {}",
                     p.kind,
                     proof.audit_line()
                 );
@@ -1079,7 +1076,7 @@ impl TelegramBot {
                 if let Some(yes) = self.llm_yes_no(&question, text) {
                     if yes {
                         if loginwatch::approve_pending(&self.state, chat_id) {
-                            log::info!("telegram: login approved by user (chat={chat_id})");
+                            log::info!("bot: login approved by user (chat={chat_id})");
                             let _ = self.send(
                                 chat_id,
                                 "✅ Understood — I'll leave the session alone and keep watching.",
@@ -1089,7 +1086,7 @@ impl TelegramBot {
                     } else if let Some(p) = loginwatch::deny_pending(&self.state, chat_id) {
                         let closed = loginwatch::close_session(&p);
                         log::warn!(
-                            "telegram: login by {} denied by user (chat={chat_id}, closed={closed})",
+                            "bot: login by {} denied by user (chat={chat_id}, closed={closed})",
                             p.event.user
                         );
                         let _ = self.send(
@@ -1137,11 +1134,11 @@ impl TelegramBot {
                              Te volveré a preguntar la próxima vez."
                         ),
                     };
-                    log::info!("telegram: owner vouched for the new hardware (chat={chat_id})");
+                    log::info!("bot: owner vouched for the new hardware (chat={chat_id})");
                     let _ = self.send_markdown(chat_id, &msg);
                 } else {
                     log::error!(
-                        "telegram: owner did NOT attach this hardware: {}",
+                        "bot: owner did NOT attach this hardware: {}",
                         pending_devices.join("; ")
                     );
                     let _ = self.send_markdown(
@@ -1175,7 +1172,7 @@ impl TelegramBot {
                     if yes {
                         if let Some(p) = crate::luks::approve_and_clear(&self.state, chat_id) {
                             log::info!(
-                                "telegram: LUKS boot {} confirmed by owner (chat={chat_id})",
+                                "bot: LUKS boot {} confirmed by owner (chat={chat_id})",
                                 p.boot_id
                             );
                             let _ = self.send(
@@ -1189,7 +1186,7 @@ impl TelegramBot {
                         crate::luks::deny_and_clear(&self.state, &self.settings, chat_id)
                     {
                         log::warn!(
-                            "telegram: LUKS boot {} denied by user (chat={chat_id})",
+                            "bot: LUKS boot {} denied by user (chat={chat_id})",
                             p.boot_id
                         );
                         let _ = self.send(
@@ -1216,7 +1213,7 @@ impl TelegramBot {
                 a || b
             };
             if had {
-                log::info!("telegram: armed control/allow cancelled (chat={chat_id})");
+                log::info!("bot: armed control/allow cancelled (chat={chat_id})");
                 let _ = self.send(chat_id, "🚫 Cancelled. Nothing was executed or permitted.");
             }
             return true;
@@ -1254,7 +1251,7 @@ impl TelegramBot {
                 // with a stronger method and no other change.
                 let proof = crate::confirm::Confirmation::one_time_code();
                 log::warn!(
-                    "telegram: control {:?} confirmed (chat={chat_id}) — {}",
+                    "bot: control {:?} confirmed (chat={chat_id}) — {}",
                     p.kind,
                     proof.audit_line()
                 );
@@ -1446,7 +1443,7 @@ impl TelegramBot {
                 .expect("just-armed control")
         };
         log::warn!(
-            "telegram: control ARMED by paired chat {chat_id}: {:?} (confirm with {nonce})",
+            "bot: control ARMED by paired chat {chat_id}: {:?} (confirm with {nonce})",
             kind
         );
 
@@ -1573,7 +1570,7 @@ impl TelegramBot {
     fn execute_control(&self, chat_id: i64, pending: PendingControl) {
         let label = pending.kind.label();
         log::warn!(
-            "telegram: control CONFIRMED and executing in chat {chat_id}: {:?}",
+            "bot: control CONFIRMED and executing in chat {chat_id}: {:?}",
             pending.kind
         );
 
@@ -1594,7 +1591,7 @@ impl TelegramBot {
 
         let command = pending.kind.kernel_command();
         if let Err(e) = kernel_snap::KernelSnapshot::send_command(&command) {
-            log::error!("telegram: control execution FAILED ({command}): {e}");
+            log::error!("bot: control execution FAILED ({command}): {e}");
             let _ = self.send(chat_id, &format!("❌ Execution failed: {e}"));
         } else if matches!(
             pending.kind,
@@ -1608,7 +1605,7 @@ impl TelegramBot {
                  If it doesn't happen, tell me — and remember I won't retry it on my own here."
             };
             log::warn!(
-                "telegram: terminal control ({command}) sent — expecting immediate \
+                "bot: terminal control ({command}) sent — expecting immediate \
                  reset/panic; no retry will be issued"
             );
             let _ = self.send(chat_id, what);
@@ -1619,7 +1616,7 @@ impl TelegramBot {
     fn execute_selinux_allow(&self, chat_id: i64, pending: PendingSelinuxAllow) {
         let id = pending.denial.id;
         log::warn!(
-            "telegram: SELinux allow CONFIRMED (chat {chat_id}) for denial #{id}"
+            "bot: SELinux allow CONFIRMED (chat {chat_id}) for denial #{id}"
         );
 
         let _ = self.send(
@@ -1629,11 +1626,11 @@ impl TelegramBot {
 
         match selinux::apply_allow(&pending.denial, &format!("allow{id}")) {
             Ok(msg) => {
-                log::info!("telegram: SELinux policy module loaded for #{id}");
+                log::info!("bot: SELinux policy module loaded for #{id}");
                 let _ = self.send(chat_id, &msg);
             }
             Err(e) => {
-                log::error!("telegram: SELinux allow FAILED for #{id}: {e:#}");
+                log::error!("bot: SELinux allow FAILED for #{id}: {e:#}");
                 let _ = self.send(chat_id, &format!("❌ Failed to permit `#{id}`:\n{e:#}"));
             }
         }
@@ -1793,7 +1790,7 @@ PMU).";
     fn cmd_reset_context(&self, chat_id: i64) {
         match self.memory.reset_context() {
             Ok(()) => {
-                log::info!("telegram: conversation context reset by paired user (chat={chat_id})");
+                log::info!("bot: conversation context reset by paired user (chat={chat_id})");
                 let _ = self.send(
                     chat_id,
                     "🧹 Conversation history cleared. \
@@ -1801,7 +1798,7 @@ PMU).";
                 );
             }
             Err(e) => {
-                log::error!("telegram: failed to reset context: {e:#}");
+                log::error!("bot: failed to reset context: {e:#}");
                 let _ = self.send(
                     chat_id,
                     "❌ Could not clear the context file. Check daemon logs.",
@@ -1952,7 +1949,7 @@ PMU).";
                     let mut guard = self.state.lock().expect("bot state mutex");
                     guard.pending_selinux = Some(PendingSelinuxAllow::new(denial, chat_id));
                 }
-                log::warn!("telegram: SELinux allow ARMED by chat {chat_id} for #{id}");
+                log::warn!("bot: SELinux allow ARMED by chat {chat_id} for #{id}");
                 let _ = self.send(
                     chat_id,
                     &format!(
@@ -1972,7 +1969,7 @@ PMU).";
                 };
                 match denied {
                     Some(_) => {
-                        log::info!("telegram: SELinux denial #{id} ignored by user (chat {chat_id})");
+                        log::info!("bot: SELinux denial #{id} ignored by user (chat {chat_id})");
                         let _ = self.send(
                             chat_id,
                             &format!(
@@ -2580,7 +2577,7 @@ PMU).";
         }
         match self.memory.append_memory(fact) {
             Ok(()) => {
-                log::info!("telegram: user recorded fact: {fact}");
+                log::info!("bot: user recorded fact: {fact}");
                 let _ = self.send(chat_id, &format!("🧠 Recorded to memory.txt:\n`{fact}`"));
             }
             Err(e) => {
@@ -2592,7 +2589,7 @@ PMU).";
 
     /// `/hardware` — lscpu-style CPU, GPU (nvidia-smi if present), PCI, TSC.
     fn cmd_hardware(&self, chat_id: i64) {
-        log::info!("telegram: hardware inventory requested (chat {chat_id})");
+        log::info!("bot: hardware inventory requested (chat {chat_id})");
         let report = crate::hwinfo::hardware_report();
         let _ = self.send_markdown(chat_id, &report);
     }
@@ -3198,10 +3195,8 @@ PMU).";
     /// Consume one photo sent while `/face register` is arming: hash it and
     /// take its 128-D embedding, then throw the pixels away.
     ///
-    /// Ported from the Telegram path, which fetched the image by file_id. The
-    /// bytes now arrive over the phone channel and everything after that is
-    /// unchanged — the image is never written to disk, only the two perceptual
-    /// hashes and the embedding are kept.
+    /// The bytes arrive over the phone channel; the image is never written to
+    /// disk, only the two perceptual hashes and the embedding are kept.
     pub fn enroll_face_photo(&self, bytes: &[u8]) {
         let wants = {
             let g = self.state.lock().expect("bot state mutex");
@@ -3432,7 +3427,7 @@ PMU).";
     /// Forward the user's free-form question to the LLM with system context,
     /// long-term memory, and the rolling conversation history.
     fn cmd_chat(&self, chat_id: i64, text: &str, username: &str) {
-        log::info!("telegram: LLM query from '{}': {:?}", username, text);
+        log::info!("bot: LLM query from '{}': {:?}", username, text);
 
         // Resolve persona + prompt fresh each turn so `/systemprompt` (and the
         // auto-derived emotion/undervolt/chatty flags) apply immediately,
@@ -3467,7 +3462,7 @@ PMU).";
                 // `confirm` word.
                 if let Some(kind) = parse_arm_marker(&reply) {
                     log::warn!(
-                        "telegram: conversational control order recognized ({:?}) from '{}' (chat={chat_id})",
+                        "bot: conversational control order recognized ({:?}) from '{}' (chat={chat_id})",
                         kind, username
                     );
                     self.arm_conversational_control(chat_id, kind);
@@ -3490,12 +3485,12 @@ PMU).";
         }
     }
 
-    // ── Telegram send helpers ─────────────────────────────────────────────────
+    // ── Send helpers ──────────────────────────────────────────────────────────
 
     /// Reply to the owner.
     ///
-    /// The whole command layer funnels through here, which is what let the
-    /// Telegram transport be removed without touching its 143 call sites: the
+    /// The whole command layer funnels through here, which is what let the old
+    /// transport be swapped out without touching its 143 call sites: the
     /// commands never knew what carried them, and now they go wherever
     /// `channel` points — today, the phone.
     ///
@@ -3516,10 +3511,10 @@ PMU).";
 
 // ── Shared helpers ────────────────────────────────────────────────────────────
 //
-// These outlived the Telegram transport. None is about Telegram; they simply
-// sat beside it in the file. What did go is the transport itself:
-// `send_message`, `send_single`, `send_photo`, `send_audio` and
-// `fetch_file_bytes` — every HTTP call to api.telegram.org.
+// These outlived the old relay transport; they simply sat beside it in the
+// file. What did go is the transport itself: `send_message`, `send_single`,
+// `send_photo`, `send_audio` and `fetch_file_bytes` — every outbound HTTP call
+// to a third party's servers.
 
 /// Conversational contract injected into the LLM context: reply in the user's
 /// own language, and recognize direct imperative orders for the dangerous
@@ -3552,7 +3547,7 @@ If the user is giving a clear, direct, imperative order — in ANY language \
       not force English.\n"
 }
 
-/// Escape special characters for Telegram Markdown v1.
+/// Escape special characters for the Markdown subset the phone renders.
 fn escape_markdown(s: &str) -> String {
     s.replace('_', "\\_")
      .replace('*', "\\*")
@@ -3560,7 +3555,7 @@ fn escape_markdown(s: &str) -> String {
      .replace('`', "\\`")
 }
 
-/// Short system snapshot formatted for Telegram (Markdown).
+/// Short system snapshot, formatted as Markdown.
 fn gather_system_snapshot() -> Result<String> {
     let mut out = String::from("🖥 *System Status*\n\n");
 
@@ -3718,8 +3713,8 @@ fn parse_triplefault_order(lower: &str) -> Option<ControlKind> {
     }
 }
 
-/// Keep a report under Telegram's message limit (4096 chars), cutting at the
-/// last newline so we never split a markdown block.
+/// Keep a report under the channel's per-message limit, cutting at the last
+/// newline so we never split a markdown block.
 fn truncate_for_message(s: &str) -> String {
     const LIMIT: usize = 3900;
     if s.len() <= LIMIT {
@@ -3899,14 +3894,14 @@ mod tests {
 
     #[test]
     fn confirmation_phrases() {
-        assert!(TelegramBot::is_confirmation_phrase("YES"));
-        assert!(TelegramBot::is_confirmation_phrase("sí"));
-        assert!(TelegramBot::is_confirmation_phrase(" confirmar "));
-        assert!(!TelegramBot::is_confirmation_phrase("ya"));
+        assert!(CommandBot::is_confirmation_phrase("YES"));
+        assert!(CommandBot::is_confirmation_phrase("sí"));
+        assert!(CommandBot::is_confirmation_phrase(" confirmar "));
+        assert!(!CommandBot::is_confirmation_phrase("ya"));
 
-        assert!(TelegramBot::is_denial_phrase("no"));
-        assert!(TelegramBot::is_denial_phrase("DENY"));
-        assert!(!TelegramBot::is_denial_phrase("nope"));
+        assert!(CommandBot::is_denial_phrase("no"));
+        assert!(CommandBot::is_denial_phrase("DENY"));
+        assert!(!CommandBot::is_denial_phrase("nope"));
     }
 
     #[test]
