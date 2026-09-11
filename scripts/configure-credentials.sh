@@ -231,10 +231,29 @@ cat <<EOF
      ${B}6${R}  None ${DIM}— I have no API key, or no credit left${R}
 EOF
 
+# What is configured right now, so the default can be "leave it alone".
+#
+# This used to default to 6 ("none"), which meant a non-interactive run given
+# only `--bind` — the obvious way to point an existing install at a new
+# address — quietly replaced a working provider chain with "none" and left the
+# API key orphaned. Changing where the phone dials must never cost the owner
+# their LLM.
+existing_chain="$(current llm backend)"
+if [[ -n "$existing_chain" && "$existing_chain" != '["none"]' ]]; then
+    info "Currently configured: ${B}${existing_chain}${R}"
+    info "     ${B}7${R}  Keep it as it is"
+    default_choice=7
+else
+    default_choice=6
+fi
+
 if [[ -n "$OPT_PROVIDER" ]]; then
     choice="$OPT_PROVIDER"
+elif (( ASSUME_YES )); then
+    # Nobody to ask and nothing asked for: keep whatever is there.
+    choice=keep
 else
-    choice="$(ask "Choose" "6")"
+    choice="$(ask "Choose" "$default_choice")"
 fi
 
 # The menu answers by number; --provider answers by name. Fold both into a
@@ -245,7 +264,8 @@ case "$choice" in
     3) choice=deepseek ;;
     4) choice=gemini ;;
     5) choice=llama ;;
-    6|"") choice=none ;;
+    6) choice=none ;;
+    7|"") choice=keep ;;
 esac
 
 case "$choice" in
@@ -255,11 +275,16 @@ case "$choice" in
     gemini)    provider=gemini;    default_model="gemini-1.5-pro" ;;
     llama)     provider=llama;     default_model="" ;;
     none)      provider=none;      default_model="" ;;
+    keep)      provider=keep;      default_model="" ;;
     *) die "I did not understand «$choice»" ;;
 esac
 [[ -n "$OPT_MODEL" ]] && default_model="$OPT_MODEL"
 
 case "$provider" in
+    keep)
+        ok "LLM left exactly as it was: ${existing_chain:-(nothing configured)}"
+        ;;
+
     none)
         set_value llm backend '["none"]' no
         ok "no model: alerts carry the kernel message as it came"
@@ -288,7 +313,7 @@ case "$provider" in
             if [[ "$OPT_KEY_FILE" == "-" ]]; then
                 key="$(cat)"
             else
-                [[ -r "$OPT_KEY_FILE" ]] || die "no puedo leer $OPT_KEY_FILE"
+                [[ -r "$OPT_KEY_FILE" ]] || die "cannot read $OPT_KEY_FILE"
                 key="$(cat "$OPT_KEY_FILE")"
             fi
             key="${key//[$'\r\n']/}"
@@ -319,7 +344,8 @@ esac
 
 # ── 2. Certificate pinning for that provider (optional) ──────────────────────
 
-if [[ "$provider" != none && "$provider" != llama ]] && command -v openssl >/dev/null; then
+if [[ "$provider" != none && "$provider" != llama && "$provider" != keep ]] \
+    && command -v openssl >/dev/null; then
     step "Pin the provider public key (optional)"
     info "Validating the certificate answers «one of the hundred CAs in the"
     info "store vouches for it». Pinning narrows that to the provider key."
