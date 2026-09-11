@@ -71,7 +71,7 @@ pub struct SharedBotState {
     /// A login that has been *armed* (announced) but not yet confirmed.
     /// Set by the login watcher; resolved by `si fui yo` / `no` or timeout.
     pub(crate) pending_login: Option<PendingLogin>,
-    /// A LUKS "¿fui yo?" ask from the initramfs tripwire (evidence seen
+    /// A LUKS "was that me?" ask from the initramfs tripwire (evidence seen
     /// post-boot, photo attached if a webcam was present pre-login).
     /// Resolved by `si fui yo` / `no`, or by `luks_timeout` via the deny
     /// action (poweroff / triplefault / none).
@@ -238,7 +238,7 @@ impl PendingLogin {
     }
 }
 
-/// A LUKS "¿fui yo?" ask armed by the initramfs tripwire evidence.
+/// A LUKS "was that me?" ask armed by the initramfs tripwire evidence.
 #[derive(Clone)]
 pub(crate) struct PendingLuks {
     /// Kernel boot_id of the decrypted boot (the dedupe key).
@@ -601,7 +601,7 @@ impl CommandBot {
             }
             log::warn!("bot: owner text was {} bytes — cut to {cut}", text.len());
             let trimmed = format!(
-                "{}\n\n[…corté el mensaje: llegaron {} bytes y proceso {MAX_OWNER_TEXT}]",
+                "{}\n\n[…message cut: {} bytes arrived and I process {MAX_OWNER_TEXT}]",
                 &text[..cut],
                 text.len()
             );
@@ -644,6 +644,14 @@ impl CommandBot {
     // The denial judge has a caller; this one is waiting on the confirmation
     // flow moving to the phone's biometric, which is the next change.
     #[allow(dead_code)]
+    /// Words that count as "yes" from the owner.
+    ///
+    /// The non-English entries are deliberate and are not translated copy:
+    /// this is *input vocabulary*, the words a person actually types at their
+    /// own machine, and the owner of this one types "sí". Dropping them would
+    /// not make the codebase more English, it would make the confirmation
+    /// ritual stop working for the person it protects. The same applies to the
+    /// order matchers further down, and to the tests that exercise them.
     fn is_confirmation_phrase(text: &str) -> bool {
         matches!(
             text.trim().to_lowercase().as_str(),
@@ -1099,12 +1107,11 @@ impl CommandBot {
                     let _ = self.send(
                         chat_id,
                         &format!(
-                            "🔒 «{}» necesita tu huella, no un código.\n\n\
-                             Un código se lee por encima del hombro y se puede \
-                             exigir en voz alta; una firma desde el elemento \
-                             seguro de TU teléfono, no. Confirma desde la app y \
-                             listo.\n\n\
-                             (La orden sigue armada.)",
+                            "🔒 «{}» needs your fingerprint, not a code.\n\n\
+                             A code can be read over your shoulder and demanded \
+                             out loud; a signature from YOUR phone's secure \
+                             element cannot. Confirm from the app instead.\n\n\
+                             (The order stays armed.)",
                             p.kind.label()
                         ),
                     );
@@ -1176,7 +1183,7 @@ impl CommandBot {
                 }
             }
         }
-        // ── "¿conectaste algo?" ──────────────────────────────────────────────
+        // ── "did you plug something in?" ────────────────────────────────────
         // Asked before it is treated as an intrusion, because the likeliest
         // explanation for a new disk is that the owner plugged it in.
         let pending_devices = {
@@ -1199,12 +1206,12 @@ impl CommandBot {
                     let base = crate::presence::default_baseline_path(&self.config.face.path);
                     let msg = match crate::presence::record_baseline(&base) {
                         Ok(n) => format!(
-                            "✅ Vale, eras tú. Lo acepto como normal y no vuelvo a \
-                             preguntar por ello (línea base: {n} dispositivos)."
+                            "✅ Right, that was you. I'll take it as normal and stop \
+                             asking about it (baseline: {n} devices)."
                         ),
                         Err(e) => format!(
-                            "✅ Vale, eras tú — pero no pude guardar la línea base: {e}\n\
-                             Te volveré a preguntar la próxima vez."
+                            "✅ Right, that was you — but I could not save the baseline: {e}\n\
+                             I'll ask again next time."
                         ),
                     };
                     log::info!("bot: owner vouched for the new hardware (chat={chat_id})");
@@ -1217,10 +1224,10 @@ impl CommandBot {
                     let _ = self.send_markdown(
                         chat_id,
                         &format!(
-                            "🚨 Entendido: *no* fuiste tú.\n\nNo lo acepto en la línea \
-                             base, así que sigue marcado como ajeno:\n{}\n\nSi quieres \
-                             que corte algo, dímelo — no hago nada destructivo por mi \
-                             cuenta.",
+                            "🚨 Understood: that was *not* you.\n\nI'm not taking it into \
+                             the baseline, so it stays flagged as foreign:\n{}\n\nTell me \
+                             if you want me to cut something off — I do nothing \
+                             destructive on my own.",
                             pending_devices
                                 .iter()
                                 .map(|d| format!("• `{d}`"))
@@ -1330,12 +1337,11 @@ impl CommandBot {
                     let _ = self.send(
                         chat_id,
                         &format!(
-                            "🔒 «{}» necesita tu huella, no un código.\n\n\
-                             Un código se lee por encima del hombro y se puede \
-                             exigir en voz alta; una firma desde el elemento \
-                             seguro de TU teléfono, no. Confirma desde la app y \
-                             listo.\n\n\
-                             (La orden sigue armada.)",
+                            "🔒 «{}» needs your fingerprint, not a code.\n\n\
+                             A code can be read over your shoulder and demanded \
+                             out loud; a signature from YOUR phone's secure \
+                             element cannot. Confirm from the app instead.\n\n\
+                             (The order stays armed.)",
                             p.kind.label()
                         ),
                     );
@@ -1524,9 +1530,9 @@ impl CommandBot {
                     log::error!("refusing to arm {kind:?}: {e:#}");
                     let _ = self.send(
                         chat_id,
-                        "❌ No pude generar un código de confirmación seguro, así que \
-                         no armo nada. Sin entropía, un código adivinable no es una \
-                         confirmación.",
+                        "❌ I could not generate a secure confirmation code, so I am \
+                         arming nothing. Without entropy, a guessable code is not a \
+                         confirmation.",
                     );
                     return;
                 }
@@ -1752,11 +1758,11 @@ impl CommandBot {
                 let _ = self.send(
                     chat_id,
                     &format!(
-                        "cr{reg} no se publica a lectores sin privilegio: es una \
-                         dirección, y regalarla a cualquier proceso local es \
-                         justo lo que quiere un exploit para saltarse KASLR.\n\n\
-                         Para que este daemon pueda leerla, carga el módulo con su \
-                         grupo:\n`sudo modprobe sysentinel_metrics \
+                        "cr{reg} is not published to unprivileged readers: it is an \
+                         address, and handing it to every local process is exactly \
+                         what an exploit wants in order to defeat KASLR.\n\n\
+                         To let this daemon read it, load the module with its \
+                         group:\n`sudo modprobe sysentinel_metrics \
                          write_gid=$(id -g sysentinel)`"
                     ),
                 );
@@ -2446,7 +2452,7 @@ PMU).";
             let ctx = self.effective_llama_ctx().max(8192);
             let cmd = llm::models::server_command(entry, ctx, 99);
             let mut msg = format!("📦 *Modelo:* `{}`\n\n```bash\n{cmd}\n```", entry.name);
-            msg.push_str("\n\nArranca con eso y luego `/llm llama`.");
+            msg.push_str("\n\nStart that, then `/llm llama`.");
             let _ = self.send_markdown(chat_id, &msg);
             return;
         }
@@ -2527,7 +2533,7 @@ PMU).";
                 chat_id,
                 &format!(
                     "🧬 *Modelo activo*  ·  chain: `{current}`\n{model_list}\n\n\
-                     Cambia con:\n`/model <name>` (override global)\n\
+                     Change it with:\n`/model <name>` (global override)\n\
                      `/model <provider> m1,m2` (cadena por provider)\n\
                      Ej: `/model gemini gemini-2.5-pro,gemini-2.5-flash`"
                 ),
@@ -2590,7 +2596,7 @@ PMU).";
             let _ = self.send(
                 chat_id,
                 &format!(
-                    "✅ Proveedor `{prov}` con modelos `{}` activo (chain `{}`), persistido.",
+                    "✅ Provider `{prov}` with models `{}` is live (chain `{}`), persisted.",
                     models.join("` → `"),
                     chain.join("` → `")
                 ),
@@ -2757,11 +2763,11 @@ PMU).";
         // An unreadable profile fails the confirmation rather than passing it:
         // this function authorises reboots and power-offs.
         let Some(phone) = crate::phonehome::load(&profile)? else {
-            anyhow::bail!("no hay teléfono emparejado: nada puede confirmar");
+            anyhow::bail!("no phone is paired: nothing can confirm anything");
         };
         if !crate::phonehome::verify_challenge(&phone.public_key_der, nonce.as_bytes(), signature) {
             anyhow::bail!(
-                "la firma no verifica contra la clave del teléfono emparejado"
+                "the signature does not verify against the paired phone's key"
             );
         }
 
@@ -2773,7 +2779,7 @@ PMU).";
                 .filter(|p| p.nonce == nonce && !p.is_expired())
         };
         let Some(control) = armed else {
-            anyhow::bail!("no hay ninguna orden armada con ese código, o ya expiró");
+            anyhow::bail!("no order is armed with that code, or it has expired");
         };
 
         let proof = crate::confirm::Confirmation {
@@ -2807,7 +2813,7 @@ PMU).";
         let (Some(bind), Some(key)) =
             (&self.config.phone.bind, &self.config.phone.pairing_key)
         else {
-            let _ = self.send(chat_id, "El canal del teléfono no está configurado.");
+            let _ = self.send(chat_id, "The phone channel is not configured.");
             return;
         };
         // `advertise` when it is set, exactly like the QR drawn at startup.
@@ -2827,7 +2833,7 @@ PMU).";
             Err(e) => {
                 let _ = self.send(
                     chat_id,
-                    &format!("❌ No pude leer la identidad TLS del equipo: {e:#}"),
+                    &format!("❌ I could not read this machine's TLS identity: {e:#}"),
                 );
                 return;
             }
@@ -2840,9 +2846,9 @@ PMU).";
                 eprintln!("\n{qr}\n  {uri}\n");
                 let _ = self.send(
                     chat_id,
-                    "📋 El QR de emparejamiento está en la consola del equipo.\n\n\
-                     No te lo mando por aquí a propósito: mandar la clave por el \
-                     canal que esa clave abre es justo al revés.",
+                    "📋 The pairing QR is on the machine's own console.\n\n\
+                     I am deliberately not sending it here: putting the key through \
+                     the very channel that key opens would be backwards.",
                 );
             }
             Err(e) => {
@@ -2858,12 +2864,12 @@ PMU).";
                 log::warn!("phone: home handset forgotten ({})", path.display());
                 let _ = self.send(
                     chat_id,
-                    "🔓 Olvidé el teléfono emparejado. El próximo que se conecte con \
-                     la clave de emparejamiento quedará registrado como el tuyo.",
+                    "🔓 I have forgotten the paired phone. The next one to connect \
+                     with the pairing key will be registered as yours.",
                 );
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                let _ = self.send(chat_id, "No había ningún teléfono registrado.");
+                let _ = self.send(chat_id, "There was no phone registered.");
             }
             Err(e) => {
                 let _ = self.send(chat_id, &format!("❌ No pude olvidarlo: {e}"));
@@ -2903,11 +2909,11 @@ PMU).";
                         let _ = self.send(
                             chat_id,
                             &format!(
-                                "❌ El perfil guardado de este equipo no se puede leer:\n\
-                                 {e:#}\n\nNo lo voy a sobrescribir solo, porque eso \
-                                 borraría el vínculo sin que lo hayas pedido. Míralo, y \
-                                 si quieres volver a definirlo: `/definehome delete` y \
-                                 luego `/definehome`."
+                                "❌ This machine's saved profile cannot be read:\n\
+                                 {e:#}\n\nI will not overwrite it on my own, because that \
+                                 would erase the binding without you asking for it. Look \
+                                 at it, and if you do want to define it again: \
+                                 `/definehome delete` then `/definehome`."
                             ),
                         );
                         return;
@@ -2973,10 +2979,10 @@ PMU).";
                 let base = crate::presence::default_baseline_path(&self.config.face.path);
                 let msg = match crate::presence::record_baseline(&base) {
                     Ok(n) => format!(
-                        "✅ Línea base USB registrada: *{n}* dispositivo(s) aceptados como \
-                         normales.\nA partir de ahora avisaré de cualquiera que aparezca."
+                        "✅ USB baseline recorded: *{n}* device(s) accepted as normal.\n\
+                         From now on I will report anything else that appears."
                     ),
-                    Err(e) => format!("❌ No pude escribir la línea base: {e}"),
+                    Err(e) => format!("❌ I could not write the baseline: {e}"),
                 };
                 let _ = self.send_markdown(chat_id, &msg);
                 return;
@@ -3010,9 +3016,9 @@ PMU).";
                 let _ = self.send(
                     chat_id,
                     &format!(
-                        "❌ Hay un perfil guardado pero no lo puedo leer:\n{e:#}\n\n\
-                         No defino nada encima. `/definehome delete` lo borra a \
-                         propósito si es lo que quieres."
+                        "❌ There is a saved profile and I cannot read it:\n{e:#}\n\n\
+                         I am not defining anything over it. `/definehome delete` \
+                         removes it deliberately if that is what you want."
                     ),
                 );
                 return;
@@ -3273,8 +3279,8 @@ PMU).";
         }
     }
 
-    /// `/face register [N]` — enrobar el rostro del dueño: envía 1..N fotos y
-    /// sólo se guardan los hashes pHash/wHash de 64 bits (jamás la imagen).
+    /// `/face register [N]` — enrol the owner's face: send 1..N photos and only
+    /// the 64-bit pHash/wHash pair is kept (never the image).
     fn cmd_face(&self, chat_id: i64, text: &str) {
         let rest = text.trim().strip_prefix("/face").unwrap_or("").trim();
         let mut it = rest.split_whitespace();
@@ -3293,11 +3299,11 @@ PMU).";
                 let _ = self.send(
                     chat_id,
                     &format!(
-                        "Mándame las *{n}* fotos de tu rostro ahora (una por mensaje). \
-                         Guardaré los hashes perceptuales (pHash + wHash, 64 bits) y, si \
-                         el tool del initramfs está instalado, el vector facial 128-D para \
-                         que el arranque te reconozca antes de descifrar. Nunca guardo la \
-                         imagen.{}\nNota: las fotos se procesan en el momento y se borran.",
+                        "Send me the *{n}* photos of your face now (one per message). \
+                         I keep the perceptual hashes (pHash + wHash, 64 bits) and, if the \
+                         initramfs tool is installed, the 128-D face vector so early boot \
+                         can recognise you before the disk is decrypted. I never keep the \
+                         image.{}\nNote: photos are processed on arrival and deleted.",
                         flag,
                     ),
                 );
@@ -3307,7 +3313,7 @@ PMU).";
                 match store {
                     Ok(s) => {
                         let msg = if s.is_empty() {
-                            "No hay ningún rostro registrado. Usa `/face register`.".to_string()
+                            "No face is enrolled. Use `/face register`.".to_string()
                         } else {
                             let vecs = s.entries.iter().filter(|e| e.embedding.is_some()).count();
                             let head: Vec<String> = s
@@ -3320,26 +3326,26 @@ PMU).";
                             let engine = if crate::facenn::available(&self.config.face) {
                                 if vecs > 0 {
                                     format!(
-                                        "🧠 Motor activo: *red neuronal* (coseno ≥ {:.2} = dueño, \
-                                         ≥ {:.2} = dudoso)",
+                                        "🧠 Engine: *neural network* (cosine ≥ {:.2} = owner, \
+                                         ≥ {:.2} = ambiguous)",
                                         self.config.face.nn_owner, self.config.face.nn_ambiguous
                                     )
                                 } else {
-                                    "⚠️ Motor activo: *hash perceptual* — hay tool pero ningún \
-                                     enroll tiene vector 128-D; vuelve a registrar con \
+                                    "⚠️ Engine: *perceptual hash* — the tool is there but no \
+                                     enrolment carries a 128-D vector; enrol again with \
                                      `/face register`"
                                         .to_string()
                                 }
                             } else {
                                 format!(
-                                    "⚠️ Motor activo: *hash perceptual* (más débil) — falta \
-                                     `{}`. El hash describe la foto entera, así que un \
-                                     desconocido en tu silla y tu fondo se le parece.",
+                                    "⚠️ Engine: *perceptual hash* (weaker) — `{}` is missing. \
+                                     The hash describes the whole picture, so a stranger in \
+                                     your chair against your background looks like you.",
                                     self.config.face.tool_path
                                 )
                             };
                             format!(
-                                "{} enroll(s) registrados ({} con vector 128-D para el \
+                                "{} enrolment(s) stored ({} with a 128-D vector for the \
                                  initramfs):\n{}\n\n{}",
                                 s.len(),
                                 vecs,
@@ -3371,10 +3377,10 @@ PMU).";
             _ => {
                 let _ = self.send(
                     chat_id,
-                    "`/face register [N]` — registrar tu rostro (envía N fotos)\n\
-                     `/face status` — cuántos hashes hay guardados\n\
-                     `/face forget` — borrar todos los hashes\n\
-                     `/face cancel` — cancelar un registro en curso",
+                    "`/face register [N]` — enrol your face (send N photos)\n\
+                     `/face status` — how many hashes are stored\n\
+                     `/face forget` — delete every hash\n\
+                     `/face cancel` — cancel an enrolment in progress",
                 );
             }
         }
@@ -3435,14 +3441,14 @@ PMU).";
         };
 
         let engine = if embedding.is_some() {
-            "con vector 128-D (la red neuronal podrá reconocerte)"
+            "with a 128-D vector (the neural network can recognise you)"
         } else {
-            "solo hashes — falta el tool `sysentinel-face`, el reconocimiento será débil"
+            "hashes only — `sysentinel-face` is missing, so recognition will be weak"
         };
         let msg = if remaining == 0 {
             format!(
                 "✅ Rostro registrado {engine}.\n`p{p_hash:08x}` `w{w_hash:08x}`\n\n\
-                 No guardé la foto: solo los hashes y el vector."
+                 I did not keep the photo: only the hashes and the vector."
             )
         } else {
             format!("✅ Recibida ({engine}). Quedan *{remaining}* foto(s).")
@@ -3450,9 +3456,9 @@ PMU).";
         let _ = self.send_markdown(0, &msg);
     }
 
-    /// 128-D embedding de una foto vía el tool estático del initramfs
-    /// (`sysentinel-face --embed`), usado como template del veredicto NN.
-    /// `None` cuando el tool no está instalado, no hay cara o algo falló.
+    /// 128-D embedding of a photo via the static initramfs tool
+    /// (`sysentinel-face --embed`), used as the template for the NN verdict.
+    /// `None` when the tool is absent, there is no face, or something failed.
     fn face_embedding(&self, bytes: &[u8]) -> Option<Vec<f32>> {
         #[derive(serde::Deserialize)]
         struct ToolOut {

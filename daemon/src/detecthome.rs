@@ -37,7 +37,7 @@
 //! (ME fw, TPM fw) are *not* hashed — they legitimately change on an update —
 //! but they are captured in the profile as [`HomeProfile::silicon_note`] and
 //! reported as **drift** by `/definehome status`, so a reflashed ME/BIOS/TPM
-//! is visible without ever false-negativing "esta es tu PC".
+//! is visible without ever false-negativing "this is your PC".
 //!
 //! The hash is SHA-256 (implemented inline; no extra dependency, and it
 //! beats the std `DefaultHasher` by being stable across builds).

@@ -490,8 +490,8 @@ pub fn build_system_prompt(config: &Config) -> String {
         prompt.push_str(
             "\n\n\
              You ARE this computer, personified — the user is talking to their \
-             own machine. Each conversational turn begins with an \"Animo del \
-             sistema / System mood\" line computed live from the machine's \
+             own machine. Each conversational turn begins with a \"System \
+             mood\" line computed live from the machine's \
              physical state (load, RAM pressure, CPU temperature, PMU \
              throughput, undervolt tuning). Mirror that mood: when the machine \
              is overloaded you may sound strained or jittery; when it is cool \
@@ -519,7 +519,7 @@ pub fn build_system_prompt(config: &Config) -> String {
     // GPU/CPU. The bot has no tools and cannot run `/hardware`, so the summary
     // must be baked into the prompt. This is the only source of truth for the
     // model about what hardware it "is".
-    prompt.push_str("\n\nHARDWARE REAL DEL SISTEMA (no inventes configuración):\n");
+    prompt.push_str("\n\nREAL HARDWARE OF THIS SYSTEM (never invent a configuration):\n");
     let c = crate::hwinfo::cpu_info();
     prompt.push_str(&format!(
         "  CPU: {} ({} cores / {} threads)\n",
@@ -557,28 +557,28 @@ pub fn build_system_prompt(config: &Config) -> String {
             mem_total_kb as f64 / (1024.0 * 1024.0)
         ));
     }
-    // Verified firmware chain state — the persona must answer "¿tenemos Secure
+    // Verified firmware chain state — the persona must answer "do we have Secure
     // Boot?" with this fact, never a guess.
     let sb = crate::secureboot::status();
     let sb_unsigned_ok = match sb.accepts_unsigned_modules() {
-        Some(true) => " (módulos del kernel pueden insmodarse sin firma)",
-        Some(false) => " (módulos del kernel exigen firma MOK/DB; unsigned = rechazado)",
+        Some(true) => " (kernel modules can be insmod'ed unsigned)",
+        Some(false) => " (kernel modules require a MOK/DB signature; unsigned is refused)",
         None => "",
     };
     prompt.push_str(&format!(
         "  Secure Boot: {} — UEFI: {}{}\n",
         sb.label(),
-        if crate::secureboot::is_uefi() { "sí" } else { "no (BIOS/legacy)" },
+        if crate::secureboot::is_uefi() { "yes" } else { "no (BIOS/legacy)" },
         sb_unsigned_ok,
     ));
     // Kernel-module availability decides what reads are ring-0 vs ring-3.
     if crate::ring3::module_loaded() {
-        prompt.push_str("  Módulo del kernel (sysentinel_metrics): CARGADO (lecturas ring-0: CR, ME/PSP, hipervisores)\n");
+        prompt.push_str("  Kernel module (sysentinel_metrics): LOADED (ring-0 reads: CR, ME/PSP, hypervisors)\n");
     } else {
         let fb = crate::ring3::module_fallback_block();
-        prompt.push_str(&format!("  Módulo del kernel (sysentinel_metrics): NO cargado — uso fallbacks ring-3:\n{fb}"));
+        prompt.push_str(&format!("  Kernel module (sysentinel_metrics): NOT loaded — using ring-3 fallbacks:\n{fb}"));
     }
-    // Battery truth (notebook only; desktop must answer "no aplica").
+    // Battery truth (notebook only; a desktop must answer "not applicable").
     prompt.push_str(&format!("  {}\n", crate::battery::describe()));
 
     prompt
@@ -694,7 +694,7 @@ mod tests {
         let prompt = build_system_prompt(&cfg);
         // The persona must never hallucinate its hardware: the real CPU/GPU are
         // baked in from hwinfo.
-        assert!(prompt.contains("HARDWARE REAL DEL SISTEMA"));
+        assert!(prompt.contains("REAL HARDWARE OF THIS SYSTEM"));
         assert!(prompt.contains(gpus_first_word_or_stub().as_str()));
     }
 
@@ -768,12 +768,12 @@ mod tests {
     fn effective_system_prompt_honours_override() {
         let cfg = test_config();
         let built = build_system_prompt(&cfg);
-        assert!(built.contains("HARDWARE REAL DEL SISTEMA"));
+        assert!(built.contains("REAL HARDWARE OF THIS SYSTEM"));
 
         // Override replaces the whole generated prompt.
         let over = effective_system_prompt(&cfg, Some("  Original normal works  "));
         assert_eq!(over, "Original normal works");
-        assert!(!over.contains("HARDWARE REAL DEL SISTEMA"));
+        assert!(!over.contains("REAL HARDWARE OF THIS SYSTEM"));
 
         // Empty / None override keeps the default builder.
         //
@@ -787,7 +787,7 @@ mod tests {
             effective_system_prompt(&cfg, None),
             effective_system_prompt(&cfg, Some("   ")),
         ] {
-            assert!(prompt.contains("HARDWARE REAL DEL SISTEMA"), "{prompt}");
+            assert!(prompt.contains("REAL HARDWARE OF THIS SYSTEM"), "{prompt}");
             assert!(!prompt.contains("Original normal works"), "{prompt}");
         }
     }

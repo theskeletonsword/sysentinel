@@ -280,7 +280,7 @@ mod tests {
         assert!(kept.ends_with('…'), "the cut must be visible");
 
         // Ordinary text is untouched, including multi-byte characters.
-        assert_eq!(clamp("  hola, ¿qué tal?  "), "hola, ¿qué tal?");
+        assert_eq!(clamp("  hello, how are you?  "), "hello, how are you?");
         assert_eq!(clamp(""), "");
 
         // And the cut never lands inside a character.
@@ -291,7 +291,7 @@ mod tests {
 
     #[test]
     fn parse_round_trip() {
-        let turns = vec![Turn::User("hola".into()), Turn::Assistant("hola tú".into())];
+        let turns = vec![Turn::User("hello".into()), Turn::Assistant("hello yourself".into())];
         let ser = MemoryStore::serialize(&turns);
         assert_eq!(MemoryStore::parse_context(&ser), turns);
     }

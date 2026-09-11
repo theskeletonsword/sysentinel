@@ -71,11 +71,11 @@ impl EvidenceRung {
     pub fn describe(&self) -> &'static str {
         match self {
             EvidenceRung::Face =>
-                "cámara disponible — se puede identificar el rostro",
+                "a camera is available — a face can be identified",
             EvidenceRung::Voice =>
-                "sin cámara, pero hay micrófono — queda la voz",
+                "no camera, but there is a microphone — a voice is left",
             EvidenceRung::Circumstantial =>
-                "sin cámara ni micrófono — solo circunstancias, no identidad",
+                "no camera and no microphone — circumstances only, never identity",
         }
     }
 }
@@ -372,9 +372,9 @@ fn describe_storage(fingerprint: &str) -> String {
             }
             // The two facts that change what attaching it means.
             if kind.is_encrypted() {
-                s.push_str(" [cerrado: no se puede saber qué lleva dentro]");
+                s.push_str(" [sealed: there is no telling what it holds]");
             } else if kind.is_mountable_filesystem() {
-                s.push_str(" [montable ya mismo: se puede copiar a él sin más]");
+                s.push_str(" [mountable right now: anything can be copied onto it]");
             }
             s
         }
@@ -472,13 +472,13 @@ impl Circumstance {
 
         if self.baseline_missing {
             out.push(
-                "sin línea base de dispositivos todavía — se registra ahora; los avisos de \
-                 'dispositivo nuevo' empiezan a partir del próximo arranque"
+                "no device baseline yet — recording one now; 'new device' alerts start \
+                 from the next boot"
                     .to_string(),
             );
         } else if !self.new_devices.is_empty() {
             out.push(format!(
-                "⚠️ {} dispositivo(s) nuevo(s) desde la última línea base: {}",
+                "⚠️ {} new device(s) since the last baseline: {}",
                 self.new_devices.len(),
                 self.new_devices.join(", ")
             ));
@@ -486,14 +486,14 @@ impl Circumstance {
 
         if !self.new_keyboards.is_empty() {
             out.push(format!(
-                "⚠️ teclado(s) que no estaban antes: {} — alguien trajo su forma de escribir",
+                "⚠️ keyboard(s) that were not here before: {} — somebody brought their own way of typing",
                 self.new_keyboards.join(", ")
             ));
         }
 
         if !self.new_mtp.is_empty() {
             out.push(format!(
-                "⚠️ teléfono o cámara en modo transferencia: {} — no es un disco, pero \
+                "⚠️ a phone or camera in transfer mode: {} — not a disk, but it \
                  se lleva archivos igual de bien",
                 self.new_mtp.join(", ")
             ));
@@ -501,7 +501,7 @@ impl Circumstance {
 
         if !self.new_storage.is_empty() {
             out.push(format!(
-                "⚠️ almacenamiento nuevo: {} — conectar un disco a una máquina desatendida \
+                "⚠️ new storage: {} — plugging a disk into an unattended machine \
                  no es curiosear, es copiar",
                 self.new_storage.join(", ")
             ));
@@ -509,14 +509,14 @@ impl Circumstance {
 
         if !self.missing_devices.is_empty() {
             out.push(format!(
-                "{} dispositivo(s) que ya no están: {}",
+                "{} device(s) that are no longer here: {}",
                 self.missing_devices.len(),
                 self.missing_devices.join(", ")
             ));
         }
 
         match self.on_battery {
-            Some(true) => out.push("funcionando con batería — desconectada de la red".to_string()),
+            Some(true) => out.push("running on battery — unplugged from the mains".to_string()),
             Some(false) => out.push("conectada a la corriente".to_string()),
             None => {}
         }
@@ -665,10 +665,10 @@ impl PresenceEvidence {
         let _ = writeln!(out, "  Nivel: {}", self.rung().describe());
 
         if !self.sensors.cameras.is_empty() {
-            let _ = writeln!(out, "  Cámaras: {}", self.sensors.cameras.join(", "));
+            let _ = writeln!(out, "  Cameras: {}", self.sensors.cameras.join(", "));
         }
         if !self.sensors.microphones.is_empty() {
-            let _ = writeln!(out, "  Micrófonos: {}", self.sensors.microphones.len());
+            let _ = writeln!(out, "  Microphones: {}", self.sensors.microphones.len());
         }
 
         let notes = self.circumstance.notes();
@@ -681,9 +681,9 @@ impl PresenceEvidence {
 
         if self.rung() == EvidenceRung::Circumstantial {
             out.push_str(
-                "\n  Nada de lo anterior identifica a nadie: son circunstancias, no \
-                 identidad.\n  Con este hardware la única respuesta fiable a \"¿eres tú?\" \
-                 es esta conversación.\n",
+                "\n  None of the above identifies anybody: these are circumstances, \
+                 not identity.\n  With this hardware the only reliable answer to \
+                 \"is that you?\" is this conversation.\n",
             );
         }
         out
@@ -792,7 +792,7 @@ pub fn run_device_loop(
         }
         for d in &c.new_mtp {
             if !announced.contains(d) {
-                fresh.push(("teléfono/cámara (MTP)", d));
+                fresh.push(("phone/camera (MTP)", d));
             }
         }
         if fresh.is_empty() {
@@ -811,9 +811,10 @@ pub fn run_device_loop(
             .collect::<Vec<_>>()
             .join("\n");
         let facts = format!(
-            "Hardware que no estaba en la línea base aceptada por el dueño:\n{facts}\n\
-             Puede que lo haya conectado el propio dueño: esto es una PREGUNTA, no una \
-             acusación. Pregúntale si fue él, en tu voz, y termina con una pregunta clara."
+            "Hardware that was not in the baseline the owner accepted:\n{facts}\n\
+             The owner may well have plugged it in themselves: this is a QUESTION, not \
+             an accusation. Ask whether it was them, in your own voice, and end with a \
+             clear question."
         );
 
         log::warn!("device-watch: new capability attached, asking the owner:\n{facts}");
@@ -826,16 +827,21 @@ pub fn run_device_loop(
             continue;
         }
 
-        // Park the question so a plain "sí" from the owner is understood as
+        // Park the question so a plain "yes" from the owner is understood as
         // "I plugged that in" — and accepted into the baseline.
         {
             let mut g = state.lock().expect("bot state mutex");
             g.pending_devices = fresh.iter().map(|(_, f)| (*f).clone()).collect();
         }
 
-        let text = speak(config, settings, llm, "🔌 ¿Conectaste algo?", &facts);
+        let ask = crate::lang::t("presence.ask_title", "🔌 Did you plug something in?");
+        let text = speak(config, settings, llm, &ask, &facts);
         let text = format!(
-            "{text}\n\n_Responde *sí* si fuiste tú (lo acepto como normal) o *no* si no._"
+            "{text}\n\n{}",
+            crate::lang::t(
+                "presence.ask_footer",
+                "_Answer *yes* if it was you (I take it as normal) or *no* if it was not._"
+            )
         );
         if crate::channel::notify(&text) == 0 {
             log::warn!("device-watch: nobody could be reached with this question");
@@ -888,10 +894,10 @@ mod tests {
             circumstance: Circumstance::default(),
         };
         let text = ev.render();
-        assert!(text.contains("sin cámara ni micrófono"), "{text}");
-        assert!(text.contains("identifica a nadie"), "{text}");
+        assert!(text.contains("no camera and no microphone"), "{text}");
+        assert!(text.contains("identifies anybody"), "{text}");
         // It must point at the rung that actually works.
-        assert!(text.contains("esta conversación"), "{text}");
+        assert!(text.contains("this conversation"), "{text}");
     }
 
     #[test]
@@ -899,7 +905,7 @@ mod tests {
         // Everything being "new" on first run would cry wolf immediately.
         let c = Circumstance { baseline_missing: true, ..Default::default() };
         let notes = c.notes();
-        assert!(notes.iter().any(|n| n.contains("línea base")), "{notes:?}");
+        assert!(notes.iter().any(|n| n.contains("baseline")), "{notes:?}");
         assert!(!notes.iter().any(|n| n.contains("nuevo(s)")), "{notes:?}");
     }
 
@@ -912,7 +918,7 @@ mod tests {
         };
         let notes = c.notes();
         assert!(notes.iter().any(|n| n.contains("Rubber Ducky")), "{notes:?}");
-        assert!(notes.iter().any(|n| n.contains("teclado")), "{notes:?}");
+        assert!(notes.iter().any(|n| n.contains("keyboard")), "{notes:?}");
 
         // A keyboard that was always there is NOT a finding: this laptop's own
         // built-in keyboard presents two boot-protocol HID interfaces.

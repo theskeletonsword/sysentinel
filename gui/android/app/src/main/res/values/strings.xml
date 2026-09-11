@@ -1,7 +1,98 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  SPDX-License-Identifier: Apache-2.0
+
+  English is the source. Translations live beside this file in values-<lang>/,
+  which is Android's own mechanism: the platform picks by the phone's locale,
+  so a Spanish handset gets Spanish without anybody configuring anything, and a
+  missing translation falls back here rather than showing a key.
+-->
 <resources>
     <string name="app_name">sysentinel</string>
-    <string name="hint_message">Escribe un mensaje…</string>
-    <string name="send">Enviar</string>
-    <string name="confirm_with_biometric">Confirmar con huella</string>
+
+    <!-- Chat -->
+    <string name="hint_message">Type a message…</string>
+    <string name="send">Send</string>
+    <string name="conversation">Conversation</string>
+
+    <!-- Pairing -->
+    <string name="pair_title">Pair</string>
+    <string name="pair_blurb">A direct connection to your machine: no relay, no server in between. The first time, get on the same WiFi as the PC and scan its QR. After that it does not matter where you are: the link does not expire, you only need to be able to reach the machine — same network, or your VPN. If the address changes, correct it here; there is no need to pair again.</string>
+    <string name="pair_scan">Scan the machine\'s QR</string>
+    <string name="pair_scan_prompt">Point at the QR the machine is showing</string>
+    <string name="pair_or_by_hand">…or type it in:</string>
+    <string name="pair_host">Machine (IP or name)</string>
+    <string name="pair_port">Port</string>
+    <string name="pair_key">Pairing key (64 hex)</string>
+    <string name="pair_key_ok">correct format</string>
+    <string name="pair_key_short">characters missing: it is 64 hexadecimal</string>
+    <string name="pair_save">Save and connect</string>
+    <string name="pair_scan_error">That QR is not one of ours, or something is missing from it (address, key, or the machine\'s TLS fingerprint). If the machine listens on 0.0.0.0, change it to the specific address.</string>
+    <string name="pair_scan_cancelled">Cancelled.</string>
+
+    <!-- Identity header -->
+    <string name="backing_strongbox">Dedicated secure element · fingerprint</string>
+    <string name="backing_tee">TrustZone · fingerprint</string>
+    <string name="backing_software">No hardware backing — weak confirmations</string>
+    <string name="backing_none">No device identity</string>
+    <string name="crypto_aes">encryption: AES-256-GCM (ARM extensions)</string>
+    <string name="crypto_chacha">encryption: ChaCha20-Poly1305 (no hardware AES)</string>
+    <string name="machine_change">machine: %1$s:%2$d · change</string>
+
+    <!-- Confirmation -->
+    <string name="confirm_with_biometric">Confirm with fingerprint</string>
+    <string name="confirm_waiting">There is an armed order waiting</string>
+    <string name="confirm_can_sign">Your fingerprint authorises it. No need to type the code.</string>
+    <string name="confirm_cannot_sign">This phone cannot sign: answer with %1$s.</string>
+    <string name="confirm_button">Confirm</string>
+    <string name="confirm_prompt_title">Confirm: %1$s</string>
+    <string name="confirm_prompt_subtitle">Your fingerprint authorises this order and only this one.</string>
+    <string name="confirm_cancel">Cancel</string>
+    <string name="confirm_cancelled">Cancelled. The order stays armed until it expires.</string>
+    <string name="confirm_biometric_failed">Biometric failed (%1$s). Nothing was confirmed.</string>
+    <string name="confirm_no_signature">The system did not return the signature; nothing was confirmed.</string>
+    <string name="confirm_sign_failed">I could not sign the confirmation: %1$s</string>
+    <string name="confirm_unavailable">This phone cannot sign confirmations (no biometric enrolled, or no usable Keystore). Use the code.</string>
+    <string name="confirm_default_label">the armed order</string>
+
+    <!-- Intent pairing (legacy flavour) -->
+    <string name="intent_title">Was that you?</string>
+    <string name="intent_pair">Pair this phone with %1$s:%2$d\n\nand store the key and TLS fingerprint that came with the order.</string>
+    <string name="intent_move">Change the machine\'s address to %1$s:%2$d\n\nThe key and the pairing itself are untouched.</string>
+    <string name="intent_explain">\n\nThis arrived in the intent that opened the app. If you did not just do this from a PC, say no.</string>
+    <string name="intent_yes">Yes, that was me</string>
+    <string name="intent_no">No</string>
+
+    <!-- Connection state -->
+    <string name="state_unpaired">Not paired — the machine and the key are missing</string>
+    <string name="state_connected">Connected to %1$s</string>
+    <string name="state_waiting">%1$d waiting</string>
+    <string name="state_recognised">phone recognised</string>
+    <string name="state_registered">phone registered as yours</string>
+    <string name="state_different">⚠️ DIFFERENT PHONE</string>
+    <string name="state_signature_failed">the signature did not verify</string>
+    <string name="state_no_device_key">no device key</string>
+    <string name="state_wrong_phone">⚠️ The machine says this is NOT the phone it was paired with. If you did not re-pair it, somebody else has the pairing key.</string>
+    <string name="state_lost">connection lost</string>
+    <string name="state_offline_send">no connection — cannot send it yet</string>
+    <string name="state_send_failed">could not send</string>
+    <string name="state_offline_photo">no connection — the photo did not go out</string>
+    <string name="state_photo_failed">could not send the photo</string>
+    <string name="state_offline_confirm">no connection — I could not confirm</string>
+    <string name="state_confirm_failed">the confirmation failed</string>
+
+    <!-- Errors from the link -->
+    <string name="err_no_pin">This pairing predates TLS on the channel and has no fingerprint for the machine stored.\n\nScan the QR again: I will not connect without being able to check that the thing answering is your machine and not another.</string>
+    <string name="err_connect">I could not connect to %1$s:%2$d.\n\nThis is a direct connection: there is no relay. Check that you are on the same network as the machine, or that the VPN is up.</string>
+    <string name="err_tls">I could not establish TLS with %1$s:%2$d.\n\n%3$s</string>
+    <string name="err_tls_too_old">This phone offers neither TLS 1.2 nor 1.3. It is too old to talk to the machine safely.</string>
+    <string name="err_no_cert">the machine presented no certificate</string>
+    <string name="err_pin_mismatch">The machine\'s key is not the one you saved when pairing.\n\nExpected %1$s\nand got %2$s.\n\nEither the daemon was reinstalled (and you need to pair again), or somebody is answering in its place.</string>
+    <string name="err_daemon">daemon error</string>
+    <string name="err_hello_refused">the daemon refused the greeting</string>
+    <string name="err_confirm_refused">the machine refused the confirmation</string>
+    <string name="err_photo_refused">the machine refused the photo</string>
+    <string name="err_no_connection">no connection is open</string>
+    <string name="err_frame_size">the daemon announced a %1$d-byte frame</string>
+    <string name="err_frame_auth">The frame did not authenticate.\n\nAlmost always this means the pairing key does not match the machine\'s. If the machine uses ChaCha20-Poly1305 (a CPU with no hardware AES), this phone needs Android 9 or later.</string>
 </resources>

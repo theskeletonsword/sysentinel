@@ -1,53 +1,55 @@
 <!-- SPDX-License-Identifier: Apache-2.0 -->
+<!-- Spanish version: lang/es/tutorial-tailscale.md -->
 
-# Enlazar el PC y el celular por Tailscale
+# Linking the host and the phone over Tailscale
 
-Esto es la ruta recomendada para llegar a tu equipo desde fuera de casa, y la
-razón es una sola: **la dirección de Tailscale es la misma en el sofá y en
-Marte**. El QR que escaneas una vez sigue valiendo desde otro continente, no
-hay que reconfigurar nada al viajar, y el puerto del daemon no existe fuera de
-tu red privada — los escaneos de internet ni lo ven. Funciona además bajo CGNAT,
-que es donde el port forwarding simplemente no es posible.
+This is the recommended way to reach your machine from outside, for one reason:
+**the Tailscale address is the same on your sofa and on Mars.** The QR you scan
+once still works from another continent, nothing needs reconfiguring when you
+travel, and the daemon's port does not exist outside your private network —
+internet-wide scans never even see it. It also works under CGNAT, which is
+where port forwarding is simply not possible.
 
-Si prefieres las otras dos rutas (redirección de puerto + DDNS, o un túnel tipo
-ngrok), están en `daemon/config/config.example.toml` con sus pegas escritas sin
-adornos. Esta es la que menos te va a molestar.
+If you prefer the other two routes (port forward + DDNS, or a tunnel like
+ngrok), they are in `daemon/config/config.example.toml` with their costs
+written down plainly. This is the one that will bother you least.
 
-> **Qué cuesta, para que lo sepas antes de empezar.** Tailscale coordina las
-> claves con un servidor suyo. El tráfico **no** pasa por ahí — es WireGuard
-> punto a punto, y si no hay ruta directa el relay DERP solo ve cifrado — pero
-> ese servidor sabe qué equipos tienes, cómo se llaman y cuándo se conectan. Si
-> eso te sobra, al final hay una sección con las alternativas.
+> **What it costs, before you start.** Tailscale coordinates keys through a
+> server of theirs. The traffic does **not** pass through it — it is WireGuard
+> point to point, and when there is no direct route the DERP relay only sees
+> ciphertext — but that server does know which machines you have, what they are
+> called, and when they connect. If that is too much, there is a section at the
+> end with the alternatives.
 
 ---
 
-## Lo que vas a tener al terminar
+## What you end up with
 
 ```
-   Celular (cliente)                        PC (host)
+   Phone (client)                           PC (host)
    ┌────────────────┐                       ┌────────────────────────┐
-   │ app sysentinel │                       │ sysentinel-daemon      │
-   │ app Tailscale  │                       │ tailscaled             │
+   │ sysentinel app │                       │ sysentinel-daemon      │
+   │ Tailscale app  │                       │ tailscaled             │
    └───────┬────────┘                       └───────────┬────────────┘
            │  100.x.y.z:8443                            │
-           │  TLS 1.3 + frames sellados                 │
+           │  TLS 1.3 + sealed frames                   │
            └──────────── WireGuard ─────────────────────┘
-                    (directo, o relay DERP cifrado)
+                   (direct, or an encrypted DERP relay)
 ```
 
-Cuatro cosas tienen que ser verdad a la vez, y el tutorial es básicamente
-comprobarlas en orden:
+Four things have to be true at once, and this tutorial is mostly checking them
+in order:
 
-1. Los dos equipos están en **la misma cuenta** de Tailscale (el error nº 1).
-2. `[phone] bind` apunta a la **IP de Tailscale del PC**, no a la de la LAN.
-3. `tailscaled` arranca **antes** que el daemon.
-4. El celular escaneó el QR **después** de todo lo anterior.
+1. Both machines are on **the same Tailscale account** (mistake number one).
+2. `[phone] bind` points at the **PC's Tailscale IP**, not its LAN address.
+3. `tailscaled` starts **before** the daemon.
+4. The phone scanned the QR **after** all of the above.
 
 ---
 
-## 1. Tailscale en el PC
+## 1. Tailscale on the PC
 
-En Fedora (que es lo que corres):
+On Fedora:
 
 ```sh
 sudo dnf install tailscale
@@ -55,118 +57,119 @@ sudo systemctl enable --now tailscaled
 sudo tailscale up
 ```
 
-`tailscale up` imprime una URL. Ábrela, inicia sesión, y **fíjate con qué
-cuenta** — ese detalle es el que hay que repetir en el celular.
+`tailscale up` prints a URL. Open it, sign in, and **note which account you
+used** — that is the detail you have to repeat on the phone.
 
-Comprueba que quedó arriba y apunta tu dirección:
+Check it came up, and note your address:
 
 ```sh
 tailscale status
-tailscale ip -4        # => 100.101.102.103   ← esta es la que importa
+tailscale ip -4        # => 100.101.102.103   ← this is the one that matters
 ```
 
-Esa `100.x` es tuya para siempre mientras el equipo siga en el tailnet. No
-cambia de red en red: ese es el truco entero.
+That `100.x` is yours for as long as the machine stays in the tailnet. It does
+not change from network to network: that is the whole trick.
 
-## 2. Tailscale en el celular
+## 2. Tailscale on the phone
 
-Instala la app de Tailscale desde Play Store (o el APK de tailscale.com si no
-usas Play), ábrela y entra **con la misma cuenta del paso anterior**. Nada más;
-no hace falta tocar exit nodes, subnet routers ni MagicDNS.
+Install the Tailscale app from Play Store (or the APK from tailscale.com if you
+do not use Play), open it, and sign in **with the same account as above**. That
+is all — no exit nodes, no subnet routers, no MagicDNS needed.
 
-Verifica desde el PC que el celular ya está en el tailnet:
+From the PC, check the phone has joined:
 
 ```sh
-tailscale status        # el celular tiene que aparecer en la lista
-tailscale ping <nombre-del-celular>
+tailscale status        # the phone has to appear in the list
+tailscale ping <phone-name>
 ```
 
-Si `tailscale ping` responde `direct`, van punto a punto. Si dice `via DERP`,
-también funciona — el relay solo mueve bytes cifrados que no puede leer — pero
-la latencia es peor. No hay nada que arreglar en ninguno de los dos casos.
+If `tailscale ping` reports a direct address, they are talking point to point.
+If it says `via DERP`, that works too — the relay only moves ciphertext it
+cannot read — but latency is worse. Neither case needs fixing.
 
-## 3. Apuntar el daemon a la dirección de Tailscale
+## 3. Point the daemon at the Tailscale address
 
-Lo más rápido, sin abrir el config:
+Quickest, without opening the config:
 
 ```sh
 sudo ./scripts/configure-credentials.sh --bind "$(tailscale ip -4):8443"
 ```
 
-O a mano, en `/etc/sysentinel/config.toml`:
+Or by hand, in `/etc/sysentinel/config.toml`:
 
 ```toml
 [phone]
 enabled = true
-bind    = "100.101.102.103:8443"   # la 100.x de `tailscale ip -4`
+bind    = "100.101.102.103:8443"   # the 100.x from `tailscale ip -4`
 ```
 
-Tres cosas que la gente hace mal aquí:
+Three things people get wrong here:
 
-- **`bind` es la IP de Tailscale, no la de la LAN.** Si pones la 192.168.x
-  funciona en casa y deja de funcionar al salir, que es justo lo que veníamos a
-  evitar.
-- **No pongas `0.0.0.0`.** Es una dirección de escucha, no un destino; el QR la
-  lleva tal cual y el celular no sabría a dónde marcar. El daemon te avisa.
-- **No hace falta `advertise`.** Es para cuando el QR tiene que decir algo
-  distinto de donde escuchas — un túnel, un nombre DDNS. Aquí escuchas justo
-  donde el celular marca.
+- **`bind` is the Tailscale IP, not the LAN one.** Put the 192.168.x there and
+  it works at home and stops working the moment you leave, which is exactly
+  what this was meant to avoid.
+- **Do not use `0.0.0.0`.** That is a listen address, not a destination; the QR
+  carries it verbatim and the phone would not know where to dial. The daemon
+  tells you.
+- **You do not need `advertise`.** That is for when the QR has to say something
+  other than where you listen — a tunnel, a DDNS name. Here you listen exactly
+  where the phone dials.
 
-Con MagicDNS puedes poner el nombre en `advertise` si prefieres leerlo
-(`advertise = "mi-pc.tailnet-1234.ts.net:8443"`), pero `bind` sigue siendo la
-IP: es lo que la máquina tiene de verdad, y es lo que se puede escuchar.
+With MagicDNS you can put the name in `advertise` if you prefer reading it
+(`advertise = "my-pc.tailnet-1234.ts.net:8443"`), but `bind` stays the IP: that
+is what the machine actually has, and what can actually be listened on.
 
-## 4. Arrancar, y escanear el QR
+## 4. Start it, and scan the QR
 
 ```sh
 sudo systemctl restart sysentinel
 sudo journalctl -u sysentinel -f
 ```
 
-Si nunca lo arrancaste, `enable --now` en vez de `restart`.
+If you have never started it, `enable --now` rather than `restart`.
 
-Sin teléfono registrado, el daemon dibuja el QR en la consola del equipo.
-Escanéalo **desde la app de sysentinel**, no desde la de Tailscale.
+With no phone registered, the daemon draws the QR on the machine's own console.
+Scan it **from the sysentinel app**, not from the Tailscale one.
 
-Ese QR lleva tres cosas: la dirección, la clave de emparejamiento, y la
-**huella TLS del equipo**. La app exige las tres — un QR sin huella lo rechaza
-en vez de conectarse a ciegas. Si vienes de una versión anterior de este
-proyecto, tu emparejamiento viejo no vale: hay que volver a escanear.
+That QR carries three things: the address, the pairing key, and the **machine's
+TLS fingerprint**. The app requires all three — a QR without the fingerprint is
+refused rather than connecting blind. If you are coming from an earlier version
+of this project, your old pairing is not valid: scan again.
 
-Justo después de escanear, el celular genera una llave dentro de su TEE
-(StrongBox/Titan si el modelo lo tiene) y la registra. A partir de ahí el
-equipo exige **además** la firma de ESE móvil y rechaza cualquier otro, aunque
-sea el mismo modelo con la misma clave de emparejamiento copiada.
+Right after scanning, the phone generates a key inside its TEE (StrongBox/Titan
+where the model has one) and registers it. From then on the machine also
+demands a signature from *that* handset and refuses any other, even the same
+model with a copied pairing key.
 
 ---
 
-## Comprobar que quedó bien
+## Checking it worked
 
-Lo primero, antes de culpar a nada: que los dos aparezcan en el mismo tailnet.
+First, before blaming anything: both machines on the same tailnet.
 
 ```sh
 tailscale status
-# 100.101.102.103  mi-pc     tu-cuenta@  linux    -
-# 100.104.105.106  mi-movil  tu-cuenta@  android  -
+# 100.101.102.103  my-pc     your-account@  linux    -
+# 100.104.105.106  my-phone  your-account@  android  -
 
-tailscale ping mi-movil
-# pong from mi-movil (100.104.105.106) via 203.0.113.9:39380 in 117ms
+tailscale ping my-phone
+# pong from my-phone (100.104.105.106) via 203.0.113.9:39380 in 117ms
 ```
 
-`pong … via <IP>:<puerto>` es conexión directa. `via DERP` también sirve.
+`pong … via <IP>:<port>` is a direct connection. `via DERP` is fine too.
 
-Desde el PC, que el puerto esté escuchando en la dirección correcta:
+From the PC, that the port is listening on the right address:
 
 ```sh
 ss -ltnp | grep 8443
 # LISTEN 0 128 100.101.102.103:8443 ...
 ```
 
-Desde el celular, antes de culpar a la app: abre la de Tailscale y mira que el
-PC aparezca como conectado. Si tienes Termux, `nc -vz 100.101.102.103 8443`
-responde en una línea.
+From the phone, before blaming the app: open the Tailscale app and check the PC
+shows as connected. With Termux, `nc -vz 100.101.102.103 8443` answers in one
+line.
 
-Y en el log del daemon, la línea que confirma las dos capas:
+And in the daemon's log, the line that confirms both layers:
 
 ```
 phone: listening on 100.101.102.103:8443 — direct, no relay, no third party
@@ -175,103 +178,105 @@ phone: authenticated client (app 0.1.0)
 
 ---
 
-## Cuando algo no va
+## When something does not work
 
-| Síntoma | Qué está pasando |
+| Symptom | What is happening |
 |---|---|
-| `phone: 100.x.y.z:8443 no existe todavía — esperando a que aparezca la interfaz` | El daemon arrancó antes que `tailscaled`. Espera hasta un minuto por su cuenta y el unit ya va detrás de `tailscaled.service`, así que normalmente se resuelve solo. Si persiste: `systemctl is-active tailscaled`. |
-| `phone: cannot listen on … Cannot assign requested address` | La `100.x` del config no es la de esta máquina (o Tailscale está caído). `tailscale ip -4` y corrige. |
-| La app dice «No pude conectar» | Mira la app de Tailscale en el celular: si el tailnet está caído ahí, no es cosa de sysentinel. Después, `tailscale status` en el PC para ver si el celular aparece. |
-| La app dice que la llave del equipo no es la que guardó | O reinstalaste el daemon (y se hizo un certificado nuevo), o alguien responde en su lugar. Si fuiste tú: borra el emparejamiento en la app y vuelve a escanear. Si no fuiste tú, ese mensaje es exactamente lo que esta herramienta existe para darte. |
-| Todo bien pero lento | `tailscale ping <celular>`: si va `via DERP`, estás pasando por un relay. Suele arreglarlo abrir UDP 41641 saliente en el router, y si no, funciona igual, más lento. |
-| Cuentas distintas | El error nº 1. `tailscale status` en el PC no lista el celular. Sal de la sesión en la app del celular y entra con la misma cuenta. |
+| `phone: 100.x.y.z:8443 does not exist yet — waiting for the interface` | The daemon started before `tailscaled`. It waits up to a minute on its own and the unit already orders itself after `tailscaled.service`, so this normally resolves itself. If it persists: `systemctl is-active tailscaled`. |
+| `phone: cannot listen on … Cannot assign requested address` | The `100.x` in the config is not this machine's (or Tailscale is down). `tailscale ip -4` and fix it. |
+| The app says it cannot connect | Check the Tailscale app on the phone: if the tailnet is down there, this is not a sysentinel problem. Then `tailscale status` on the PC to see whether the phone appears. |
+| The app says the machine's key is not the one it saved | Either you reinstalled the daemon (and it minted a new certificate), or something else is answering in its place. If it was you: delete the pairing in the app and scan again. If it was not you, that message is exactly what this tool exists to give you. |
+| Everything works but it is slow | `tailscale ping <phone>`: `via DERP` means you are going through a relay. Opening outbound UDP 41641 on the router usually fixes it; if not, it still works, just slower. |
+| Different accounts | Mistake number one. `tailscale status` on the PC does not list the phone. Sign out in the phone app and sign in with the same account. |
 
-**Sobre el firewall, en tu máquina concreta:** esta Fedora Workstation usa la
-zona `FedoraWorkstation`, que ya permite TCP 1025-65535 entrante — o sea que
-8443 está abierto y no tienes que tocar nada. En Fedora **Server** (zona
-`FedoraServer`) o con la zona `public`, no lo está, y entonces sí:
+**About the firewall, on Fedora specifically:** Fedora Workstation's default
+`FedoraWorkstation` zone already allows inbound TCP 1025-65535, so 8443 is open
+and there is nothing to do. On Fedora **Server** (the `FedoraServer` zone) or
+with the `public` zone it is not, and then:
 
 ```sh
-# Lo correcto es abrirlo SOLO en la interfaz de Tailscale, no en todas:
+# The right move is opening it ONLY on the Tailscale interface, not everywhere:
 sudo firewall-cmd --permanent --zone=trusted --change-interface=tailscale0
 sudo firewall-cmd --reload
 ```
 
-Poner `tailscale0` en la zona `trusted` es lo que recomienda la propia
-Tailscale, y es mejor que abrir el puerto a secas: el puerto queda accesible
-desde tu tailnet y desde ningún otro sitio.
+Putting `tailscale0` in the `trusted` zone is what Tailscale itself recommends,
+and it beats opening the port outright: the port becomes reachable from your
+tailnet and from nowhere else.
 
 ---
 
-## Endurecerlo un poco más (opcional, y vale la pena)
+## Tightening it further (optional, and worth it)
 
-Por defecto, en un tailnet personal **todos tus dispositivos pueden hablar con
-todos**. Si tienes más equipos ahí dentro, puedes dejar que solo el celular
-llegue al puerto del daemon, editando las ACL en la consola de Tailscale:
+By default, on a personal tailnet **every one of your devices can talk to every
+other**. If you have more machines in there, you can let only the phone reach
+the daemon's port, by editing the ACLs in the Tailscale console:
 
 ```jsonc
 {
   "acls": [
-    // Tu celular al puerto del daemon, y nada más hacia ese equipo.
-    { "action": "accept", "src": ["tag:celular"], "dst": ["tag:pc-vigilado:8443"] }
+    // Your phone to the daemon's port, and nothing else towards that machine.
+    { "action": "accept", "src": ["tag:phone"], "dst": ["tag:watched-pc:8443"] }
   ],
   "tagOwners": {
-    "tag:celular":    ["autogroup:admin"],
-    "tag:pc-vigilado": ["autogroup:admin"]
+    "tag:phone":       ["autogroup:admin"],
+    "tag:watched-pc":  ["autogroup:admin"]
   }
 }
 ```
 
-Luego etiquetas cada máquina (`tailscale up --advertise-tags=tag:pc-vigilado`).
-No es imprescindible — la clave de emparejamiento y la firma del móvil ya
-deciden quién habla — pero reduce a quién le contesta siquiera el socket, y eso
-es una superficie menos.
+Then tag each machine (`tailscale up --advertise-tags=tag:watched-pc`). It is
+not essential — the pairing key and the phone's signature already decide who
+gets to speak — but it narrows who the socket even answers, and that is one
+surface fewer.
 
-Otras dos, gratis:
+Two more, free:
 
-- **Key expiry.** Por defecto las llaves de un nodo caducan cada 180 días y hay
-  que reautenticar. Para el PC que vigila tu casa eso es una interrupción en el
-  peor momento: desactívalo para ese nodo en la consola (*Disable key expiry*).
-- **Tailnet lock**, si te lo tomas en serio: hace que un nodo nuevo tenga que
-  ser firmado por uno de confianza, de modo que ni alguien con acceso a tu
-  cuenta de Tailscale pueda meter un equipo en tu tailnet sin tocar tu llave.
-
----
-
-## Si no quieres un coordinador ajeno
-
-Lo dicho al principio: el tráfico no pasa por Tailscale, pero su servidor de
-coordinación sí sabe qué nodos tienes y cuándo se conectan. Dos salidas:
-
-- **Headscale** — el plano de control de Tailscale, reimplementado en abierto,
-  corriendo en tu propia máquina. Las apps oficiales de Tailscale funcionan
-  contra él. Es la opción si quieres exactamente esto sin el tercero.
-- **WireGuard a pelo** — sin coordinador de ningún tipo. Pierdes el
-  descubrimiento automático, el NAT traversal y el roaming, que es justo lo que
-  hace cómodo a Tailscale; a cambio no hay nadie más en la ecuación. Configura
-  el túnel, pon `bind` en la IP de WireGuard del PC, y el resto de este tutorial
-  vale igual.
-
-En los dos casos, para sysentinel no cambia nada: `bind` apunta a la dirección
-de la interfaz del túnel y el QR se escanea igual.
+- **Key expiry.** Node keys expire every 180 days by default and need
+  reauthenticating. For the PC watching your house that is an outage at the
+  worst possible moment: disable it for that node in the console (*Disable key
+  expiry*).
+- **Tailnet lock**, if you are serious: a new node has to be signed by a
+  trusted one, so not even somebody with access to your Tailscale account can
+  add a machine to your tailnet without touching your key.
 
 ---
 
-## Lo que sigue protegiéndote aunque el túnel falle
+## If you do not want somebody else's coordinator
 
-Tailscale es cómo se *llega* al equipo, no cómo se *autentica* quien llega. Aún
-dentro del tailnet, para que algo hable con tu daemon hacen falta tres cosas a
-la vez:
+As said at the top: the traffic does not go through Tailscale, but their
+coordination server does know which nodes you have and when they connect. Two
+ways out:
 
-1. Completar un **TLS 1.3** cuya llave el celular fijó al emparejar.
-2. Abrir un frame sellado con la **clave de emparejamiento**.
-3. Firmar un desafío con la llave que vive **dentro del TEE de ese celular**.
+- **Headscale** — Tailscale's control plane, reimplemented in the open, running
+  on your own machine. The official Tailscale apps work against it. This is the
+  option if you want exactly this setup without the third party.
+- **Plain WireGuard** — no coordinator at all. You lose the automatic
+  discovery, the NAT traversal and the roaming, which is precisely what makes
+  Tailscale comfortable; in exchange nobody else is in the picture. Configure
+  the tunnel, put `bind` on the PC's WireGuard address, and the rest of this
+  tutorial applies unchanged.
 
-Un nodo cualquiera de tu tailnet, o Tailscale mismo, no tiene ninguna de las
-tres. Por eso el canal no se apoya en la VPN para su seguridad: se apoya en
-ella para su alcance.
+Either way, nothing changes for sysentinel: `bind` points at the tunnel
+interface's address and the QR is scanned the same.
 
-Ver también: [`tutorial.md`](tutorial.md) para la instalación completa,
-[`SECURITY.md`](SECURITY.md) para qué está en scope y qué no, y la sección
-`[phone]` de `daemon/config/config.example.toml` para las otras dos rutas de
-acceso remoto con sus costes.
+---
+
+## What still protects you if the tunnel fails
+
+Tailscale is how you *reach* the machine, not how whoever reaches it is
+*authenticated*. Even inside your tailnet, three things have to be true at once
+before anything talks to your daemon:
+
+1. Complete a **TLS 1.3** handshake whose key the phone pinned at pairing.
+2. Open a frame sealed with the **pairing key**.
+3. Sign a challenge with the key living **inside that phone's TEE**.
+
+Any other node on your tailnet — or Tailscale itself — has none of the three.
+That is why the channel does not lean on the VPN for its security: it leans on
+it for its reach.
+
+See also: [`tutorial.md`](tutorial.md) for the full install,
+[`SECURITY.md`](SECURITY.md) for what is in scope and what is not, and the
+`[phone]` section of `daemon/config/config.example.toml` for the other two
+remote-access routes with their costs.

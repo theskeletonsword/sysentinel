@@ -232,7 +232,7 @@ pub fn bind(fingerprint: &str, base: &Path) -> Result<TpmKey> {
         .with_context(|| format!("tpmkey: create {}", dir.display()))?;
 
     if !command_exists("tpm2_createprimary") {
-        bail!("tpm2-tools no están instalados");
+        bail!("tpm2-tools is not installed");
     }
 
     let handle = pick_free_handle()?;
@@ -603,7 +603,7 @@ fn persistent_name(handle: u32) -> Result<String> {
             }
         }
     }
-    bail!("tpmkey: no se encontró `name:` en tpm2_readpublic")
+    bail!("tpmkey: no `name:` line in tpm2_readpublic output")
 }
 
 /// Load the seal into a fresh context and unseal it (two subprocesses, with a

@@ -16,7 +16,7 @@
 #   /sysroot/var/lib/sysentinel/luks-evidence/…  best-effort copy
 #
 # Uses boot_id (unique per kernel boot) so the daemon can dedupe and ask
-# "¿fui yo?" on the phone.
+# a "was that me?" question on the phone.
 
 set -u
 

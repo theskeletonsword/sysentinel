@@ -75,15 +75,18 @@ mod tests {
     fn terminal_escapes_are_removed() {
         // \x1b[2K\r erases the line just written, letting a USB device's
         // product string rewrite the record of its own arrival.
-        let device = "\u{1b}[2K\rTeclado del dueño";
+        let device = "\u{1b}[2K\rThe owner's keyboard";
         let out = label(device);
         assert!(!out.contains('\u{1b}'), "{out:?}");
         assert!(!out.contains('\r'), "{out:?}");
-        assert_eq!(out, "[2KTeclado del dueño");
+        assert_eq!(out, "[2KThe owner's keyboard");
     }
 
     #[test]
     fn ordinary_names_are_left_alone() {
+        // Accented and non-Latin names are ordinary: a Spanish keyboard and a
+        // Japanese device both report themselves that way, and mangling them
+        // would turn a sanitiser into a bug report about missing characters.
         for name in [
             "Logitech USB Receiver",
             "AT Translated Set 2 keyboard",

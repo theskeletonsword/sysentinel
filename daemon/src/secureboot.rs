@@ -10,7 +10,7 @@
 //!  4. `/sys/firmware/efi` missing ⇒ BIOS/legacy ⇒ Secure Boot does not apply.
 //!
 //! Called from `/secureboot` and injected into the persona's system prompt so
-//! the bot answers truthfully in plain conversation ("¿tenemos Secure Boot?").
+//! the bot answers truthfully in plain conversation ("do we have Secure Boot?").
 
 use std::path::Path;
 use std::process::Command;

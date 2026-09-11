@@ -50,7 +50,7 @@
 //! firmware, TPM firmware) which DO change on a legitimate firmware update —
 //! they are shown in the report and tracked as *drift*, but never mixed into
 //! the identity hash (so updating ME/BIOS/TPM firmware never false-negatives
-//! "esta no es tu PC").
+//! "this is not your PC").
 
 use std::fs;
 use std::path::Path;
@@ -446,7 +446,7 @@ pub fn hal_info() -> HalInfo {
         .or_else(|| {
             // Ring-3 fallback hypervisor truth when the module is absent.
             let v = crate::ring3::hypervisor_detect();
-            if v.contains("sin hypervisor") || v.contains("bare metal") {
+            if v.contains("no hypervisor") || v.contains("bare metal") {
                 None
             } else {
                 Some(v)

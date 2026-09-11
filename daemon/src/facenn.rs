@@ -162,45 +162,70 @@ impl FaceScene {
     }
 
     /// What this scene means, in the words a person would use about it.
-    pub fn interpretation(&self) -> &'static str {
+    ///
+    /// Owner-facing, so it goes through [`crate::lang`]: the English here is
+    /// what ships, and `lang/es.toml` carries the Spanish.
+    pub fn interpretation(&self) -> String {
         match self {
-            FaceScene::Empty =>
-                "nadie en el encuadre — la cámara vio la silla vacía, no a un desconocido",
-            FaceScene::OwnerAlone =>
-                "el dueño, solo — situación normal",
-            FaceScene::OwnerUnderWatch { .. } =>
-                "el dueño acompañado de alguien no registrado: alguien mira por encima del \
-                 hombro, o está ahí para asegurarse de que el dueño entre. Trátalo como \
-                 posible coerción y NO hagas nada visible en la máquina",
-            FaceScene::Inconclusive =>
-                "hay una cara pero el parecido no es concluyente — verifícalo tú",
-            FaceScene::IntruderAlone =>
-                "una persona no registrada y el dueño ausente: acceso oportunista a una \
-                 máquina desatendida",
+            FaceScene::Empty => crate::lang::t(
+                "face.scene.empty",
+                "nobody in frame — the camera saw an empty chair, not a stranger",
+            ),
+            FaceScene::OwnerAlone => crate::lang::t(
+                "face.scene.owner_alone",
+                "the owner, alone — the normal case",
+            ),
+            FaceScene::OwnerUnderWatch { .. } => crate::lang::t(
+                "face.scene.owner_under_watch",
+                "the owner with somebody unenrolled beside them: either a person \
+                 reading over their shoulder, or one making sure the owner logs in. \
+                 Treat it as possible coercion and do NOTHING visible on the machine",
+            ),
+            FaceScene::Inconclusive => crate::lang::t(
+                "face.scene.inconclusive",
+                "there is a face but the resemblance is not conclusive — check it yourself",
+            ),
+            FaceScene::IntruderAlone => crate::lang::t(
+                "face.scene.intruder_alone",
+                "one unenrolled person and no owner: opportunistic access to an \
+                 unattended machine",
+            ),
             // The count is not what makes this worse than a lone intruder.
-            FaceScene::CustodyLost { .. } =>
-                "varias personas no registradas y el dueño ausente: la máquina ya no está \
-                 bajo tu custodia y la están trabajando entre varios. Dos personas es la \
-                 firma de un procedimiento, no de una casualidad — un registro o una \
-                 incautación llevan testigo por norma. También encaja un robo con examen \
-                 posterior, o alguien de casa enseñándole tu equipo a una visita: por eso \
-                 la alerta es fuerte pero no destruye nada por su cuenta",
+            FaceScene::CustodyLost { .. } => crate::lang::t(
+                "face.scene.custody_lost",
+                "several unenrolled people and no owner: the machine has left your \
+                 custody and more than one person is working on it. Two people is the \
+                 signature of a procedure rather than an accident — a search or a \
+                 seizure brings a witness as a matter of policy. It also fits a theft \
+                 examined afterwards, or somebody at home showing your machine to a \
+                 visitor: which is why the alert is loud and still destroys nothing on \
+                 its own",
+            ),
         }
     }
 
     /// Headline for the alert.
     pub fn headline(&self) -> String {
         match self {
-            FaceScene::Empty => "👤 Sin caras en el encuadre".to_string(),
-            FaceScene::OwnerAlone => "👤 El dueño, solo".to_string(),
-            FaceScene::OwnerUnderWatch { others } => format!(
-                "🚨 *POSIBLE COERCIÓN* — el dueño con {others} persona(s) no registrada(s) al lado"
+            FaceScene::Empty => crate::lang::t("face.head.empty", "👤 No faces in frame"),
+            FaceScene::OwnerAlone => crate::lang::t("face.head.owner_alone", "👤 The owner, alone"),
+            FaceScene::OwnerUnderWatch { others } => crate::lang::t(
+                "face.head.owner_under_watch",
+                "🚨 *POSSIBLE COERCION* — the owner with {n} unenrolled person(s) beside them",
+            )
+            .replace("{n}", &others.to_string()),
+            FaceScene::Inconclusive => {
+                crate::lang::t("face.head.inconclusive", "👤 Resemblance not conclusive")
+            }
+            FaceScene::IntruderAlone => crate::lang::t(
+                "face.head.intruder_alone",
+                "🚨 An *unenrolled* face, no owner present",
             ),
-            FaceScene::Inconclusive => "👤 Parecido no concluyente".to_string(),
-            FaceScene::IntruderAlone => "🚨 Rostro *NO registrado*, dueño ausente".to_string(),
-            FaceScene::CustodyLost { count } => format!(
-                "🚨 *PÉRDIDA DE CUSTODIA* — {count} personas no registradas y ningún dueño"
-            ),
+            FaceScene::CustodyLost { count } => crate::lang::t(
+                "face.head.custody_lost",
+                "🚨 *CUSTODY LOST* — {n} unenrolled people and no owner",
+            )
+            .replace("{n}", &count.to_string()),
         }
     }
 }
@@ -240,25 +265,34 @@ impl NnOutcome {
     /// a phone notification is readable before it is expanded.
     pub fn verdict_text(&self) -> String {
         let cos = match (self.best_cosine, self.detection_score) {
-            (Some(c), Some(d)) => format!("coseno {c:.3}, detección {d:.2}"),
-            (Some(c), None) => format!("coseno {c:.3}"),
-            (None, Some(d)) => format!("sin coseno, detección {d:.2}"),
-            (None, None) => "sin coseno".to_string(),
+            (Some(c), Some(d)) => format!("cosine {c:.3}, detection {d:.2}"),
+            (Some(c), None) => format!("cosine {c:.3}"),
+            (None, Some(d)) => format!("no cosine, detection {d:.2}"),
+            (None, None) => "no cosine".to_string(),
         };
 
         let mut line = format!("{}\n{}", self.scene.headline(), self.scene.interpretation());
-        line.push_str(&format!("\n_(red neuronal, {cos})_"));
+        line.push_str(
+            &crate::lang::t("face.engine_nn", "\n_(neural network, {cos})_").replace("{cos}", &cos),
+        );
 
         if self.background_faces > 0 {
-            line.push_str(&format!(
-                "\n_{} cara(s) descartada(s) por tamaño — retrato, pantalla o fondo._",
-                self.background_faces
-            ));
+            line.push_str(
+                &crate::lang::t(
+                    "face.discarded_on_size",
+                    "\n_{n} face(s) discarded on size — a portrait, a screen or the background._",
+                )
+                .replace("{n}", &self.background_faces.to_string()),
+            );
         }
         if self.scene.keep_response_out_of_band() {
             line.push_str(
-                "\n\n⚠️ No se ejecuta ninguna acción local: si te están coaccionando, una \
-                 máquina que se apaga sola delata que avisó. Responde tú desde aquí.",
+                &crate::lang::t(
+                    "face.no_local_action",
+                    "\n\n⚠️ No local action is taken: if you are being coerced, a \
+                     machine that switches itself off announces that it informed on \
+                     you. Answer from here instead.",
+                ),
             );
         }
         line
@@ -547,7 +581,7 @@ pub fn assess(cfg: &FaceConfig, probe: &Path) -> Option<FaceAssessment> {
     }
 
     // Fallback: whole-image perceptual hashing. Say so — it is weaker, and a
-    // reader deciding whether to trust "es el dueño" needs to know which method
+    // reader deciding whether to trust "that is the owner" needs to know which
     // said it.
     let thr = crate::fhash::FaceThresholds {
         p_owner:     cfg.p_owner,
@@ -558,8 +592,8 @@ pub fn assess(cfg: &FaceConfig, probe: &Path) -> Option<FaceAssessment> {
     let line = crate::fhash::verdict_text(&thr, Path::new(&cfg.path), probe)?;
     Some(FaceAssessment {
         text: format!(
-            "{line}\n_(hash perceptual: sin `sysentinel-face` instalado — no puede \
-             distinguir cuántas personas hay en el encuadre)_"
+            "{line}\n_(perceptual hash: `sysentinel-face` is not installed — it \
+             cannot tell how many people are in frame)_"
         ),
         scene: None,
     })
@@ -645,8 +679,8 @@ mod tests {
         assert!(o.scene.keep_response_out_of_band());
 
         let text = o.verdict_text();
-        assert!(text.contains("COERCIÓN"), "{text}");
-        assert!(text.contains("acción local"), "{text}");
+        assert!(text.contains("COERCION"), "{text}");
+        assert!(text.contains("No local action"), "{text}");
     }
 
     #[test]
@@ -671,7 +705,7 @@ mod tests {
             group.scene.severity() > lone.scene.severity(),
             "a coordinated group must outrank a lone intruder"
         );
-        assert!(group.verdict_text().contains("CUSTODIA"));
+        assert!(group.verdict_text().contains("CUSTODY LOST"));
     }
 
     #[test]
@@ -689,7 +723,7 @@ mod tests {
         assert_eq!(o.background_faces, 1);
         assert_eq!(o.faces_detected, 1);
         assert!(!o.is_duress());
-        assert!(o.verdict_text().contains("descartada"));
+        assert!(o.verdict_text().contains("discarded on size"));
 
         // A person genuinely standing further back is still a person.
         let out = ToolOut {
@@ -722,7 +756,7 @@ mod tests {
         assert_eq!(o.scene, FaceScene::Empty);
         assert_eq!(o.scene.severity(), 0);
         assert!(!o.is_duress());
-        assert!(o.verdict_text().contains("Sin caras"));
+        assert!(o.verdict_text().contains("No faces in frame"));
     }
 
     #[test]

@@ -1,48 +1,52 @@
-# Tutorial de instalación — sysentinel
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+<!-- Spanish version: lang/es/tutorial.md -->
 
-Instala **todo**: el daemon (vigilante de logs del kernel + compañero IA que
-te habla al teléfono), su servicio systemd y el módulo del kernel
+# Installation tutorial — sysentinel
+
+Installs **everything**: the daemon (kernel-log watchdog + AI companion that
+talks to your phone), its systemd service, and the kernel module behind
 `/proc/sysentinel_metrics`.
 
-> Destinado a sistemas con kernel habilitado para Rust (`CONFIG_RUST=y`), por
-> ejemplo Fedora 44 con `kernel-devel` ≥ 7.1.8. El flujo es el mismo en otras
-> distros; adapta los nombres de paquete (`dnf` → `apt`/`pacman`) y el ruta del
-> árbol del kernel.
+> Aimed at systems with a Rust-enabled kernel (`CONFIG_RUST=y`) — Fedora 44
+> with `kernel-devel` ≥ 7.1.8, for example. The flow is the same on other
+> distributions; adapt the package names (`dnf` → `apt`/`pacman`) and the path
+> to the kernel tree.
 
 ---
 
-## 0. Requisitos
+## 0. Requirements
 
 ```sh
 # Fedora / RHEL:
 sudo dnf install git gcc make pkgconfig openssl-devel rust-up rust-std-static \
                  systemd-devel kernel-devel kernel-headers bindgen rust-bindgen
 
-# Python 3.10+ (herramienta de soporte del kernel, si la necesitas)
+# Python 3.10+ (kernel support tooling, if you need it)
 ```
 
-Necesitas además **Rust** para el daemon (usa `rustup`):
+You also need **Rust** for the daemon (via `rustup`):
 
 ```sh
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 ```
 
-**Importante:** para el módulo del kernel, el `rustc` usado debe ser el **mismo
-`rustc` que compiló tu kernel** (ver [Paso 4 - Módulo del kernel](#4-módulo-del-kernel-opcional)).
+**Important:** for the kernel module, the `rustc` you use must be the **same
+`rustc` that built your kernel** (see [Step 4 — kernel
+module](#4-kernel-module-optional)).
 
 ---
 
-## 1. Clonar y compilar el daemon
+## 1. Clone and build the daemon
 
 ```sh
-git clone https://github.com/tu-usuario/kernelgpt   # o copia el repo donde esté
-cd kernelgpt
-make daemon        # => cargo build --release (en daemon/)
+git clone https://github.com/your-user/sysentinel
+cd sysentinel
+make daemon        # => cargo build --release (in daemon/)
 ```
 
-El binario queda en `daemon/target/release/sysentinel-daemon`.
+The binary lands in `daemon/target/release/sysentinel-daemon`.
 
-Para verificar que todo compila y pasa sus tests:
+To check it all compiles and passes its tests:
 
 ```sh
 cd daemon && cargo test
@@ -50,114 +54,117 @@ cd daemon && cargo test
 
 ---
 
-## 2. La app del teléfono (el canal de salida)
+## 2. The phone app (the way out)
 
-No hay bot en ninguna red pública: el único canal es tu propio teléfono,
-conectado directo contra el daemon. Compila e instala el APK antes de seguir,
-para tenerlo a mano cuando aparezca el QR de pareo:
+There is no bot on any public network: the only channel is your own phone,
+connected directly to the daemon. Build and install the APK before going on, so
+it is to hand when the pairing QR appears:
 
 ```sh
-make apk-release          # las dos variantes, desde la raíz del repo
-# o, con más control:
-cd gui/android && gradle assembleModernRelease   # armv8a, GUI moderna
-cd gui/android && gradle assembleLegacyRelease   # armeabi-v7a, GUI clásica
+make apk-release          # both flavours, from the repository root
+# or, with more control:
+cd gui/android && gradle assembleModernRelease   # armv8a, modern UI
+cd gui/android && gradle assembleLegacyRelease   # armeabi-v7a, plain UI
 
 adb install -r gui/android/app/build/outputs/apk/modern/release/app-modern-release.apk
 ```
 
-Necesita un JDK, el Android SDK y **Gradle 9+** (el 8 no sabe leer Java 25).
-No hay wrapper en el repo: usa tu `gradle`, o `make apk-release`, que es lo
-mismo con `GRADLE=` configurable.
+Needs a JDK, the Android SDK and **Gradle 9+** (8 cannot parse Java 25). There
+is no wrapper in the repository: use your own `gradle`, or `make apk-release`,
+which is the same thing with a configurable `GRADLE=`.
 
-Firma de release: `gui/android/keystore.properties` (fuera de git) apunta a tu
-`.jks`. Sin ese archivo los APK salen SIN firmar y `apksigner` te lo dirá.
+Release signing: `gui/android/keystore.properties` (kept out of git) points at
+your `.jks`. Without that file the APKs come out UNSIGNED and `apksigner` will
+say so.
 
-> **Enlazar y alcanzar son dos cosas distintas.** Enlazar se hace UNA vez, en
-> casa, con el móvil en el mismo WiFi que el PC (sección 6). A partir de ahí el
-> vínculo no caduca y no depende de la red: da igual que estés en Italia, en
-> España o en Marte, sigue siendo tu PC. Lo que sí cambia con el sitio es si el
-> móvil puede ALCANZAR la máquina: en tu red funciona tal cual, y desde fuera
-> necesitas un camino que pongas tú, y hay tres que funcionan:
+> **Pairing and reaching are two different things.** Pairing happens ONCE, at
+> home, with the phone on the same WiFi as the PC (section 6). From then on the
+> link does not expire and does not depend on the network: Italy, Spain or Mars,
+> it is still your PC. What does change with where you are is whether the phone
+> can REACH the machine: on your own network it just works, and from outside you
+> need a route you provide. Three of them work:
 >
-> - **VPN** (Tailscale/WireGuard) — la recomendada, con su propio tutorial en
->   [`tutorial-tailscale.md`](tutorial-tailscale.md): `sudo tailscale up` en el
->   PC y la app de Tailscale en el móvil con la misma cuenta, `tailscale ip -4`
->   te da la `100.x` y esa va en `bind`. Esa misma dirección vale en casa y
->   fuera, así que no tocas nada al viajar, y el puerto no existe fuera de tu
->   red privada. Funciona también bajo CGNAT.
-> - **Port forward + DDNS**: `bind` en la IP de la LAN y
->   `advertise = "casa.duckdns.org:45678"` (el puerto EXTERNO del router). Ojo
->   con el *hairpin NAT*: en muchos routers esto funciona desde la calle y
->   falla probándolo en tu propia casa.
-> - **Túnel TCP** (`ngrok tcp 8443`, Cloudflare, SSH): `bind = "127.0.0.1:8443"`
->   y `advertise` = lo que te dé el túnel. Es la salida bajo CGNAT.
+> - **VPN** (Tailscale/WireGuard) — the recommended one, with its own guide in
+>   [`tutorial-tailscale.md`](tutorial-tailscale.md): `sudo tailscale up` on the
+>   PC and the Tailscale app on the phone under the same account, `tailscale ip
+>   -4` gives you the `100.x`, and that goes in `bind`. The same address works
+>   at home and away, so nothing changes when you travel, and the port does not
+>   exist outside your private network. Works under CGNAT too.
+> - **Port forward + DDNS**: `bind` on the LAN IP and
+>   `advertise = "home.duckdns.org:45678"` (the router's EXTERNAL port). Watch
+>   out for *hairpin NAT*: on many routers this works from the street and fails
+>   when you test it at home.
+> - **A TCP tunnel** (`ngrok tcp 8443`, Cloudflare, SSH): `bind =
+>   "127.0.0.1:8443"` and `advertise` = whatever the tunnel gives you. This is
+>   the way out under CGNAT.
 >
-> Las pegas de cada uno están escritas sin adornos en `config.example.toml`.
-> Sin camino, el daemon encola las alertas y te las entrega enteras al
-> reconectar: no las pierde.
+> The costs of each are written down plainly in `config.example.toml`. With no
+> route at all the daemon queues the alerts and delivers them whole when you
+> reconnect: it does not lose them.
 
 ---
 
-## 3. Configurar el daemon
+## 3. Configure the daemon
 
 ```sh
 cp daemon/config/config.example.toml daemon/config/config.toml
 nano daemon/config/config.toml
 ```
 
-> **Atajo:** `sudo ./scripts/configure-credentials.sh` hace esta sección entera
-> sin abrir el fichero — pregunta el proveedor, lee la clave sin mostrarla,
-> genera la clave de emparejamiento y valida el resultado. Si no tienes API ni
-> saldo, contesta «ninguno» y sigue funcionando todo menos la explicación.
+> **Shortcut:** `sudo ./scripts/configure-credentials.sh` does this whole
+> section without opening the file — it asks for the provider, reads the key
+> without echoing it, generates the pairing key and validates the result. If you
+> have no API and no credit, answer "none" and everything still works except the
+> explanation.
 
-Edita como mínimo estas claves:
+At minimum, set these:
 
-| Clave | Qué poner |
+| Key | What to put |
 |---|---|
-| `[phone] enabled` | `true` para levantar el canal del teléfono |
-| `[phone] bind` | La dirección por la que el TELÉFONO ve esta máquina (p. ej. `10.0.0.5:8443`). **No pongas `0.0.0.0`**: el QR la lleva tal cual y el móvil no sabría a dónde marcar |
-| `[llm] backend` | `deepseek`, `openai`, `anthropic`, `gemini`, `local` o `none` |
-| `[llm.deepseek] api_key` (o el backend que uses) | Tu API key del proveedor |
-| `[persona] tone` / `language` | Tono y idioma de las respuestas |
-| `[memory] memory_file` / `context_file` | Archivos de memoria; déjalos en `/var/lib/sysentinel/*` |
+| `[phone] enabled` | `true`, to bring the phone channel up |
+| `[phone] bind` | The address the PHONE sees this machine on (e.g. `10.0.0.5:8443`). **Not `0.0.0.0`**: the QR carries it verbatim and the phone would not know where to dial |
+| `[llm] backend` | `deepseek`, `openai`, `anthropic`, `gemini`, `local` or `none` |
+| `[llm.deepseek] api_key` (or whichever backend you use) | Your provider's API key |
+| `[persona] tone` / `language` | Tone and language of the answers |
+| `[memory] memory_file` / `context_file` | Memory files; leave them under `/var/lib/sysentinel/*` |
 
-Protege el archivo (contiene secretos):
+Protect the file (it holds secrets):
 
 ```sh
 chmod 600 daemon/config/config.toml
 ```
 
-> **No** subas `config.toml` con secretos reales a git. El repo solo debe
-> contener `config.example.toml` con placeholders.
+> Do **not** commit a `config.toml` with real secrets. The repository should
+> only ever contain `config.example.toml` with placeholders.
 
 ---
 
-## 4. Módulo del kernel (opcional)
+## 4. Kernel module (optional)
 
-> El daemon funciona sin el módulo (solo lee `/dev/kmsg`). El módulo expone
-> `/proc/sysentinel_metrics` con un snapshot de métricas, y sirve como ejemplo de
-> módulo Rust contra `rust-for-linux`.
+> The daemon works without it (reading `/dev/kmsg` alone). The module exposes
+> `/proc/sysentinel_metrics` with a metrics snapshot, and doubles as a worked
+> example of a Rust module against `rust-for-linux`.
 
-### 4.1 Verificar que tu kernel soporta Rust
+### 4.1 Check your kernel supports Rust
 
 ```sh
 grep CONFIG_RUST /boot/config-$(uname -r)
 # => CONFIG_RUST=y
 ```
 
-Si sale `# CONFIG_RUST is not set`, tu kernel no puede cargar módulos Rust:
-compila un kernel con `CONFIG_RUST=y` o salta este paso.
+If it says `# CONFIG_RUST is not set`, your kernel cannot load Rust modules:
+build a kernel with `CONFIG_RUST=y`, or skip this step.
 
-### 4.2 Usar el `rustc` exacto del kernel
+### 4.2 Use the kernel's exact `rustc`
 
-Los bindings precompilados del kernel (`/usr/src/kernels/<versión>/rust/*.rmeta`)
-**exigen el `rustc` con el que se construyeron**. Un `rustc` de la misma versión
-de *otra* fuente (p. ej. rustup) falla con `E0514 "found crate core compiled by
-an incompatible version of rustc"`.
+The kernel's precompiled bindings (`/usr/src/kernels/<version>/rust/*.rmeta`)
+**require the `rustc` they were built with**. A `rustc` of the same version from
+a *different* source (rustup, say) fails with `E0514 "found crate core compiled
+by an incompatible version of rustc"`.
 
-En Fedora 44 eso NO es problema: el compilador exacto ya viene instalado como
-**`/usr/bin/rustc`**, y el `Makefile` del módulo ancla `RUSTC`/`HOSTRUSTC` a
-esa ruta automáticamente. Solo compila (sin tocar el PATH):
+On Fedora 44 this is not a problem: the exact compiler is already installed as
+**`/usr/bin/rustc`**, and the module's `Makefile` pins `RUSTC`/`HOSTRUSTC` to
+that path automatically. Just build (without touching `PATH`):
 
 ```sh
 cd kernel_module
@@ -165,54 +172,55 @@ make
 # => sysentinel: using rustc: /usr/bin/rustc
 ```
 
-En otras distros: averigua cuál exige tu kernel y asegúrate de que ese `rustc`
-esté en `PATH` (o pásalo explícito: `make RUSTC=/ruta/al/rustc`):
+On other distributions: find out which one your kernel demands and make sure
+that `rustc` is on `PATH` (or pass it explicitly: `make RUSTC=/path/to/rustc`):
 
 ```sh
 grep CONFIG_RUSTC_VERSION_TEXT /boot/config-$(uname -r)
 # => CONFIG_RUSTC_VERSION_TEXT="rustc 1.97.1 (…)(Fedora 1.97.1-1.fc44)"
 ```
 
-### 4.3 Compilar y cargar
+### 4.3 Build and load
 
 ```sh
 cd kernel_module
-make            # MEI habilitado por defecto (usa el árbol de /lib/modules/$(uname -r)/build)
+make            # MEI enabled by default (uses the tree at /lib/modules/$(uname -r)/build)
 sudo make modules_install
-sudo modprobe sysentinel_metrics
+sudo modprobe sysentinel_metrics write_gid=$(id -g sysentinel)
 cat /proc/sysentinel_metrics
 # uptime_s=12345 modules=64 mem_free_kb=204800 mem_total_kb=8388608 hypervisor=... ring3=intel-me me_fw=18.1.2204.0
-#   - ring3=   … resultado del dispatcher HAL del módulo: intel-me | amd-psp | none
-#   - me_fw=   … solo cuando ring3=intel-me (ME conectado, vía el bus MEI del kernel)
-#   - psp=     … solo cuando ring3=amd-psp (handshake HSTI vía el ccp platform-access)
+#   - ring3=   … the module's HAL dispatcher result: intel-me | amd-psp | none
+#   - me_fw=   … only when ring3=intel-me (ME reached over the kernel's MEI bus)
+#   - psp=     … only when ring3=amd-psp (HSTI handshake via ccp platform-access)
 sudo rmmod sysentinel_metrics
 ```
 
-El archivo vive en `/proc` (no `/dev`) y **lo puede leer cualquiera**, pero no
-entero: `cr2` y `cr3` salen como `restricted` para quien no sea root ni esté en
-`write_gid`. Son direcciones — `cr2` es la última dirección que falló y `cr3` la
-base física de las tablas de páginas — y publicárselas a cualquier proceso local
-es justo lo que necesita un exploit para saltarse la aleatorización del kernel.
-El resto de la línea (uptime, versión del ME, PSP, SMM) se ve igual.
+The file lives in `/proc` (not `/dev`) and **anyone can read it** — but not all
+of it: `cr2` and `cr3` come back as `restricted` for anyone who is neither root
+nor in `write_gid`. Those two are addresses — `cr2` is the last faulting address
+and `cr3` the physical base of the page tables — and publishing them to every
+local process is exactly what an exploit needs to defeat kernel address
+randomisation. The rest of the line (uptime, ME version, PSP, SMM) is visible as
+before.
 
-Además acepta **escribir comandos privilegiados** (`reboot`, `poweroff`,
-`cr0_wp on|off`, `cr3=0x…`), gatecircuited por el grupo `write_gid`:
+It also accepts **privileged control commands on write** (`reboot`, `poweroff`,
+`cr0_wp on|off`, `cr3=0x…`), gated by the `write_gid` group:
 
 ```sh
-# Dar control al grupo del servicio (id del grupo 'sysentinel'):
+# Hand control to the service's group (the 'sysentinel' group id):
 sudo modprobe sysentinel_metrics write_gid=$(id -g sysentinel)
-# NUNCA pruebes con reboot directo: confirma primero. El bot exige confirm.
+# NEVER test with a bare reboot: confirm first. The bot demands a confirmation.
 ```
 
-Para arrancarlo al encender, instala un `modprobe.d`:
+To load it at boot, install a `modprobe.d` entry:
 
 ```sh
 echo 'sysentinel_metrics' | sudo tee /etc/modules-load.d/sysentinel.conf
 ```
 
-### 4.4 Si cambias de kernel
+### 4.4 If you change kernels
 
-Recompila contra el nuevo árbol:
+Rebuild against the new tree:
 
 ```sh
 make clean && make
@@ -222,58 +230,57 @@ sudo depmod -a
 
 ---
 
-## 5. Instalar el daemon como servicio
+## 5. Install the daemon as a service
 
 ```sh
-make install        # compila + scripts/install.sh (requiere sudo)
+make install        # builds + scripts/install.sh (needs sudo)
 ```
 
 `scripts/install.sh`:
 
-1. Copia `sysentinel-daemon` a `/usr/local/bin/`, y el **template** de config a
-   `/etc/sysentinel/config.toml` (solo si no existe — **si ya configurabas un
-   config, edita el de `/etc/sysentinel/`**).
-2. Crea el usuario de sistema `sysentinel`.
-3. Crea `/var/lib/sysentinel` y `/var/log/sysentinel`.
-4. Instala el unit systemd `sysentinel.service`.
+1. Copies `sysentinel-daemon` to `/usr/local/bin/`, and the config **template**
+   to `/etc/sysentinel/config.toml` (only if absent — **if you had already
+   configured one, edit the copy under `/etc/sysentinel/`**).
+2. Creates the `sysentinel` system user.
+3. Creates `/var/lib/sysentinel` and `/var/log/sysentinel`.
+4. Installs the `sysentinel.service` systemd unit.
 
-> El unit monta *hardening*: usuario sin privilegios, `NoNewPrivileges=true`,
-> filesystem read-only salvo rutas de estado, y solo `CAP_SYSLOG` +
-> `CAP_PERFMON` (ambient). No activa `PrivateNetwork` a propósito porque el
-> daemon hace HTTPS saliente al proveedor LLM y escucha en `[phone] bind`.
+> The unit carries real hardening: an unprivileged user,
+> `NoNewPrivileges=true`, a read-only filesystem apart from the state paths, and
+> only `CAP_SYSLOG` + `CAP_PERFMON` (ambient). It deliberately does not enable
+> `PrivateNetwork`, because the daemon makes outbound HTTPS to the LLM provider
+> and listens on `[phone] bind`.
 
-### 5.1 Configuración de producción
+### 5.1 Production configuration
 
 ```sh
-sudo cp daemon/config/config.toml /etc/sysentinel/config.toml   # el tuyo (con tus secretos)
+sudo cp daemon/config/config.toml /etc/sysentinel/config.toml   # yours, with your secrets
 sudo chown root:sysentinel /etc/sysentinel/config.toml
-sudo chmod 640   /etc/sysentinel/config.toml   # el usuario del servicio (grupo sysentinel) tiene que poder LEERLO
+sudo chmod 640   /etc/sysentinel/config.toml   # the service user (group sysentinel) has to be able to READ it
 ```
 
-Para ME/PSP NO necesitas grupos extra: la versión de Intel ME la lee el
-módulo kernel `sysentinel_metrics` en ring-0 (a través del bus MEI del
-kernel) y el daemon la obtiene de `/proc/sysentinel_metrics`; el PSP/TPM de
-AMD se lee desde sysfs con la etiqueta correcta según fabricante. El archivo
-`/proc/sysentinel_metrics` es legible por cualquiera (0644), no hay regla
-udev ni grupos que configurar. En hosts AMD (PSP) no hay MEI que consultar,
-y en hosts Intel no se reporta PSP — el código es agnóstico de plataforma.
+ME/PSP needs no extra groups: the Intel ME version is read in ring-0 by the
+`sysentinel_metrics` kernel module (through the kernel's MEI bus) and the daemon
+picks it up from `/proc/sysentinel_metrics`; AMD's PSP/TPM is read from sysfs
+with the right label per vendor. There is no udev rule and no group to set up.
+On AMD hosts there is no MEI to query, and on Intel hosts no PSP is reported —
+the code is platform-agnostic.
 
-### 5.2 Comandos privilegiados (opcional, requiere confirmación)
+### 5.2 Privileged commands (optional, confirmation required)
 
-El módulo también acepta **escribir** comandos de control; el bot añade un
-flujo de confirmación doble (armar + `confirm` en 60 s) y es el único que
-escribe. Para que el servicio pueda escribir hay que cargar el módulo con el
-GID de su grupo:
+The module also accepts control commands **on write**; the bot adds a two-step
+confirmation (arm + `confirm` within 60 s) and is the only thing that writes. For
+the service to be able to write, load the module with its group's GID:
 
 ```sh
 sudo modprobe sysentinel_metrics write_gid=$(id -g sysentinel)
 ```
 
-Con esto, ya desde la app: `/cr0`, `/cr3`, `/cr4`, `/cr8` leen registros de
-control (sin confirmación, no cuesta tokens); `/reboot`, `/poweroff`,
-`/cr0 wp off`, `/cr3=0x…` **arman** una acción y exigen `confirm`.
+With that, from the app: `/cr0`, `/cr3`, `/cr4`, `/cr8` read control registers
+(no confirmation, no tokens spent); `/reboot`, `/poweroff`, `/cr0 wp off`,
+`/cr3=0x…` **arm** an action and demand `confirm`.
 
-### 5.2 Arrancar
+### 5.3 Start it
 
 ```sh
 sudo systemctl enable --now sysentinel
@@ -283,82 +290,87 @@ journalctl -u sysentinel -f
 
 ---
 
-## 6. Pareo con el teléfono
+## 6. Pairing the phone
 
-1. Sin teléfono registrado, el daemon dibuja un **QR en la consola del equipo**
-   al arrancar. Si ya se fue del scrollback, pídelo de nuevo:
+1. With no phone registered, the daemon draws a **QR on the machine's own
+   console** at startup. If it has scrolled away, ask for it again:
 
    ```sh
    journalctl -u sysentinel -f | grep -i 'pair'
    ```
 
-   `/pair` lo vuelve a dibujar — siempre en la consola local, nunca por el
-   canal: mandar la clave por el canal que esa clave abre sería al revés.
+   `/pair` redraws it — always on the local console, never over the channel:
+   sending the key through the channel that key opens would be backwards.
 
-2. Escanéalo desde la app. Nadie teclea 64 hexadecimales.
-3. La app genera acto seguido una llave dentro del TEE del teléfono
-   (StrongBox/Titan si el modelo lo tiene) y la registra. A partir de ahí el
-   equipo exige **también** la firma de ESE móvil y rechaza cualquier otro,
-   aunque sea el mismo modelo.
-4. Después de parear:
-   - `/status` → estado del sistema (incluye contexto PMU si `[pmu] enabled`).
-   - `/resetcontext` → limpia `context.txt` (contexto de conversación).
-   - `/unpair` → olvida el teléfono registrado.
-   - Cualquier mensaje de texto → consulta al LLM con memoria + conversación.
+2. Scan it from the app. Nobody types 64 hex characters.
+3. The app immediately generates a key inside the phone's TEE (StrongBox/Titan
+   where the model has one) and registers it. From then on the machine also
+   demands a signature from THAT handset and refuses any other, even the same
+   model.
+4. Once paired:
+   - `/status` → system state (includes PMU context when `[pmu] enabled`).
+   - `/resetcontext` → clears `context.txt` (the conversation context).
+   - `/unpair` → forgets the registered phone.
+   - Any plain message → asks the LLM, with memory and conversation.
 
-5. **Ya está, para siempre.** Desde ese momento puedes irte donde quieras: el
-   enlace es entre ESTA máquina y ESE teléfono, no entre dos direcciones IP.
-   Si la dirección cambia (estás fuera y entras por la VPN), corrígela en la
-   app — toca `equipo: …` en la cabecera — y sigue todo igual; no se vuelve a
-   emparejar. En la variante `legacy` (armeabi-v7a) eso se hace por adb:
+5. **That is it, permanently.** From that moment you can go wherever you like:
+   the link is between THIS machine and THAT phone, not between two IP
+   addresses. If the address changes (you are away and coming in over the VPN),
+   correct it in the app — tap `equipo: …` in the header — and everything else
+   stays; there is no re-pairing. On the `legacy` flavour (armeabi-v7a) that is
+   done over adb:
 
    ```sh
    adb shell am start -n org.sysentinel.app/.ChatActivity -e host 100.101.102.103 -e port 8443
    ```
 
-Quien vea la pantalla del QR puede leer la clave: por eso deja de bastar en
-cuanto hay un móvil registrado. Las acciones privilegiadas piden tu huella o
-tu cara en el teléfono, no un `YES` tecleado que alguien puede exigirte en voz
-alta o leer por encima del hombro.
+Whoever can see the QR screen can read the key: that is why it stops being
+enough as soon as a handset is registered. Privileged actions ask for your
+fingerprint or your face on the phone, not a typed `YES` that somebody can
+demand out loud or read over your shoulder.
 
-Si no aparece QR: revisa que `enabled=true` y que `bind` tenga una dirección
-real (no `0.0.0.0`) en `[phone]`.
+If no QR appears: check `enabled = true` and that `bind` holds a real address
+(not `0.0.0.0`) under `[phone]`.
 
 ---
 
-## 7. Pruébalo sin teléfono (opcional)
+## 7. Try it without a phone (optional)
 
 ```sh
 RUST_LOG=debug /usr/local/bin/sysentinel-daemon \
     --config /etc/sysentinel/config.toml --dry-run --verbose
 ```
 
-- `--dry-run` no entrega alertas al teléfono (útil para probar el backend LLM).
-- `--verbose` imprime cada evento clasificado de kmsg en stdout.
-- `RUST_LOG=debug` sube el nivel de log.
+- `--dry-run` does not deliver alerts to the phone (useful for testing the LLM
+  backend).
+- `--verbose` prints every classified kmsg event to stdout.
+- `RUST_LOG=debug` raises the log level.
+- `--check-config` loads and validates the config, prints what it resolves to,
+  and exits — without starting anything.
 
 ---
 
 ## 8. Troubleshooting
 
-| Síntoma | Causa / solución |
+| Symptom | Cause / fix |
 |---|---|
-| `make[5]: *** No rule to make target 'sysentinel_metrics.o'` | El `.rs` raíz no está junto al `.o` (debe estar en la raíz de `kernel_module/`, regla `$(obj)/%.o: $(obj)/%.rs`). Este repo ya lo tiene así. |
-| `E0514: found crate core compiled by an incompatible version of rustc` | `rustc` ≠ al del kernel (rustup vs `/usr/bin/rustc`). En Fedora el `Makefile` ya lo resuelve solo; en otras distros usa el build exacto del kernel. |
-| `error: no such file or directory: 'bindgen'` / `bindgen` no encontrado | Instala `bindgen` (Rust): `cargo install bindgen-cli` o `sudo dnf install bindgen rust-bindgen`. |
-| La app no conecta | `[phone] bind` apunta a una dirección que el teléfono no alcanza (o es `0.0.0.0`). Comprueba desde el móvil que llegas a ese `IP:puerto`. |
-| La app dice que el equipo la rechaza | Ya hay OTRO teléfono registrado: el equipo exige la firma de ese. Haz `/unpair` desde el teléfono registrado, o borra el registro en el equipo, y vuelve a escanear. |
-| No llegan alertas | Revisa `enabled=true`, `min_severity`, y que el backend LLM tenga API key válida. |
-| `error: while loading config` | Falta una sección/clave; compara con `config.example.toml`. |
-| Módulo compila pero `modprobe` dice "invalid module format" | Modulo construido contra otro kernel. `make clean && make && make modules_install && depmod -a`. |
+| `make[5]: *** No rule to make target 'sysentinel_metrics.o'` | The root `.rs` is not beside the `.o` (it must sit at the root of `kernel_module/`, rule `$(obj)/%.o: $(obj)/%.rs`). This repository already does that. |
+| `E0514: found crate core compiled by an incompatible version of rustc` | `rustc` ≠ the kernel's (rustup vs `/usr/bin/rustc`). On Fedora the `Makefile` sorts it out; elsewhere use the kernel's exact build. |
+| `error: no such file or directory: 'bindgen'` | Install `bindgen`: `cargo install bindgen-cli` or `sudo dnf install bindgen rust-bindgen`. |
+| The app will not connect | `[phone] bind` points at an address the phone cannot reach (or is `0.0.0.0`). From the phone, check you can reach that `IP:port`. |
+| The app says the machine rejects it | Another phone is already registered: the machine demands that one's signature. `/unpair` from the registered phone, or delete the registration on the machine, and scan again. |
+| The app says the machine's key is not the one it saved | The daemon was reinstalled (new certificate), or something else is answering in its place. If it was you, delete the pairing and scan again. |
+| No alerts arrive | Check `enabled = true`, `min_severity`, and that the LLM backend has a valid API key. |
+| `error: while loading config` | A section or key is missing; compare against `config.example.toml`. |
+| The module builds but `modprobe` says "invalid module format" | Built against a different kernel. `make clean && make && make modules_install && depmod -a`. |
 
 ---
 
-## 9. Desinstalar
+## 9. Uninstall
 
 ```sh
-make uninstall   # para/borra servicio + descarga módulo (no borra secretos)
-# borra también, si quieres:
+make uninstall   # stops/removes the service + unloads the module (keeps secrets)
+# also, if you want:
 sudo rm -rf /etc/sysentinel /var/log/sysentinel
 sudo userdel sysentinel
 sudo rm -f /etc/modules-load.d/sysentinel.conf
@@ -366,16 +378,21 @@ sudo rm -f /etc/modules-load.d/sysentinel.conf
 
 ---
 
-## 10. Seguridad (resumen)
+## 10. Security (summary)
 
-- `config.toml` con `chmod 600`; nunca lo subas a git. Rota el bot token/API key
-  si alguna vez los expusiste.
-- El daemon corre sin privilegios; solo `CAP_SYSLOG` (kmsg) y `CAP_PERFMON`
-  (contadores HW PMU). Se degrada con gracia si falta `CAP_PERFMON`.
-- El módulo del kernel expone lectura global (`/proc/sysentinel_metrics`) y
-  **escribe solo comandos de control**, gatecircuited por el grupo `write_gid`
-  (por defecto solo root). Los comandos van precedidos de un flujo de
-  confirmación de la persona (armar + `confirm` en 60 s): nunca se ejecutan
-  solos, y fuera de ese flujo el módulo los rechaza por permisos.
-- El token de pareo es de un solo uso, con TTL, ligado a tu cuenta y a prueba de
-  fuerza bruta.
+- `config.toml` at `chmod 640 root:sysentinel`; never commit it. The daemon
+  refuses to start if it is writable by others, and warns loudly if it is
+  world-readable. Rotate any API key you have ever exposed.
+- The daemon runs unprivileged; only `CAP_SYSLOG` (kmsg), `CAP_PERFMON`
+  (hardware PMU counters) and `CAP_KILL` (closing a session the owner denied).
+  It degrades gracefully when `CAP_PERFMON` is missing.
+- The kernel module exposes a world-readable snapshot with the address-bearing
+  registers held back, and **only accepts control commands on write**, gated by
+  the `write_gid` group (root only by default). Those commands sit behind the
+  arm → `confirm` ritual: they never run on their own, and outside that flow the
+  module refuses them on permissions.
+- Pairing is bound to hardware. The QR's key gets a phone onto the channel; from
+  the first registration onwards the machine also demands a signature from a key
+  inside that handset's secure element, which cannot be copied out of it.
+- Full policy, including what counts as a vulnerability here and what this tool
+  admits it cannot protect you from: [`SECURITY.md`](SECURITY.md).

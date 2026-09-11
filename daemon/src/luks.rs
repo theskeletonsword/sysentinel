@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 //!
-//! LUKS tripwire follow-up ("¿fui yo?").
+//! LUKS tripwire follow-up ("was that me?").
 //!
 //! When the initramfs hook (`ramdisk/91sysentinel/`) captures a LUKS boot —
 //! primarily the pre-prompt hook that starts **before** the password prompt,
@@ -15,7 +15,7 @@
 //!
 //! This daemon only runs *after* a full (owner-confirmed) boot, so the marker
 //! it finds is a *stale one left over from a previous abnormal boot*. It
-//! dedupes by `boot_id`, asks the owner "¿fui yo?" (photo attached if a
+//! dedupes by `boot_id`, asks the owner "was that me?" (photo attached if a
 //! webcam was present), and on `no` / timeout applies the configured deny
 //! action (`poweroff`, `triplefault`, `none`) via `/proc/sysentinel_metrics`.
 
@@ -29,7 +29,7 @@ use crate::config::Config;
 use crate::llm;
 use crate::settings::Settings;
 
-/// Longest an unanswered "¿fui yo?" stays armed before the deny action runs.
+/// Longest an unanswered "was that me?" stays armed before the deny action runs.
 fn luks_timeout(settings: &Arc<Mutex<Settings>>) -> u64 {
     settings.lock().expect("settings mutex").luks_timeout.max(10)
 }
@@ -250,7 +250,7 @@ fn sweep_expired(
     }
     if let Some(p) = deny_and_clear(state, settings, chat_id) {
         mark_seen(config, &p.boot_id, "expired");
-        log::warn!("luks: unanswered '¿fui yo?' for boot {} expired → deny fired", p.boot_id);
+        log::warn!("luks: unanswered 'was that me?' for boot {} expired → deny fired", p.boot_id);
     }
 }
 
@@ -496,6 +496,9 @@ mod tests {
         // Markers come off the ESP, not from anywhere this daemon controls,
         // and the watcher that reads them is a thread with nobody to catch
         // its panic — it would simply stop watching, quietly.
+        // Deliberately nasty fixture: a multi-byte boot_id (the byte-12 cut
+        // used to panic on it), a terminal escape in a device name, and a
+        // newline mid-field.
         let body = "ok=1\n\
                     boot_id=áááááááááááááááá\n\
                     ts=1757000000\n\

@@ -9,28 +9,28 @@
 //!   Xiang Gao, Zhen Han (foamliu/MobileFaceNet; InsightFace) — Apache-2.0.
 //!   Exported from `mobilefacenet_scripted.pt` with torch.onnx.
 //!
-//! sysentinel-face — identificación facial local sobre ONNX con tract,
-//! compilado estático-musl para correr dentro del initramfs (o en postboot).
+//! sysentinel-face — local face identification over ONNX with tract, built
+//! static against musl so it runs inside the initramfs (or after boot).
 //!
 //! # CLI
 //!
 //! ```text
 //! sysentinel-face --info                 imprime inputs/outputs de ambos modelos
 //! sysentinel-face --selfcheck            corre entradas de ceros en ambos
-//! sysentinel-face --embed IMG.jpg        detecta → alínea → embed 128-D, JSON
+//! sysentinel-face --embed IMG.jpg        detect → align → 128-D embed, JSON
 //!                     [--crop OUT]       (+ recorte alineado a disco)
-//!                     [--match DB.json]  (+ vecino más cercano por coseno)
-//!                     [--thresh 0.5]     (umbral de coseno para dar match)
-//!                     [--brief]          (1 línea por cara: score\tname\tcos)
+//!                     [--match DB.json]  (+ nearest neighbour by cosine)
+//!                     [--thresh 0.5]     (cosine threshold for a match)
+//!                     [--brief]          (one line per face: score\tname\tcos)
 //! ```
 //!
-//! # Códigos de salida
+//! # Exit codes
 //!
 //! | code | significado                                      |
 //! |------|--------------------------------------------------|
 //! | `0`  | ok                                               |
 //! | `1`  | error de uso                                     |
-//! | `2`  | carga / optimización / inferencia fallida        |
+//! | `2`  | load / optimisation / inference failed            |
 
 mod align;
 mod nn;
@@ -142,7 +142,7 @@ fn parse_args() -> Result<Args, i32> {
                 std::process::exit(0);
             }
             other => {
-                eprintln!("sysentinel-face: opción desconocida: {other}");
+                eprintln!("sysentinel-face: unknown option: {other}");
                 eprintln!("{USAGE}");
                 return Err(1);
             }

@@ -1,19 +1,19 @@
 // SPDX-License-Identifier: Apache-2.0
 //!
-//! # Determinación local de rostro — sin tokens, sin guardar fotos
+//! # Deciding locally whether it is the owner — no tokens, no stored photos
 //!
-//! La identidad se verifica LOCALMENTE con hashes perceptuales de 64 bits
-//! (`u64`), sin modelo neuronal ni LLM, y en disco sólo viven los hashes:
+//! Identity is checked LOCALLY with 64-bit perceptual hashes (`u64`), with no
+//! neural model and no LLM, and only the hashes ever reach the disk:
 //!
 //!   * `p_hash` — pHash (DCT-II sobre el bloque 8×8 de bajas frecuencias):
-//!     el más robusto contra re-compresión JPEG (el canal re-codifica las
+//!     the most robust against JPEG recompression (the channel re-encodes
 //!     fotos), redimensionado y marcas de agua.
 //!   * `w_hash` — wHash (Haar 2D separable a 2 niveles; 8×8 central de la
 //!     sub-banda LL): robusto contra blur, ruido y ediciones pesadas.
 //!
-//! El parecido se mide con la distancia de Hamming de los dos `u64`. Un probe
-//! se declara del propietario cuando pHash *o* wHash cae bajo el umbral fuerte
-//! (voto OR: cada hash cubre una familia de degradación distinta y ambos se
+//! Similarity is the Hamming distance between the two `u64`s. A probe counts
+//! as the owner when pHash *or* wHash falls under the strong threshold (an OR
+//! vote: each hash covers a different family of degradation, and both are
 //! guardaron al registrar la cara).
 
 use std::path::Path;
@@ -21,9 +21,9 @@ use std::path::Path;
 use image::imageops;
 use image::GenericImageView;
 
-/// Una cara registrada: los dos hashes + cuándo se enroló + (opcional) el
-/// vector 128-D del embedding MobileFaceNet que alimenta al veredicto NN del
-/// initramfs (los hashes perceptuales siguen siendo el veredicto en vivo del
+/// One enrolled face: both hashes, when it was enrolled, and optionally the
+/// 128-D MobileFaceNet embedding that feeds the initramfs NN verdict (the
+/// perceptual hashes remain the live verdict for the
 /// daemon y el fallback).
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct FaceEnroll {
@@ -36,11 +36,11 @@ pub struct FaceEnroll {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FaceVerdict {
-    /// Distancias claramente bajo los umbrales de propietario.
+    /// Distances clearly under the owner thresholds.
     Owner,
-    /// Cerca pero no concluyente — "posible propietario, verifica".
+    /// Close but not conclusive — "possibly the owner, check".
     Ambiguous,
-    /// Ninguna cara registrada está cerca de este probe.
+    /// No enrolled face is anywhere near this probe.
     Unknown,
 }
 
@@ -65,14 +65,14 @@ pub struct FaceMatch {
     pub verdict: FaceVerdict,
 }
 
-/// Registro persistente de caras — exclusivamente hashes, nunca píxeles.
+/// The persistent face store — hashes only, never pixels.
 pub struct FaceStore {
     pub entries: Vec<FaceEnroll>,
     path: std::path::PathBuf,
 }
 
 impl FaceStore {
-    /// Carga el JSON de hashes (crea vacío si no existe).
+    /// Load the hash JSON (empty when the file does not exist yet).
     pub fn load(path: &Path) -> anyhow::Result<Self> {
         let entries = if path.exists() {
             let raw = std::fs::read_to_string(path)?;
@@ -95,7 +95,7 @@ impl FaceStore {
         self.entries.clear();
     }
 
-    /// Hash de una foto y añade el enroll (sin embedding). Devuelve el hash.
+    /// Hash a photo and add the enrolment (no embedding). Returns the hash.
     // Enrollment helper used by the face tests.
     #[allow(dead_code)]
     pub fn add_image(&mut self, img: &image::DynamicImage) -> (u64, u64) {
@@ -105,7 +105,7 @@ impl FaceStore {
         (p, w)
     }
 
-    /// Hash + embedding opcional de una foto y añade el enroll.
+    /// Hash plus optional embedding of a photo, added as an enrolment.
     pub fn add_image_with_embedding(
         &mut self,
         img: &image::DynamicImage,
@@ -117,13 +117,13 @@ impl FaceStore {
         (p, w)
     }
 
-    /// Persiste sólo los hashes, con modo 0600 desde que nace.
+    /// Persist the hashes only, 0600 from the moment the file exists.
     ///
-    /// Escribe a un temporal y renombra, y crea el fichero ya en 0600 en vez
-    /// de apretarlo después. Son plantillas biométricas: el rato entre crear
-    /// y apretar es justo cuando otro usuario puede leerlas, y una escritura a
-    /// medias deja el store ilegible, que aquí significa que la máquina deja
-    /// de reconocer a su dueño.
+    /// Written to a temporary and renamed, and created at 0600 rather than
+    /// tightened afterwards. These are biometric templates: the gap between
+    /// creating and tightening is exactly when another local user can read
+    /// them, and a half-written store reads as no templates at all — which
+    /// here means the machine stops recognising its owner.
     pub fn save(&self) -> anyhow::Result<()> {
         use std::io::Write;
         use std::os::unix::fs::OpenOptionsExt;
@@ -169,16 +169,16 @@ impl FaceStore {
     }
 
     /// Espeja el DB de embeddings a `<esp>/sysentinel/faces.json` en el ESP
-    /// real, remontando rw si hace falta y volviendo a ro tras escribir.
-    /// Best-effort: nunca falla la operación principal.
+    /// remounting it rw when needed and putting it back to ro afterwards.
+    /// Best-effort: it never fails the operation it was called from.
     ///
-    /// # Por qué el ESP y NADA más
+    /// # Why the ESP and nothing else
     ///
-    /// Esto escribe plantillas biométricas. Antes el filtro era "el sistema de
-    /// ficheros es vfat", y vfat es prácticamente todo pendrive que existe: en
-    /// un escritorio que automonta, enchufar un USB se llevaba a casa la cara
-    /// del dueño. [`crate::esp`] exige disco fijo y una ruta de ESP de las de
-    /// verdad, así que un pendrive ya no cuenta aunque lo monten en /boot.
+    /// This writes biometric templates. The filter used to be "the filesystem
+    /// is vfat", and vfat is nearly every USB stick in existence: on a desktop
+    /// that automounts, plugging one in carried the owner's face away in
+    /// somebody's pocket. [`crate::esp`] insists on fixed media at a real ESP
+    /// path, so a stick no longer qualifies even mounted at /boot.
     pub fn mirror_to_esp(&self) {
         let targets = crate::esp::mount_points();
         if targets.is_empty() {
@@ -221,23 +221,23 @@ fn read_only_mounts() -> std::collections::HashSet<String> {
         .collect()
 }
 
-/// Decodificar una imagen que viene de fuera, con techo.
+/// Decode an image that came from outside, with a ceiling.
 ///
-/// # Por qué no `image::load_from_memory` a secas
+/// # Why not plain `image::load_from_memory`
 ///
-/// Un JPEG de unos pocos KB puede declarar 60000×60000 píxeles. El decodificador
-/// hace lo que le piden y reserva ~10 GB antes de que nadie mire el resultado:
-/// el proceso muere por OOM y con él el vigilante. La foto la manda el teléfono
-/// emparejado y la escribe la webcam, o sea que no es la superficie más
-/// expuesta del sistema — pero "confío en quien me la manda" no es una razón
-/// para no poner un límite que no le estorba a nadie: 64 megapíxeles son más
-/// que cualquier cámara que vaya a haber al otro lado.
+/// A few KB of JPEG can declare 60000×60000 pixels. The decoder does as it is
+/// told and reserves ~10 GB before anyone looks at the result: the process dies
+/// of OOM and the watchdog dies with it. The photo comes from the paired phone
+/// or the webcam, so this is not the most exposed surface in the system — but
+/// "I trust whoever sends it" is no reason to skip a limit that inconveniences
+/// nobody: 64 megapixels is past any camera that will ever be on the other
+/// end.
 pub const MAX_PIXELS: u64 = 64 * 1024 * 1024;
 
 fn limits() -> image::Limits {
     let mut l = image::Limits::default();
-    // `image` razona en bytes de buffer; a 4 bytes por píxel esto es el techo
-    // de píxeles de arriba, y además corta las asignaciones intermedias.
+    // `image` reasons in buffer bytes; at 4 bytes per pixel this is the pixel
+    // ceiling above, and it also caps the intermediate allocations.
     l.max_alloc = Some(MAX_PIXELS * 4);
     l.max_image_width = Some(16384);
     l.max_image_height = Some(16384);
@@ -270,14 +270,14 @@ pub fn open_bounded(path: &Path) -> anyhow::Result<image::DynamicImage> {
         .map_err(|e| anyhow::anyhow!("no pude decodificar {}: {e}", path.display()))
 }
 
-// ── Hashing en sí ─────────────────────────────────────────────────────────────
+// ── The hashing itself ───────────────────────────────────────────────────────
 
 /// Distancia de Hamming entre dos hashes de 64 bits.
 pub fn hamming(a: u64, b: u64) -> u32 {
     (a ^ b).count_ones()
 }
 
-/// Los dos hashes de una imagen: `(p_hash, w_hash)`.
+/// Both hashes of an image: `(p_hash, w_hash)`.
 pub fn hash_image(img: &image::DynamicImage) -> (u64, u64) {
     let (p, w) = if img.dimensions().0 == 0 || img.dimensions().1 == 0 {
         (0, 0)
@@ -298,8 +298,8 @@ fn grayscale_square(img: &image::DynamicImage, size: u32) -> Vec<u8> {
     resized.into_raw()
 }
 
-/// pHash: DCT-II de 32×32, bloque 8×8 de bajas frecuencias (sin DC),
-/// cada bit = valor por encima de la mediana.
+/// pHash: 32×32 DCT-II, the 8×8 low-frequency block (DC excluded), each bit
+/// set when the value is above the median.
 fn p_hash(img: &image::DynamicImage) -> u64 {
     let px = grayscale_square(img, 32);
     let n = 32usize;
@@ -326,7 +326,7 @@ fn p_hash(img: &image::DynamicImage) -> u64 {
 }
 
 /// wHash: 2D Haar separable a 2 niveles, 8×8 central de la sub-banda LL (16×16),
-/// cada bit = celda por encima de la media del bloque.
+/// each bit set when the cell is above the block's mean.
 fn w_hash(img: &image::DynamicImage) -> u64 {
     let px = grayscale_square(img, 64);
     let n = 64usize;
@@ -397,8 +397,8 @@ fn dct2(n: usize, g: &mut [f32]) {
     }
 }
 
-/// Un nivel 2D de Haar, manteniendo sólo la sub-banda LL en el tope-izquierda
-/// de `stride`×`stride`; `n` es el lado del bloque actual.
+/// One 2D Haar level, keeping only the LL sub-band in the top-left of
+/// `stride`×`stride`; `n` is the side of the current block.
 fn haar_ll(g: &mut [f32], n: usize, stride: usize) {
     let half = n / 2;
     let mut tmp = vec![0f32; n * n];
@@ -416,8 +416,9 @@ fn haar_ll(g: &mut [f32], n: usize, stride: usize) {
 
 // ── Veredicto ─────────────────────────────────────────────────────────────────
 
-/// Linea de texto con el veredicto facial de una foto capturada, si hay caras
-/// registradas. `None` = no hay store / no se pudo leer (no modifica el aviso).
+/// One line of text with the face verdict for a captured photo, when any face
+/// is enrolled. `None` means no store, or it could not be read — in which case
+/// the alert is left alone.
 pub fn verdict_text(
     thr: &FaceThresholds,
     store_path: &Path,
@@ -432,15 +433,15 @@ pub fn verdict_text(
     use std::fmt::Write as _;
     let mut line = String::new();
     let _ = match m.verdict {
-        FaceVerdict::Owner => write!(line, "👤 Cara del dueño (match local, Hamming {}/{})", m.p_dist, m.w_dist),
-        FaceVerdict::Ambiguous => write!(line, "👤 Rostro parecido al dueño — verificar (Hamming {}/{})", m.p_dist, m.w_dist),
-        FaceVerdict::Unknown => write!(line, "🚨 Rostro **NO registrado** en la cámara (Hamming {}/{})", m.p_dist, m.w_dist),
+        FaceVerdict::Owner => write!(line, "👤 The owner's face (local match, Hamming {}/{})", m.p_dist, m.w_dist),
+        FaceVerdict::Ambiguous => write!(line, "👤 A face resembling the owner — check (Hamming {}/{})", m.p_dist, m.w_dist),
+        FaceVerdict::Unknown => write!(line, "🚨 A face **NOT enrolled** in front of the camera (Hamming {}/{})", m.p_dist, m.w_dist),
     };
     Some(line)
 }
 
-/// Compara un probe contra todas las caras registradas y devuelve las
-/// distancias de Hamming mínimas + el veredicto.
+/// Compare a probe against every enrolled face and return the smallest
+/// Hamming distances plus the verdict.
 pub fn match_face(
     probe: (u64, u64),
     entries: &[FaceEnroll],

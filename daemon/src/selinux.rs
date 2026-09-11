@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 //!
-//! SELinux AVC denial handling — the "de qué se trata / lo permito o no"
+//! SELinux AVC denial handling — the "what is this / do I allow it or not"
 //! workflow.
 //!
 //! When the kmsg watcher sees an `avc: denied` line it stores it here; the

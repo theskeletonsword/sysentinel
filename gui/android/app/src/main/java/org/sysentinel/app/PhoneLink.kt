@@ -48,6 +48,8 @@ import javax.crypto.spec.SecretKeySpec
  * Android will throw `NetworkOnMainThreadException`, and rightly.
  */
 class PhoneLink(
+    /** For string resources: every message here is read by a person. */
+    private val ctx: android.content.Context,
     private val host: String,
     private val port: Int,
     private val key: ByteArray,
@@ -108,37 +110,27 @@ class PhoneLink(
      */
     fun connect(appVersion: String): Welcome {
         if (certPin.isEmpty()) {
-            throw PhoneLinkException(
-                "Este emparejamiento es de antes de que el canal llevara TLS y no " +
-                    "tiene la huella del equipo guardada.\n\nVuelve a escanear el QR: " +
-                    "no voy a conectarme sin poder comprobar que al otro lado está " +
-                    "tu equipo y no otro."
-            )
+            throw PhoneLinkException(ctx.getString(R.string.err_no_pin))
         }
         val plain = Socket()
         try {
             plain.connect(InetSocketAddress(host, port), CONNECT_TIMEOUT_MS)
         } catch (e: Exception) {
-            throw PhoneLinkException(
-                "No pude conectar con $host:$port.\n\n" +
-                    "Esta es una conexión directa: no hay relay. Comprueba que estás " +
-                    "en la misma red que el equipo, o que la VPN está levantada.",
-                e,
-            )
+            throw PhoneLinkException(ctx.getString(R.string.err_connect, host, port), e)
         }
         plain.soTimeout = IO_TIMEOUT_MS
         // TLS 1.3 first, pinned to the key the QR carried; the sealed frames
         // then travel inside it. See PinnedTls for why the certificate is
         // pinned rather than validated against a CA.
         val s = try {
-            PinnedTls.wrap(plain, host, port, certPin)
+            PinnedTls.wrap(ctx, plain, host, port, certPin)
         } catch (e: PhoneLinkException) {
             try { plain.close() } catch (_: Exception) {}
             throw e
         } catch (e: Exception) {
             try { plain.close() } catch (_: Exception) {}
             throw PhoneLinkException(
-                "No pude establecer TLS con $host:$port.\n\n${e.message ?: ""}",
+                ctx.getString(R.string.err_tls, host, port, e.message ?: ""),
                 e,
             )
         }
@@ -159,7 +151,9 @@ class PhoneLink(
 
         if (reply.optString("op") == "error") {
             close()
-            throw PhoneLinkException(reply.optString("message", "el daemon rechazó el saludo"))
+            throw PhoneLinkException(
+                reply.optString("message", ctx.getString(R.string.err_hello_refused))
+            )
         }
         return Welcome(
             host = reply.optString("host", host),
@@ -194,7 +188,9 @@ class PhoneLink(
             .put("manufacturer", manufacturer)
         val reply = exchange(req)
         if (reply.optString("op") == "error") {
-            throw PhoneLinkException(reply.optString("message", "error del daemon"))
+            throw PhoneLinkException(
+                reply.optString("message", ctx.getString(R.string.err_daemon))
+            )
         }
         return Identity(
             verdict = reply.optString("verdict", "unknown"),
@@ -240,7 +236,7 @@ class PhoneLink(
         )
         if (reply.optString("op") == "error") {
             throw PhoneLinkException(
-                reply.optString("message", "el equipo rechazó la confirmación")
+                reply.optString("message", ctx.getString(R.string.err_confirm_refused))
             )
         }
         return reply.optString("detail", "confirmado")
@@ -261,7 +257,9 @@ class PhoneLink(
         val encoded = android.util.Base64.encodeToString(jpeg, android.util.Base64.NO_WRAP)
         val reply = exchange(JSONObject().put("op", "photo").put("jpeg_base64", encoded))
         if (reply.optString("op") == "error") {
-            throw PhoneLinkException(reply.optString("message", "el equipo rechazó la foto"))
+            throw PhoneLinkException(
+                reply.optString("message", ctx.getString(R.string.err_photo_refused))
+            )
         }
     }
 
@@ -282,8 +280,8 @@ class PhoneLink(
     // ── Framing ──────────────────────────────────────────────────────────────
 
     private fun exchange(request: JSONObject): JSONObject {
-        val out = output ?: throw PhoneLinkException("no hay conexión abierta")
-        val inp = input ?: throw PhoneLinkException("no hay conexión abierta")
+        val out = output ?: throw PhoneLinkException(ctx.getString(R.string.err_no_connection))
+        val inp = input ?: throw PhoneLinkException(ctx.getString(R.string.err_no_connection))
 
         val sealed = seal(request.toString().toByteArray(Charsets.UTF_8))
         out.writeInt(sealed.size)
@@ -292,7 +290,7 @@ class PhoneLink(
 
         val len = inp.readInt()
         if (len <= 0 || len > MAX_FRAME) {
-            throw PhoneLinkException("el daemon anunció un frame de $len bytes")
+            throw PhoneLinkException(ctx.getString(R.string.err_frame_size, len))
         }
         val frame = ByteArray(len)
         inp.readFully(frame)
@@ -333,10 +331,7 @@ class PhoneLink(
             }
         }
         throw PhoneLinkException(
-            "El frame no autenticó.\n\n" +
-                "Casi siempre significa que la clave de emparejamiento no coincide " +
-                "con la del equipo. Si el equipo usa ChaCha20-Poly1305 (CPU sin AES " +
-                "por hardware), este teléfono necesita Android 9 o superior.",
+            ctx.getString(R.string.err_frame_auth),
             lastFailure,
         )
     }
@@ -355,7 +350,9 @@ class PhoneLink(
 
     private fun parseAlerts(reply: JSONObject): List<Message> {
         if (reply.optString("op") == "error") {
-            throw PhoneLinkException(reply.optString("message", "error del daemon"))
+            throw PhoneLinkException(
+                reply.optString("message", ctx.getString(R.string.err_daemon))
+            )
         }
         val arr: JSONArray = reply.optJSONArray("alerts") ?: return emptyList()
         return (0 until arr.length()).map { i ->
@@ -400,7 +397,7 @@ internal fun orderLabelFrom(text: String): String {
     val marked = Regex("Control armed:\\**\\s*`([^`]{1,60})`")
         .find(text)?.groupValues?.get(1)
     return marked ?: text.lineSequence().firstOrNull()?.take(60)?.trim().orEmpty()
-        .ifEmpty { "la orden armada" }
+        .ifEmpty { "the armed order" }
 }
 
 /** Anything that went wrong, phrased for the person holding the phone. */

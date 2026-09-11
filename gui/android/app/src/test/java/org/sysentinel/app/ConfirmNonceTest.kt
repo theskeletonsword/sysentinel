@@ -29,6 +29,8 @@ class ConfirmNonceTest {
         assertEquals("reboot (kernel_restart)", orderLabelFrom(armed))
     }
 
+    // The daemon speaks the owner's language, so the text these parsers see is
+    // not English. That is the input under test, not untranslated copy.
     @Test
     fun `ordinary messages carry no order`() {
         assertNull(confirmNonceIn("Todo tranquilo por aquí."))
@@ -43,6 +45,6 @@ class ConfirmNonceTest {
         // No marker: fall back to the first line rather than an empty prompt,
         // because the prompt naming the order is the point of it.
         assertEquals("Se cayó la red", orderLabelFrom("Se cayó la red\nsegunda línea"))
-        assertEquals("la orden armada", orderLabelFrom(""))
+        assertEquals("the armed order", orderLabelFrom(""))
     }
 }

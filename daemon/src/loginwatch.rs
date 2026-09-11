@@ -462,8 +462,13 @@ fn announce_login(
         &facts,
     );
     let text = format!(
-        "{lead}\n\n¿Fuiste tú? Responde *`si fui yo`* para dejarla, *`no`* para cerrar.\n\
-         ⏳ Sin respuesta en {timeout}s se cierra por defecto."
+        "{lead}\n\n{}",
+        crate::lang::t(
+            "login.ask_footer",
+            "Was that you? Reply *`si fui yo`* to keep it, *`no`* to close it.\n\
+             ⏳ With no answer in {timeout}s it closes by default."
+        )
+        .replace("{timeout}", &timeout.to_string())
     );
     if dry_run {
         log::info!("DRY RUN — loginwatch: {text}");

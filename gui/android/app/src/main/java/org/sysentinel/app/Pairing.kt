@@ -24,7 +24,7 @@ import android.content.SharedPreferences
  * blob unreadable. That is a re-pair, not a bug — and it is exactly the
  * property that makes wrapping worth having.
  */
-class Pairing(context: Context) {
+class Pairing(private val context: Context) {
 
     private val prefs: SharedPreferences =
         context.getSharedPreferences("sysentinel-pairing", Context.MODE_PRIVATE)
@@ -99,7 +99,7 @@ class Pairing(context: Context) {
     fun link(): PhoneLink? {
         val key = PhoneLink.parseKey(keyHex) ?: return null
         if (host.isEmpty()) return null
-        return PhoneLink(host, port, key, certPin)
+        return PhoneLink(context, host, port, key, certPin)
     }
 
     private companion object {

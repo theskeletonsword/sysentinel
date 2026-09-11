@@ -110,8 +110,8 @@ impl VolumeKind {
             VolumeKind::Swap => "swap",
             VolumeKind::Lvm2 => "LVM2 PV",
             VolumeKind::Zfs => "ZFS",
-            VolumeKind::Opaque => "sin firma, contenido aleatorio",
-            VolumeKind::Unknown => "sin identificar",
+            VolumeKind::Opaque => "no signature, random-looking content",
+            VolumeKind::Unknown => "unidentified",
         }
     }
 
@@ -144,18 +144,18 @@ impl VolumeKind {
     pub fn note(&self) -> Option<&'static str> {
         match self {
             VolumeKind::Luks1 | VolumeKind::Luks2 =>
-                Some("contenedor cifrado LUKS: alguien trajo su propio disco cerrado"),
+                Some("a LUKS encrypted container: somebody brought their own sealed disk"),
             VolumeKind::Opaque => Some(
-                "sin ninguna firma y con contenido indistinguible de datos aleatorios: \
-                 encaja con VeraCrypt/TrueCrypt o dm-crypt plano, y también con un disco \
-                 borrado a conciencia. Desde fuera son lo mismo",
+                "no signature at all, and content indistinguishable from random data: \
+                 consistent with VeraCrypt/TrueCrypt or plain dm-crypt, and equally \
+                 with a thoroughly wiped disk. From outside they look the same",
             ),
             VolumeKind::Apfs | VolumeKind::HfsPlus | VolumeKind::Hfs =>
-                Some("formato de Apple: viene de un Mac"),
-            VolumeKind::Ntfs => Some("formato de Windows"),
+                Some("an Apple format: it came from a Mac"),
+            VolumeKind::Ntfs => Some("a Windows format"),
             VolumeKind::Iso9660 | VolumeKind::Udf =>
-                Some("imagen óptica: un disco o una ISO montada"),
-            VolumeKind::Squashfs => Some("imagen de solo lectura"),
+                Some("an optical image: a disc, or a mounted ISO"),
+            VolumeKind::Squashfs => Some("a read-only image"),
             _ => None,
         }
     }
@@ -408,7 +408,7 @@ mod tests {
         // And the wording must not accuse: a wiped disk looks identical.
         let note = VolumeKind::Opaque.note().unwrap();
         assert!(note.contains("VeraCrypt"), "{note}");
-        assert!(note.contains("borrado"), "{note}");
+        assert!(note.contains("wiped disk"), "{note}");
     }
 
     #[test]

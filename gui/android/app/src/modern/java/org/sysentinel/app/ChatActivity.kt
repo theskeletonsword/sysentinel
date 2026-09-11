@@ -21,6 +21,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.sp
 import androidx.fragment.app.FragmentActivity
 import java.text.SimpleDateFormat
@@ -60,7 +61,7 @@ class ChatActivity : FragmentActivity() {
 
         val identity = DeviceIdentity.ensureKey()
         pairing = Pairing(this)
-        engine = ChatEngine(pairing, BuildConfig.VERSION_NAME)
+        engine = ChatEngine(this, pairing, BuildConfig.VERSION_NAME)
 
         setContent {
             MaterialTheme(colorScheme = darkColorScheme(primary = Accent)) {
@@ -214,15 +215,15 @@ private fun ConfirmBar(
         ) {
             Column(Modifier.weight(1f)) {
                 Text(
-                    "Hay una orden armada esperando",
+                    stringResource(R.string.confirm_waiting),
                     color = Color(0xFFF5C271),
                     fontSize = 13.sp,
                 )
                 Text(
                     if (canSign) {
-                        "Tu huella la autoriza. No hace falta teclear el código."
+                        stringResource(R.string.confirm_can_sign)
                     } else {
-                        "Este teléfono no puede firmar: responde con $nonce."
+                        stringResource(R.string.confirm_cannot_sign, nonce)
                     },
                     color = Color(0xFFB99A6B),
                     fontSize = 11.sp,
@@ -230,7 +231,7 @@ private fun ConfirmBar(
             }
             if (canSign) {
                 Button(onClick = onConfirm, enabled = !busy) {
-                    Text(if (busy) "…" else "Confirmar")
+                    Text(if (busy) "…" else stringResource(R.string.confirm_button))
                 }
             }
         }
@@ -259,20 +260,20 @@ private fun IdentityBar(
 ) {
     val (label, colour) = when (identity.backing) {
         DeviceIdentity.Backing.STRONGBOX ->
-            "Elemento seguro dedicado · huella" to Color(0xFF4ADE80)
+            stringResource(R.string.backing_strongbox) to Color(0xFF4ADE80)
         DeviceIdentity.Backing.TEE ->
-            "TrustZone · huella" to Color(0xFF4ADE80)
+            stringResource(R.string.backing_tee) to Color(0xFF4ADE80)
         DeviceIdentity.Backing.SOFTWARE ->
-            "Sin respaldo de hardware — confirmaciones débiles" to Color(0xFFF87171)
+            stringResource(R.string.backing_software) to Color(0xFFF87171)
         DeviceIdentity.Backing.NONE ->
-            "Sin identidad de dispositivo" to Color(0xFFF87171)
+            stringResource(R.string.backing_none) to Color(0xFFF87171)
     }
     Column(Modifier.background(Ground).fillMaxWidth().padding(14.dp)) {
         Text("sysentinel", color = Accent, fontSize = 18.sp)
         Text(label, color = colour, fontSize = 11.sp)
         Text(
-            "cifrado: " + if (identity.aead == DeviceIdentity.Aead.AES_256_GCM)
-                "AES-256-GCM (extensiones ARM)" else "ChaCha20-Poly1305 (sin AES por hardware)",
+            if (identity.aead == DeviceIdentity.Aead.AES_256_GCM)
+                stringResource(R.string.crypto_aes) else stringResource(R.string.crypto_chacha),
             color = Color(0xFF6B7C8F),
             fontSize = 10.sp,
         )
@@ -282,7 +283,7 @@ private fun IdentityBar(
             fontSize = 11.sp,
         )
         Text(
-            "equipo: $host:$port · cambiar",
+            stringResource(R.string.machine_change, host, port),
             color = Accent,
             fontSize = 10.sp,
             modifier = Modifier.clickable { onEditAddress() },
@@ -305,6 +306,7 @@ private fun PairingScreen(pairing: Pairing, onDone: () -> Unit) {
     // typing 44 characters of base64 by hand is not a thing anyone should do.
     var certPin by remember { mutableStateOf(pairing.certPin) }
     var scanError by remember { mutableStateOf<String?>(null) }
+    val ctx = LocalContext.current
     val keyLooksRight = PhoneLink.parseKey(key) != null
 
     // Scanning fills all three fields at once. Typing 64 hex characters on a
@@ -318,9 +320,7 @@ private fun PairingScreen(pairing: Pairing, onDone: () -> Unit) {
         }
         val parsed = PairingUri.parse(raw)
         if (parsed == null) {
-            scanError = "Ese QR no es de sysentinel, o le falta algo (dirección, " +
-                "clave o la huella TLS del equipo). Si el equipo escucha en " +
-                "0.0.0.0, cámbialo por la IP concreta."
+            scanError = ctx.getString(R.string.pair_scan_error)
         } else {
             host = parsed.host
             port = parsed.port.toString()
@@ -334,13 +334,9 @@ private fun PairingScreen(pairing: Pairing, onDone: () -> Unit) {
         Modifier.background(Ground).fillMaxSize().padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Text("Emparejar", color = Accent, fontSize = 22.sp)
+        Text(stringResource(R.string.pair_title), color = Accent, fontSize = 22.sp)
         Text(
-            "Conexión directa con tu equipo: no hay relay ni servidor de por medio. " +
-                "La primera vez, ponte en el mismo WiFi que el PC y escanea su QR. " +
-                "Después da igual dónde estés: el vínculo no caduca, sólo hace falta " +
-                "que puedas llegar al equipo — misma red, o tu VPN. Si cambia la " +
-                "dirección, corrígela aquí; no hay que volver a emparejar.",
+            stringResource(R.string.pair_blurb),
             color = Color(0xFF6B7C8F),
             fontSize = 12.sp,
         )
@@ -348,39 +344,39 @@ private fun PairingScreen(pairing: Pairing, onDone: () -> Unit) {
             scanner.launch(
                 ScanOptions()
                     .setDesiredBarcodeFormats(ScanOptions.QR_CODE)
-                    .setPrompt("Apunta al QR que muestra el equipo")
+                    .setPrompt(ctx.getString(R.string.pair_scan_prompt))
                     .setBeepEnabled(false)
                     .setOrientationLocked(false)
             )
-        }) { Text("Escanear el QR del equipo") }
+        }) { Text(stringResource(R.string.pair_scan)) }
         scanError?.let {
             Text(it, color = Color(0xFFF87171), fontSize = 12.sp)
         }
         Text(
-            "…o escríbelo a mano:",
+            stringResource(R.string.pair_or_by_hand),
             color = Color(0xFF6B7C8F),
             fontSize = 11.sp,
         )
         OutlinedTextField(
             value = host,
             onValueChange = { host = it },
-            label = { Text("Equipo (IP o nombre)") },
+            label = { Text(stringResource(R.string.pair_host)) },
             singleLine = true,
         )
         OutlinedTextField(
             value = port,
             onValueChange = { port = it.filter { c -> c.isDigit() } },
-            label = { Text("Puerto") },
+            label = { Text(stringResource(R.string.pair_port)) },
             singleLine = true,
         )
         OutlinedTextField(
             value = key,
             onValueChange = { key = it },
-            label = { Text("Clave de emparejamiento (64 hex)") },
+            label = { Text(stringResource(R.string.pair_key)) },
             supportingText = {
                 Text(
-                    if (keyLooksRight) "formato correcto"
-                    else "faltan caracteres: son 64 hexadecimales",
+                    if (keyLooksRight) stringResource(R.string.pair_key_ok)
+                    else stringResource(R.string.pair_key_short),
                     color = if (keyLooksRight) Color(0xFF4ADE80) else Color(0xFF6B7C8F),
                 )
             },
@@ -396,7 +392,7 @@ private fun PairingScreen(pairing: Pairing, onDone: () -> Unit) {
             // The pin has no hand-entry path on purpose, so saving without one
             // would produce a pairing that cannot connect.
             enabled = keyLooksRight && host.isNotBlank() && certPin.isNotBlank(),
-        ) { Text("Guardar y conectar") }
+        ) { Text(stringResource(R.string.pair_save)) }
     }
 }
 

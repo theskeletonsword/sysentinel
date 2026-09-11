@@ -98,9 +98,9 @@ done
 # default would write a configuration nobody chose — including, quietly, no
 # LLM at all. Say so instead.
 if [[ ! -t 0 && $ASSUME_YES -eq 0 ]]; then
-    die "no hay terminal para preguntarte.
-Para que corra sin preguntas:  $0 --yes
-o dale las respuestas:         $0 --provider deepseek --api-key-file clave.txt --bind 10.0.0.5:8443"
+    die "no terminal to ask you on.
+To run without questions:  $0 --yes
+or give it the answers:    $0 --provider deepseek --api-key-file key.txt --bind 10.0.0.5:8443"
 fi
 
 [[ -f "$CONFIG" ]] || die "no config at $CONFIG
@@ -199,8 +199,10 @@ ask_secret() { # (prompt) -> secret on stdout, never echoed
 confirm() { # (prompt) -> 0/1
     (( ASSUME_YES )) && return 0
     local answer
-    read -r -p "   $1 [s/N]: " answer </dev/tty || true
-    [[ "$answer" =~ ^([sSyY]|si|sí|yes)$ ]]
+    read -r -p "   $1 [y/N]: " answer </dev/tty || true
+    # Accepts the owner's own words as well as the English ones: this reads an
+    # answer a person types, and a Spanish-speaking owner types "si".
+    [[ "$answer" =~ ^([yY]|yes|[sS]|si|sí)$ ]]
 }
 
 # ── Back it up before touching anything ──────────────────────────────────────
@@ -212,27 +214,27 @@ BACKUP="${CONFIG}.bak-$(date +%Y%m%d-%H%M%S)"
 umask 077
 cp -p "$CONFIG" "$BACKUP"
 chmod --reference="$CONFIG" "$BACKUP" 2>/dev/null || true
-info "copia de seguridad: $BACKUP"
+info "backup: $BACKUP"
 
 # ── 1. The LLM ───────────────────────────────────────────────────────────────
 
-step "El modelo que explica los eventos"
+step "The model that explains events"
 cat <<EOF
-   Cuando salta algo en el kernel, el daemon puede pedirle a un modelo que lo
-   explique en tu idioma antes de mandártelo. Es opcional.
+   When something happens in the kernel, the daemon can ask a model to explain
+   it in your language before sending it on. This is optional.
 
      ${B}1${R}  Anthropic (Claude)
      ${B}2${R}  OpenAI
      ${B}3${R}  DeepSeek
      ${B}4${R}  Gemini
-     ${B}5${R}  llama.cpp en esta máquina (sin API, sin cuenta, sin gastar nada)
-     ${B}6${R}  Ninguno ${DIM}— no tengo API, o no me queda saldo${R}
+     ${B}5${R}  llama.cpp on this machine (no API, no account, nothing spent)
+     ${B}6${R}  None ${DIM}— I have no API key, or no credit left${R}
 EOF
 
 if [[ -n "$OPT_PROVIDER" ]]; then
     choice="$OPT_PROVIDER"
 else
-    choice="$(ask "Elige" "6")"
+    choice="$(ask "Choose" "6")"
 fi
 
 # The menu answers by number; --provider answers by name. Fold both into a
@@ -253,35 +255,35 @@ case "$choice" in
     gemini)    provider=gemini;    default_model="gemini-1.5-pro" ;;
     llama)     provider=llama;     default_model="" ;;
     none)      provider=none;      default_model="" ;;
-    *) die "no entendí «$choice»" ;;
+    *) die "I did not understand «$choice»" ;;
 esac
 [[ -n "$OPT_MODEL" ]] && default_model="$OPT_MODEL"
 
 case "$provider" in
     none)
         set_value llm backend '["none"]' no
-        ok "sin modelo: las alertas llevan el mensaje del kernel tal cual"
-        info "${DIM}No es un setup a medias. Los vigilantes vigilan igual, las${R}"
-        info "${DIM}alertas llegan igual y las confirmaciones funcionan igual;${R}"
-        info "${DIM}lo único que falta es la frase que lo explica.${R}"
-        info "${DIM}Cuando tengas una clave, vuelve a correr esto.${R}"
+        ok "no model: alerts carry the kernel message as it came"
+        info "${DIM}This is not a half-finished setup. The watchers watch, the${R}"
+        info "${DIM}alerts arrive and the confirmations work exactly the same;${R}"
+        info "${DIM}the only thing missing is the sentence explaining them.${R}"
+        info "${DIM}When you have a key, run this again.${R}"
         ;;
 
     llama)
         set_value llm backend '["llama", "none"]' no
-        base="$(ask "URL del servidor llama.cpp" "http://127.0.0.1:8080")"
+        base="$(ask "llama.cpp server URL" "http://127.0.0.1:8080")"
         set_value "llm.llama" base_url "$base"
-        model="$(ask "Modelo que sirve (informativo)" "local-gguf")"
+        model="$(ask "Model it serves (informational)" "local-gguf")"
         set_value llm model "$model"
-        ok "llama.cpp en $base, con «none» detrás por si se cae"
-        info "${DIM}http:// está permitido aquí a propósito: es loopback y no sale${R}"
-        info "${DIM}nada de la máquina. Para cualquier otro proveedor se exige https.${R}"
+        ok "llama.cpp at $base, with «none» behind it in case it goes down"
+        info "${DIM}http:// is allowed here on purpose: it is loopback and nothing${R}"
+        info "${DIM}leaves the machine. Every other provider is required to be https.${R}"
         ;;
 
     *)
         info ""
-        info "La clave no se va a ver mientras la escribes, y no queda en el"
-        info "historial del shell. Enter en blanco para saltarte este proveedor."
+        info "The key is not echoed as you type it, and does not land in your"
+        info "shell history. Press Enter to skip this provider."
         if [[ -n "$OPT_KEY_FILE" ]]; then
             if [[ "$OPT_KEY_FILE" == "-" ]]; then
                 key="$(cat)"
@@ -291,25 +293,25 @@ case "$provider" in
             fi
             key="${key//[$'\r\n']/}"
         else
-            key="$(ask_secret "API key de $provider")"
+            key="$(ask_secret "$provider API key")"
         fi
         if [[ -z "$key" ]]; then
-            warn "sin clave: dejo la cadena en «none» y sigues teniendo alertas"
+            warn "no key: leaving the chain on «none» — you still get your alerts"
             set_value llm backend '["none"]' no
         else
             # Shape check only — nobody here can tell whether a key is live, and
             # pretending to would be worse than saying nothing.
             if [[ ${#key} -lt 16 ]]; then
-                warn "esa clave es muy corta (${#key} caracteres). La guardo igual;"
-                warn "si está mal, el daemon lo dirá en el primer evento."
+                warn "that key is very short (${#key} characters). Saving it anyway;"
+                warn "if it is wrong, the daemon will say so on the first event."
             fi
             set_value "llm.$provider" api_key "$key"
             set_value llm backend "[\"$provider\", \"none\"]" no
-            model="$(ask "Modelo" "$default_model")"
+            model="$(ask "Model" "$default_model")"
             set_value llm model "$model"
-            ok "$provider configurado (clave guardada, no mostrada)"
-            info "${DIM}«none» va detrás en la cadena: si el proveedor falla o se${R}"
-            info "${DIM}queda sin saldo, la alerta llega igual, sin explicación.${R}"
+            ok "$provider configured (key saved, never displayed)"
+            info "${DIM}«none» sits behind it in the chain: if the provider fails${R}"
+            info "${DIM}or runs out of credit, the alert still arrives, unexplained.${R}"
             unset key
         fi
         ;;
@@ -318,12 +320,12 @@ esac
 # ── 2. Certificate pinning for that provider (optional) ──────────────────────
 
 if [[ "$provider" != none && "$provider" != llama ]] && command -v openssl >/dev/null; then
-    step "Fijar la clave pública del proveedor (opcional)"
-    info "Validar el certificado responde «alguna de las cien CA del almacén lo"
-    info "avala». Fijar la clave lo reduce a la del proveedor y nada más."
-    info "${DIM}Cuesta esto: si rotan la clave, deja de funcionar hasta que lo${R}"
-    info "${DIM}vuelvas a correr. Por eso es opcional.${R}"
-    if confirm "¿Lo fijo?"; then
+    step "Pin the provider public key (optional)"
+    info "Validating the certificate answers «one of the hundred CAs in the"
+    info "store vouches for it». Pinning narrows that to the provider key."
+    info "${DIM}The cost: if they rotate the key it stops working until you run${R}"
+    info "${DIM}this again. That is why it is optional.${R}"
+    if confirm "Pin it?"; then
         host="$(current "llm.$provider" base_url | sed -E 's#https?://##; s#/.*##')"
         if [[ -n "$host" ]]; then
             pin="$(openssl s_client -connect "$host:443" </dev/null 2>/dev/null \
@@ -333,9 +335,9 @@ if [[ "$provider" != none && "$provider" != llama ]] && command -v openssl >/dev
                 | openssl enc -base64 2>/dev/null || true)"
             if [[ -n "$pin" ]]; then
                 set_value llm tls_pins "[\"sha256/$pin\"]" no
-                ok "fijada la clave de $host"
+                ok "pinned the key for $host"
             else
-                warn "no pude leer el certificado de $host — lo dejo sin fijar"
+                warn "could not read the certificate for $host — leaving it unpinned"
             fi
         fi
     fi
@@ -343,9 +345,9 @@ fi
 
 # ── 3. The phone channel ─────────────────────────────────────────────────────
 
-step "El canal del teléfono"
-info "Es la única forma que tiene el daemon de avisarte. Sin esto, vigila y no"
-info "puede contárselo a nadie."
+step "The phone channel"
+info "This is the only way the daemon has to reach you. Without it, it watches"
+info "and can tell nobody."
 
 # Offer the addresses this machine actually has, so nobody has to guess.
 mapfile -t addrs < <(ip -4 -o addr show scope global 2>/dev/null \
@@ -357,11 +359,11 @@ fi
 
 if (( ${#addrs[@]} )); then
     info ""
-    info "Direcciones de esta máquina:"
+    info "Addresses on this machine:"
     for a in "${addrs[@]}"; do
         iface="${a%%$'\t'*}"; addr="${a##*$'\t'}"
         if [[ -n "$tailscale_ip" && "$addr" == "$tailscale_ip" ]]; then
-            printf '     %s%s%s\t%s  %s← Tailscale: la misma dirección en casa y fuera%s\n' \
+            printf '     %s%s%s\t%s  %s← Tailscale: the same address at home and away%s\n' \
                 "$B" "$addr" "$R" "$iface" "$GREEN" "$R"
         else
             printf '     %s%s%s\t%s\n' "$B" "$addr" "$R" "$iface"
@@ -381,7 +383,7 @@ if [[ -z "$default_bind" ]]; then
 fi
 
 info ""
-info "Pon la dirección por la que el TELÉFONO ve esta máquina, con puerto."
+info "Enter the address the PHONE sees this machine on, with a port."
 if [[ -n "$OPT_BIND" ]]; then
     bind="$OPT_BIND"
 else
@@ -390,58 +392,58 @@ fi
 
 case "$bind" in
     0.0.0.0:*|\[::\]:*|:::*)
-        die "0.0.0.0 es una dirección de escucha, no un destino: el QR la lleva
-tal cual y el móvil no sabría a dónde marcar. Pon una IP concreta." ;;
+        die "0.0.0.0 is a listen address, not a destination: the QR carries it
+verbatim and the phone would not know where to dial. Use a specific one." ;;
     *:*) : ;;
-    *) die "falta el puerto: algo como ${bind}:8443" ;;
+    *) die "the port is missing: something like ${bind}:8443" ;;
 esac
 
 set_value phone bind "$bind"
 set_value phone enabled true no
-ok "canal del teléfono activado en $bind"
+ok "phone channel enabled on $bind"
 
 if [[ -n "$tailscale_ip" && "$bind" == "$tailscale_ip:"* ]]; then
-    info "${DIM}Con la dirección de Tailscale no hay que tocar nada al viajar.${R}"
-    info "${DIM}Ver tutorial-tailscale.md.${R}"
+    info "${DIM}With the Tailscale address nothing needs changing when you${R}"
+    info "${DIM}travel. See tutorial-tailscale.md.${R}"
 fi
 
 # Only ask about `advertise` when it would actually mean something.
 if [[ "$bind" == 127.* || "$bind" == "localhost:"* ]]; then
-    warn "escuchas en loopback: eso solo tiene sentido con un túnel delante"
-    adv="$(ask "Dirección pública del túnel (la que va al QR)" "")"
-    [[ -n "$adv" ]] && set_value phone advertise "$adv" && ok "el QR dirá $adv"
+    warn "listening on loopback: that only makes sense with a tunnel in front"
+    adv="$(ask "The tunnel public address (the one that goes in the QR)" "")"
+    [[ -n "$adv" ]] && set_value phone advertise "$adv" && ok "the QR will say $adv"
 fi
 
 # ── 4. The pairing key ───────────────────────────────────────────────────────
 
-step "Clave de emparejamiento"
+step "Pairing key"
 existing="$(current phone pairing_key)"
 if [[ ${#existing} -eq 64 ]]; then
-    ok "ya hay una clave de 64 hex; la dejo como está"
-    info "${DIM}Cambiarla obliga a volver a emparejar el teléfono.${R}"
+    ok "there is already a 64-hex key; leaving it alone"
+    info "${DIM}Changing it forces the phone to pair again.${R}"
 else
     # From the kernel CSPRNG. Never echoed: sealing a frame with it IS the
     # authentication, so it is the whole secret.
     newkey="$(od -An -tx1 -N32 /dev/urandom | tr -d ' \n')"
-    [[ ${#newkey} -eq 64 ]] || die "no pude generar 32 bytes de /dev/urandom"
+    [[ ${#newkey} -eq 64 ]] || die "could not get 32 bytes from /dev/urandom"
     set_value phone pairing_key "$newkey"
     unset newkey
-    ok "clave nueva generada y guardada (no se muestra: va en el QR)"
+    ok "new key generated and saved (not shown: it goes in the QR)"
 fi
 
 # ── 5. Check it ──────────────────────────────────────────────────────────────
 
-step "Comprobando"
+step "Checking"
 if [[ -x "$DAEMON" ]]; then
     if "$DAEMON" --config "$CONFIG" --check-config; then
-        ok "el daemon lee este config sin quejarse"
+        ok "the daemon reads this config without complaint"
     else
-        die "el daemon rechaza el config.
-Restaura el anterior con:  sudo cp $BACKUP $CONFIG"
+        die "the daemon refuses this config.
+Restore the previous one with:  sudo cp $BACKUP $CONFIG"
     fi
 else
-    warn "no encontré $DAEMON, así que no pude validarlo"
-    info "Cuando lo instales:  $DAEMON --config $CONFIG --check-config"
+    warn "$DAEMON not found, so this could not be validated"
+    info "Once installed:  $DAEMON --config $CONFIG --check-config"
 fi
 
 # Leave it no more readable than the installer intended.
@@ -449,17 +451,17 @@ chmod 640 "$CONFIG" 2>/dev/null || true
 if getent group sysentinel >/dev/null; then
     chown root:sysentinel "$CONFIG" 2>/dev/null || true
 fi
-ok "permisos: $(stat -c '%U:%G %a' "$CONFIG")"
+ok "permissions: $(stat -c '%U:%G %a' "$CONFIG")"
 
-step "Listo"
+step "Done"
 cat <<EOF
-   Arranca y mira el log: sin teléfono emparejado dibuja un QR.
+   Start it and watch the log: with no phone paired it draws a QR.
 
        sudo systemctl restart sysentinel
        sudo journalctl -u sysentinel -f
 
-   Escanéalo desde la app de sysentinel. El QR lleva la dirección, la clave
-   y la huella TLS del equipo; la app exige las tres.
+   Scan it from the sysentinel app. The QR carries the address, the key and
+   the machine TLS fingerprint; the app requires all three.
 
-   Copia de seguridad del config anterior: $BACKUP
+   Backup of the previous config: $BACKUP
 EOF

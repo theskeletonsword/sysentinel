@@ -58,10 +58,7 @@ object Confirmation {
     ) {
         val signature = DeviceIdentity.confirmSignature()
         if (signature == null) {
-            onResult(
-                "Este teléfono no puede firmar confirmaciones (sin biometría " +
-                    "registrada o sin Keystore utilizable). Usa el código."
-            )
+            onResult(activity.getString(R.string.confirm_unavailable))
             return
         }
 
@@ -73,7 +70,7 @@ object Confirmation {
                 override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
                     val sig = result.cryptoObject?.signature
                     if (sig == null) {
-                        onResult("El sistema no devolvió la firma; no confirmé nada.")
+                        onResult(activity.getString(R.string.confirm_no_signature))
                         return
                     }
                     try {
@@ -81,7 +78,9 @@ object Confirmation {
                         engine.confirm(nonce, sig.sign(), onResult)
                     } catch (e: Exception) {
                         Log.e(TAG, "signing the confirmation failed: ${e.message}")
-                        onResult("No pude firmar la confirmación: ${e.message}")
+                        onResult(
+                            activity.getString(R.string.confirm_sign_failed, e.message ?: "")
+                        )
                     }
                 }
 
@@ -92,9 +91,9 @@ object Confirmation {
                         if (code == BiometricPrompt.ERROR_USER_CANCELED ||
                             code == BiometricPrompt.ERROR_NEGATIVE_BUTTON
                         ) {
-                            "Cancelado. La orden sigue armada hasta que expire."
+                            activity.getString(R.string.confirm_cancelled)
                         } else {
-                            "Biometría fallida ($msg). No confirmé nada."
+                            activity.getString(R.string.confirm_biometric_failed, msg)
                         }
                     )
                 }
@@ -103,11 +102,11 @@ object Confirmation {
 
         prompt.authenticate(
             BiometricPrompt.PromptInfo.Builder()
-                .setTitle("Confirmar: $orderLabel")
+                .setTitle(activity.getString(R.string.confirm_prompt_title, orderLabel))
                 // Named explicitly, because the whole risk of a confirmation
                 // flow is authorising something other than what you thought.
-                .setSubtitle("Tu huella autoriza esta orden y solo esta.")
-                .setNegativeButtonText("Cancelar")
+                .setSubtitle(activity.getString(R.string.confirm_prompt_subtitle))
+                .setNegativeButtonText(activity.getString(R.string.confirm_cancel))
                 // No device-credential fallback: a PIN can be demanded out
                 // loud, which is the thing this exists to avoid.
                 .setAllowedAuthenticators(

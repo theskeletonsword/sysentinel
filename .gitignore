@@ -31,3 +31,10 @@ modules.order
 # (a bare `*.lock` here would silently exclude it).
 /daemon/config/config.toml
 *.pid
+
+# Editor swap files. One of these got committed by a `git add -A` while the
+# file was open in an editor; it is 129 bytes of nothing and it should never
+# have been in here.
+.*.kate-swp
+*.swp
+*~

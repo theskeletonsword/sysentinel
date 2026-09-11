@@ -60,7 +60,7 @@ const PANELS: &[Panel] = &[
     Panel {
         id: "pmu",
         title: "PMU",
-        subtitle: "IPC por tipo de núcleo",
+        subtitle: "IPC per core type",
         icon: "speedometer-symbolic",
         request: ipc::Request::Pmu,
     },
@@ -74,7 +74,7 @@ const PANELS: &[Panel] = &[
     Panel {
         id: "mei",
         title: "Superficie MEI",
-        subtitle: "clientes del firmware",
+        subtitle: "firmware clients",
         icon: "network-wired-symbolic",
         request: ipc::Request::Mei,
     },
@@ -87,8 +87,8 @@ const PANELS: &[Panel] = &[
     },
     Panel {
         id: "volumes",
-        title: "Volúmenes",
-        subtitle: "qué hay en cada disco",
+        title: "Volumes",
+        subtitle: "what is on each disk",
         icon: "drive-harddisk-symbolic",
         request: ipc::Request::Volumes,
     },
@@ -175,16 +175,16 @@ fn build_ui(app: &adw::Application) {
     let status_dot = gtk4::Label::builder().label("● comprobando").build();
 
     // The badge is not decoration: it is the promise this window makes.
-    let quiet = gtk4::Label::builder().label("SIN NOTIFICACIONES").build();
+    let quiet = gtk4::Label::builder().label("NO NOTIFICATIONS").build();
     quiet.add_css_class("quiet-badge");
     quiet.set_tooltip_text(Some(
-        "Esta ventana nunca lanza notificaciones, ventanas emergentes ni sonidos.\n\
-         Si alguien te está mirando por encima del hombro, una máquina que avisa \
-         en pantalla te delata. Las alertas van solo a tu teléfono.",
+        "This window never raises a notification, a popup or a sound.\n\
+         If somebody is reading over your shoulder, a machine that warns you on \
+         screen gives you away. Alerts go to your phone and nowhere else.",
     ));
 
     let refresh = gtk4::Button::from_icon_name("view-refresh-symbolic");
-    refresh.set_tooltip_text(Some("Recargar este panel"));
+    refresh.set_tooltip_text(Some("Reload this panel"));
 
     let header_left = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
     header_left.append(&title);
@@ -209,7 +209,7 @@ fn build_ui(app: &adw::Application) {
     // The reason this window exists: so a question does not have to be typed
     // into a chat app in front of colleagues.
     let entry = gtk4::Entry::builder()
-        .placeholder_text("Pregúntale a la máquina…  (Enter para enviar)")
+        .placeholder_text("Ask the machine…  (Enter to send)")
         .hexpand(true)
         .build();
     let send = gtk4::Button::from_icon_name("document-send-symbolic");
@@ -259,7 +259,7 @@ fn build_ui(app: &adw::Application) {
     let bar = adw::HeaderBar::new();
     bar.set_title_widget(Some(&adw::WindowTitle::new(
         "sysentinel",
-        "consola local · silenciosa por diseño",
+        "local console · quiet by design",
     )));
     toolbar.add_top_bar(&bar);
     toolbar.set_content(Some(&split));
@@ -283,7 +283,7 @@ fn build_ui(app: &adw::Application) {
         move |index: usize| {
             let panel = PANELS[index].clone();
             title.set_text(panel.title);
-            readout.buffer().set_text("cargando…");
+            readout.buffer().set_text("loading…");
 
             // The request runs on a worker: probing every disk takes real time,
             // and a UI that freezes while it happens is worse than none.
@@ -301,18 +301,18 @@ fn build_ui(app: &adw::Application) {
                 match rx.recv().await {
                     Ok(Ok(text)) => {
                         readout.buffer().set_text(&text);
-                        status_dot.set_text("● daemon en línea");
+                        status_dot.set_text("● daemon online");
                         status_dot.remove_css_class("offline");
                         status_dot.add_css_class("online");
                     }
                     Ok(Err(message)) => {
                         readout.buffer().set_text(&message);
-                        status_dot.set_text("● sin daemon");
+                        status_dot.set_text("● no daemon");
                         status_dot.remove_css_class("online");
                         status_dot.add_css_class("offline");
                     }
                     Err(_) => {
-                        readout.buffer().set_text("el trabajador se cerró sin responder");
+                        readout.buffer().set_text("the worker exited without answering");
                     }
                 }
             });
@@ -349,10 +349,10 @@ fn build_ui(app: &adw::Application) {
             entry.set_text("");
             entry.set_sensitive(false);
             send.set_sensitive(false);
-            title.set_text("Conversación");
+            title.set_text("Conversation");
             readout
                 .buffer()
-                .set_text(&format!("> {question}\n\npensando…"));
+                .set_text(&format!("> {question}\n\nthinking…"));
 
             let (tx, rx) = async_channel::bounded::<Result<String, String>>(1);
             let socket = socket.clone();
@@ -370,7 +370,7 @@ fn build_ui(app: &adw::Application) {
                 let body = match rx.recv().await {
                     Ok(Ok(answer)) => answer,
                     Ok(Err(message)) => message,
-                    Err(_) => "el trabajador se cerró sin responder".to_string(),
+                    Err(_) => "the worker exited without answering".to_string(),
                 };
                 readout
                     .buffer()

@@ -552,10 +552,10 @@ pub fn start(
         let suggested = fresh_pairing_key().unwrap_or_default();
         anyhow::bail!(
             "phone: [phone] pairing_key is not set.\n\
-             Aquí tienes una recién generada — ponla en config.toml y en la app:\n\n\
+             Here is a freshly generated one — put it in config.toml and in the app:\n\n\
              \t[phone]\n\tpairing_key = \"{suggested}\"\n\n\
-             Sellar un frame con ella ES la autenticación, así que es todo el \
-             secreto: trátala como tal."
+             Sealing a frame with it IS the authentication, so it is the whole \
+             secret: treat it as one."
         );
     };
     let key = parse_key(&key_hex)?;
@@ -604,7 +604,7 @@ pub fn start(
     };
     if paired.is_none() {
         let uri = pairing_uri_pinned(&advertise, &key_hex, &tls.fingerprint);
-        eprintln!("\n  Empareja tu teléfono — escanea esto con la app:\n");
+        eprintln!("\n  Pair your phone — scan this with the app:\n");
         match pairing_qr(&uri) {
             Ok(qr) => eprintln!("{qr}"),
             Err(e) => log::warn!("phone: cannot draw the pairing QR: {e}"),
@@ -614,7 +614,7 @@ pub fn start(
             eprintln!("  ⚠ {why}\n");
         }
         eprintln!(
-            "  Quien vea esta pantalla puede leer la clave. Después del primer emparejamiento deja de bastar: el equipo exige además la firma del teléfono que registró.\n"
+            "  Anyone who can see this screen can read the key. After the first pairing that stops being enough: the machine also demands a signature from the handset it registered.\n"
         );
     }
 
@@ -678,8 +678,8 @@ fn bind_listener(bind: &str) -> Result<TcpListener> {
             {
                 if !announced {
                     log::info!(
-                        "phone: {bind} no existe todavía — esperando a que aparezca \
-                         la interfaz (¿tailscaled/wg-quick aún arrancando?)"
+                        "phone: {bind} does not exist yet — waiting for the interface \
+                         to appear (is tailscaled/wg-quick still starting?)"
                     );
                     announced = true;
                 }
@@ -687,18 +687,18 @@ fn bind_listener(bind: &str) -> Result<TcpListener> {
             }
             Err(e) => {
                 let waited = if announced {
-                    format!(" (esperé {}s)", started.elapsed().as_secs())
+                    format!(" (waited {}s)", started.elapsed().as_secs())
                 } else {
                     String::new()
                 };
                 anyhow::bail!(
                     "phone: cannot listen on {bind}: {e}{waited}\n\
-                     `bind` es una interfaz LOCAL de esta máquina (mírala con \
-                     `ip -4 addr`). Si es la dirección de una VPN, comprueba que \
-                     tailscaled / wg-quick esté arriba. Si lo que pusiste es el \
-                     nombre DDNS o la IP pública del router, eso no se escucha \
-                     aquí: deja `bind` en la IP local y pon esa dirección en \
-                     `advertise`, que es la que va al QR."
+                     `bind` is a LOCAL interface of this machine (see `ip -4 \
+                     addr`). If it is a VPN address, check that tailscaled / \
+                     wg-quick is up. If what you put there is your DDNS name or \
+                     the router's public address, nothing listens on that here: \
+                     leave `bind` on the local IP and put that address in \
+                     `advertise`, which is what goes into the QR."
                 );
             }
         }
@@ -784,17 +784,17 @@ fn undialable(addr: &str) -> Option<String> {
 
     if wildcard {
         Some(format!(
-            "`{addr}` es una dirección de escucha, no un destino. El QR la \
-             lleva tal cual, así que el teléfono no sabrá a dónde marcar: pon \
-             en `bind` la IP concreta por la que te ve el móvil, o deja `bind` \
-             como está y pon esa dirección en `advertise`."
+            "`{addr}` is a listen address, not a destination. The QR carries it \
+             verbatim, so the phone would not know where to dial: put the \
+             specific address the handset sees you on in `bind`, or leave \
+             `bind` alone and put that address in `advertise`."
         ))
     } else if loopback {
         Some(format!(
-            "`{addr}` es esta misma máquina, y desde el teléfono eso es el \
-             teléfono. Si delante hay un túnel (ngrok, Cloudflare, un forward \
-             por SSH), escuchar en loopback está bien — pero pon la dirección \
-             pública del túnel en `advertise`, que es la que va al QR."
+            "`{addr}` is this machine itself, and from the phone that means the \
+             phone. If a tunnel is in front (ngrok, Cloudflare, an SSH forward), \
+             listening on loopback is right — but put the tunnel's public \
+             address in `advertise`, which is what goes into the QR."
         ))
     } else {
         None
@@ -1033,9 +1033,9 @@ fn serve<S: Read + Write>(
                 &mut stream,
                 key,
                 &ToPhone::Error {
-                    message: "el perfil del teléfono emparejado está ilegible en el \
-                              equipo: no puedo saber si eres tú, así que no acepto \
-                              órdenes hasta que se arregle"
+                    message: "the paired phone's profile is unreadable on the \
+                              machine: I cannot tell whether this is you, so I am \
+                              accepting no orders until that is fixed"
                         .to_string(),
                 },
             )?;
@@ -1059,8 +1059,8 @@ fn serve<S: Read + Write>(
                 &mut stream,
                 key,
                 &ToPhone::Error {
-                    message: "identifícate primero: este equipo ya tiene un teléfono \
-                              emparejado y exige su firma"
+                    message: "identify yourself first: this machine already has a \
+                              paired phone and demands its signature"
                         .to_string(),
                 },
             )?;
@@ -1126,7 +1126,7 @@ fn serve<S: Read + Write>(
                     ToPhone::Ok
                 }
                 None => ToPhone::Error {
-                    message: "la foto no venía en base64 válido".to_string(),
+                    message: "the photo did not arrive as valid base64".to_string(),
                 },
             },
             FromPhone::Hello { .. } => ToPhone::Error {
@@ -1185,8 +1185,8 @@ fn identify_handset(
         log::warn!("phone: a client presented a device key it could not sign with");
         return ToPhone::Identity {
             verdict: "rejected".to_string(),
-            detail: "la firma del desafío no verifica: quien está al otro lado no \
-                     tiene la clave privada de ese dispositivo"
+            detail: "the challenge signature does not verify: whoever is on the \
+                     other end does not hold that device's private key"
                 .to_string(),
         };
     }
@@ -1199,8 +1199,8 @@ fn identify_handset(
             // to whichever handset connected next.
             log::error!("phone: {e:#}");
             return ToPhone::Error {
-                message: "el perfil del teléfono emparejado está ilegible: no voy a \
-                          emparejar encima de algo que no puedo leer"
+                message: "the paired phone's profile is unreadable: I will not pair \
+                          over something I cannot read"
                     .to_string(),
             };
         }
@@ -1232,7 +1232,7 @@ fn identify_handset(
                     ToPhone::Identity { verdict: "paired".to_string(), detail }
                 }
                 Err(e) => ToPhone::Error {
-                    message: format!("no pude guardar el perfil del teléfono: {e}"),
+                    message: format!("I could not save the phone's profile: {e}"),
                 },
             }
         }
@@ -1470,7 +1470,7 @@ mod tests {
         let refusal: ToPhone =
             serde_json::from_slice(&open(&key, &read_frame(&mut tls).unwrap()).unwrap()).unwrap();
         match refusal {
-            ToPhone::Error { message } => assert!(message.contains("ilegible"), "{message}"),
+            ToPhone::Error { message } => assert!(message.contains("unreadable"), "{message}"),
             other => panic!("expected a refusal, got {other:?}"),
         }
 
@@ -1603,14 +1603,14 @@ mod tests {
 
         let mut q = AlertQueue::load(&path, 100);
         assert!(q.is_empty());
-        q.push("alguien tocó el equipo", None);
-        q.push("y conectó un disco", Some(Path::new("/tmp/shot.jpg")));
+        q.push("somebody touched the machine", None);
+        q.push("and plugged in a disk", Some(Path::new("/tmp/shot.jpg")));
 
         // A fresh load is what a restarted daemon sees.
         let q2 = AlertQueue::load(&path, 100);
         assert_eq!(q2.len(), 2);
         let pending = q2.pending();
-        assert_eq!(pending[0].text, "alguien tocó el equipo");
+        assert_eq!(pending[0].text, "somebody touched the machine");
         assert_eq!(pending[1].photo.as_deref(), Some("/tmp/shot.jpg"));
         // Ids must not restart, or an ack would drop the wrong things.
         assert!(pending[1].id > pending[0].id);
@@ -1667,8 +1667,8 @@ mod tests {
 
         assert!(ch.ready());
         assert!(!ch.third_party_reachable(), "this channel exists to have no relay");
-        ch.send_text("algo pasó").unwrap();
-        ch.send_photo("con foto", Path::new("/tmp/x.jpg")).unwrap();
+        ch.send_text("something happened").unwrap();
+        ch.send_photo("with a photo", Path::new("/tmp/x.jpg")).unwrap();
         assert_eq!(q.lock().unwrap().len(), 2);
 
         let off = PhoneChannel::new(false, q);
@@ -1711,7 +1711,7 @@ mod tests {
 
         // Hand a frame to the JVM to open.
         if let Ok(path) = std::env::var("SYSENTINEL_INTEROP_OUT") {
-            let sealed = seal(&key, b"desde rust").unwrap();
+            let sealed = seal(&key, b"from rust").unwrap();
             let hex: String = sealed.iter().map(|b| format!("{b:02x}")).collect();
             std::fs::write(&path, hex).unwrap();
         }
@@ -1728,7 +1728,7 @@ mod tests {
             let opened = open(&key, &bytes).expect("the JVM's frame must authenticate");
             assert_eq!(
                 String::from_utf8(opened).unwrap(),
-                "desde java",
+                "from java",
                 "the JVM sealed something other than what we expect"
             );
             println!("interop: opened the JVM's frame");
@@ -1760,7 +1760,7 @@ mod tests {
                 "the JVM's ECDSA signature must verify here"
             );
             // And it must not verify against something else.
-            assert!(!crate::phonehome::verify_challenge(&pubkey, b"otro desafio", &sig));
+            assert!(!crate::phonehome::verify_challenge(&pubkey, b"another challenge", &sig));
             println!("interop: verified the JVM's device-key signature");
         }
 

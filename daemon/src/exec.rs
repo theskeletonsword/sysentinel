@@ -22,7 +22,7 @@
 //!
 //! The module presence is the environment's *ring-3 trust anchor*: when
 //! `sysentinel_metrics.ko` is up, the paired user gets `/exec <cmd>` — the
-//! "haz lo que quieras, hasta estresar hilos por gusto" front door. Every
+//! "do whatever you like, even stress threads for fun" front door. Every
 //! `/exec` still goes through the ARM → `confirm` ritual first, and a
 //! foreground command is killed (SIGTERM→SIGKILL on its whole process
 //! group) after [`Settings.exec_timeout`] seconds. Background jobs are

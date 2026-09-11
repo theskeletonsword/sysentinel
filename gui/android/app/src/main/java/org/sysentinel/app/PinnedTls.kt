@@ -46,10 +46,16 @@ object PinnedTls {
      *
      * @param pin the `sha256/…` fingerprint from the pairing QR.
      */
-    fun wrap(plain: Socket, host: String, port: Int, pin: String): SSLSocket {
-        val ctx = SSLContext.getInstance("TLS")
-        ctx.init(null, arrayOf(PinnedTrustManager(pin)), java.security.SecureRandom())
-        val socket = ctx.socketFactory.createSocket(plain, host, port, true) as SSLSocket
+    fun wrap(
+        ctx: android.content.Context,
+        plain: Socket,
+        host: String,
+        port: Int,
+        pin: String,
+    ): SSLSocket {
+        val ssl = SSLContext.getInstance("TLS")
+        ssl.init(null, arrayOf(PinnedTrustManager(ctx, pin)), java.security.SecureRandom())
+        val socket = ssl.socketFactory.createSocket(plain, host, port, true) as SSLSocket
 
         // TLS 1.3 where the platform has it. Android 10 (API 29) enables it by
         // default; older handsets top out at 1.2, and the legacy flavour of
@@ -61,10 +67,7 @@ object PinnedTls {
         val available = socket.supportedProtocols.toSet()
         val enabled = wanted.filter { it in available }
         if (enabled.isEmpty()) {
-            throw PhoneLinkException(
-                "Este teléfono no ofrece TLS 1.2 ni 1.3. Es demasiado viejo para " +
-                    "hablar con el equipo de forma segura."
-            )
+            throw PhoneLinkException(ctx.getString(R.string.err_tls_too_old))
         }
         socket.enabledProtocols = enabled.toTypedArray()
 
@@ -95,25 +98,25 @@ object PinnedTls {
      * client-certificate path, no accepted-issuers list, and no branch that
      * falls back to the system store.
      */
-    private class PinnedTrustManager(private val pin: String) : X509TrustManager {
+    private class PinnedTrustManager(
+        private val ctx: android.content.Context,
+        private val pin: String,
+    ) : X509TrustManager {
 
         override fun checkServerTrusted(chain: Array<out X509Certificate>?, authType: String?) {
             val leaf = chain?.firstOrNull()
-                ?: throw CertificateException("el equipo no presentó certificado")
+                ?: throw CertificateException(ctx.getString(R.string.err_no_cert))
             val seen = pinOf(leaf)
             if (seen != pin) {
                 throw CertificateException(
-                    "La llave del equipo no es la que guardaste al emparejar.\n\n" +
-                        "Esperaba $pin\ny llegó $seen.\n\n" +
-                        "O reinstalaron el daemon (y hay que volver a emparejar), o " +
-                        "alguien está respondiendo en su lugar."
+                    ctx.getString(R.string.err_pin_mismatch, pin, seen)
                 )
             }
         }
 
         override fun checkClientTrusted(chain: Array<out X509Certificate>?, authType: String?) {
             // This side never acts as a server.
-            throw CertificateException("no soy un servidor")
+            throw CertificateException("this side is never a server")
         }
 
         override fun getAcceptedIssuers(): Array<X509Certificate> = emptyArray()

@@ -52,7 +52,7 @@ tone = "formal and concise, like a seasoned systems administrator's incident rep
 # BCP-47 language tag. The AI will answer in this language regardless of tone.
 language = "es-CL"
 # Personify: the bot mirrors the machine's live mood (load, memory, temperature,
-# PMU) on every turn — "System mood / Animo del sistema". Cost: one short line
+# PMU) on every turn — the "System mood" line. Cost: one short line
 # per turn. Set false to disable.
 emotions = true
 # Whether the CPU is undervolted. RESOLVED AT RUNTIME by vendor (Intel/AMD/
@@ -85,26 +85,31 @@ context_file = "/var/lib/sysentinel/context.txt"
 # like DeepSeek.
 context_max_entries = 15
 
-# ── TLS saliente ─────────────────────────────────────────────────────────────
-# Las llamadas al LLM son lo único que este daemon sigue mandando al servidor de
-# otra persona, y llevan tu API key en una cabecera y, en el cuerpo, lo que
-# acaba de pasar en la máquina. Dos cosas:
+# ── Outbound TLS ─────────────────────────────────────────────────────────────
+# LLM calls are the only thing this daemon still sends to somebody else's
+# server, and they carry your API key in a header and, in the body, what just
+# happened on this machine. Three things:
 #
-# 1. Se exige https:// en todos los base_url, al cargar la config Y antes de
-#    cada petición (un fichero se puede editar después de validarlo). Un
-#    http:// mandaba la key en claro y nada avisaba. `llama` queda exento a
-#    propósito: suele ser un llama.cpp en loopback y ahí no sale nada.
+# 1. TLS 1.3 only. Not "1.3 preferred": offering 1.2 as well means the SERVER
+#    chooses, and choosing is what a version floor takes away from the other
+#    end. Every provider negotiates 1.3 — verified against Anthropic, OpenAI,
+#    DeepSeek and Gemini. An endpoint that cannot is a TLS-intercepting proxy.
 #
-# 2. tls_pins fija la CLAVE PÚBLICA del servidor (SPKI), no el certificado.
-#    Los proveedores rotan certificados a menudo conservando la clave, así que
-#    fijar el certificado se rompe un martes sin motivo de seguridad — y un pin
-#    que se rompe se borra, que es peor que no fijar nada.
+# 2. https:// is required on every base_url, at config load AND before each
+#    request (a file can be edited after it was validated). An http:// used to
+#    send the key in the clear with nothing to warn you. `llama` is exempt on
+#    purpose: it is usually a llama.cpp on loopback, where nothing leaves.
 #
-#    Es aditivo: la cadena se valida igual y el pin se comprueba encima. Sin
-#    pins, HTTPS normal, que confía en las 100+ CA del almacén. Con pins, solo
-#    en la clave que nombres. Opcional porque un pin caducado es una caída.
+# 3. tls_pins pins the server's PUBLIC KEY (SPKI), not the certificate.
+#    Providers rotate certificates often while keeping the key, so pinning the
+#    certificate breaks on a Tuesday for no security reason — and a pin that
+#    breaks gets deleted, which is worse than not pinning at all.
 #
-#    Sácalo así:
+#    It is additive: the chain is validated as usual and the pin is checked on
+#    top. With no pins, ordinary HTTPS trusting the 100+ CAs in the store. With
+#    pins, only the key you name. Optional, because a stale pin is an outage.
+#
+#    Get one like this:
 #      openssl s_client -connect api.anthropic.com:443 </dev/null 2>/dev/null \
 #        | openssl x509 -pubkey -noout | openssl pkey -pubin -outform der \
 #        | openssl dgst -sha256 -binary | openssl enc -base64
@@ -223,7 +228,7 @@ sample_ms = 250
 # Intrusion webcam: photos of whoever is at the keyboard, attached to the
 # outgoing alerts. Three triggers:
 #   - LUKS decrypt (photo taken by the initramfs hook BEFORE login; daemon
-#     finds it here and asks "¿fui yo?")
+#     finds it here and asks "was that me?")
 #   - a successful login
 #   - ≥ login_fail_threshold failed login attempts in a row
 # With no webcam, only the text alert is sent.
@@ -281,30 +286,33 @@ path = "/var/lib/sysentinel/faces.json"
 # which engine is live.
 tool_path = "/usr/libexec/sysentinel-face"
 
-# ── Qué significa cada composición del encuadre ──────────────────────────────
-# El motor neuronal no cuenta caras, clasifica la escena — porque lo que decide
-# la respuesta correcta no es cuántas hay, sino QUIÉN falta:
+# ── What each composition of the frame means ─────────────────────────────────
+# The neural engine does not count faces, it classifies the scene — because
+# what decides the right answer is not how many there are, but WHO is missing:
 #
-#   dueño solo .................. normal, nada que hacer
-#   dueño + desconocidos ........ POSIBLE COERCIÓN. Alguien mira por encima del
-#                                 hombro, o está ahí para asegurarse de que
-#                                 entres. La alerta sale al chat y NO se ejecuta
-#                                 ninguna acción local: si te están coaccionando,
-#                                 una máquina que se apaga sola delata que avisó,
-#                                 y quien lo paga eres tú.
-#   1 desconocido, sin dueño .... acceso oportunista a una máquina desatendida
-#   2+ desconocidos, sin dueño .. PÉRDIDA DE CUSTODIA. La gente no se agrupa por
-#                                 accidente alrededor del portátil ajeno: dos
-#                                 personas es la firma de un procedimiento (un
-#                                 registro o una incautación llevan testigo por
-#                                 norma), de un robo con examen, o de alguien de
-#                                 casa enseñando tu equipo. Alerta fuerte, pero
-#                                 sin destruir nada por su cuenta.
-#   sin caras ................... la silla vacía NO es un intruso
+#   owner alone ................. normal, nothing to do
+#   owner + strangers ........... POSSIBLE COERCION. Somebody is reading over
+#                                 the shoulder, or is there to make sure you log
+#                                 in. The alert goes to the chat and NO local
+#                                 action is taken: if you are being coerced, a
+#                                 machine that switches itself off announces
+#                                 that it informed on you, and you are the one
+#                                 who pays for that.
+#   1 stranger, no owner ........ opportunistic access to an unattended machine
+#   2+ strangers, no owner ...... CUSTODY LOST. People do not gather around
+#                                 somebody else's laptop by accident: two of
+#                                 them is the signature of a procedure (a search
+#                                 or a seizure brings a witness as a matter of
+#                                 policy), of a theft being examined, or of
+#                                 somebody at home showing your machine off.
+#                                 Loud alert, and still destroys nothing on its
+#                                 own.
+#   no faces .................... an empty chair is NOT an intruder
 #
-# Las caras mucho más pequeñas que la mayor se descartan como retrato, pantalla
-# o fondo (umbral: 10% del área). Sin ese filtro, un póster detrás del escritorio
-# dispararía la alerta de coerción a diario, y una alerta diaria no la lee nadie.
+# Faces much smaller than the largest are discarded as a portrait, a screen or
+# the background (threshold: 10% of the area). Without that filter, a poster
+# behind the desk would fire the coercion alert daily, and a daily alert is one
+# nobody reads.
 
 # Cosine thresholds over the 128-D embeddings (1.0 = identical, 0.0 = unrelated).
 # Measured on these models: the same image scores 1.000000, while six different
@@ -323,184 +331,208 @@ w_ambiguous  = 22
 # Seconds to wait for a frame while a format is being tried.
 timeout = 10
 
-# ── Sobre los canales ────────────────────────────────────────────────────────
-# Antes de apagar un canal: comprueba que te queda ALGÚN otro. Un vigilante sin
-# forma de avisar no es un sistema endurecido, es uno que observa y nunca puede
-# contarlo. El daemon avisa en el log si se queda sordo, y también dice qué
-# expone cada canal vivo.
+# ── About the channels ───────────────────────────────────────────────────────
+# Before switching a channel off: check that you still have ANOTHER one. A
+# watchdog with no way to speak is not a hardened system, it is one that
+# observes and can never say so. The daemon warns in the log when it goes deaf,
+# and also says what each live channel exposes.
 #
-# El destino es la app del teléfono, que puede guardar una clave que esta
-# máquina no alcanza y no necesita a un tercero para entregar un mensaje.
+# The destination is the phone app, which can hold a key this machine cannot
+# reach and needs no third party to deliver a message.
 
 # ── [phone] ─────────────────────────────────────────────────────────────────
-# El único canal: la app del teléfono, conectada directo contra esta máquina.
+# The only channel: the phone app, connected directly to this machine.
 #
-# Qué gana: no hay token al portador que hable por la máquina si se filtra, no
-# hay endpoint que un desconocido alcance (y sea rechazado sólo DESPUÉS de
-# llegar), y no hay un tercero que vea quién habló con quién y cuándo.
+# What it buys: no bearer token that speaks as the machine if it leaks, no
+# endpoint a stranger reaches (and is rejected only AFTER arriving), and no
+# third party that sees who talked to whom and when.
+#
+# HOW IT IS ENCRYPTED (so you do not have to take my word for it)
+#   TLS 1.3 and nothing older, with `rustls` on this end and the Android stack
+#   on the other. There is no CA: the machine signs its own certificate and the
+#   QR carries the SHA-256 of its public key, so the phone accepts THAT key and
+#   no other. No public CA will ever certify a LAN address, and a fingerprint
+#   handed over by hand is a better introduction than a name signed by one of
+#   the hundred authorities in the system store.
+#
+#   Inside that tunnel every frame is sealed with AES-256-GCM under the pairing
+#   key. That is not redundant: TLS proves the MACHINE is your machine, the seal
+#   proves the caller holds the key, and the phone's signature — one layer up —
+#   proves it is THAT handset.
+#
+#   What the TLS buys that was missing before: forward secrecy. A pairing key
+#   that leaked LATER used to decrypt everything ever recorded. Not any more:
+#   each session negotiates ephemeral keys and takes them with it.
+#
+#   The certificate lives in /var/lib/sysentinel/phone-cert.der (its private
+#   half in phone-key.der, 0600). Delete them and the machine mints new ones,
+#   and you have to scan the QR again — the phone refuses a key that is not the
+#   one it wrote down, which is exactly what it should do.
 #
 #
-# CÓMO SE ENLAZA (se hace UNA vez, en casa)
-# ─────────────────────────────────────────
-#   1. Pon el teléfono en el MISMO WiFi que el PC.
-#   2. `bind` = la IP de este PC en esa red, con puerto:  "192.168.1.5:8443"
-#      (mírala con `ip -4 addr` o `hostname -I`).
-#   3. Arranca el daemon: dibuja un QR en la consola. Escanéalo con la app.
-#   4. La app genera una llave DENTRO del TEE del teléfono (StrongBox/Titan si
-#      el modelo lo tiene) y la registra. Hecho.
+# HOW IT IS PAIRED (once, at home)
+#   1. Put the phone on the SAME WIFI as the PC.
+#   2. `bind` = this PC's address on that network, with a port:
+#      "192.168.1.5:8443" (find it with `ip -4 addr` or `hostname -I`).
+#   3. Start the daemon: it draws a QR on the console. Scan it with the app.
+#   4. The app generates a key INSIDE the phone's TEE (StrongBox/Titan where the
+#      model has one) and registers it. Done.
 #
-# A partir de ahí el vínculo es entre ESTA máquina y ESE teléfono. No caduca,
-# no hay que repetirlo, y no depende de la red: ya estés en el sofá, en Italia,
-# en España o en Marte, hablas con tu PC igual. Lo único que hace falta es que
-# el móvil pueda ALCANZAR la máquina — y eso es ruta, no emparejamiento.
+# From then on the link is between THIS machine and THAT phone. It does not
+# expire, it does not need repeating, and it does not depend on the network: on
+# the sofa, in Italy, in Spain or on Mars, you are talking to your PC. The only
+# thing needed is for the phone to be able to REACH the machine — and that is
+# routing, not pairing.
 #
 #
-# CÓMO SE ALCANZA DESDE FUERA (elige uno)
-# ───────────────────────────────────────
-#   a) MISMA RED (casa, oficina): nada que hacer. Funciona tal cual.
+# HOW IT IS REACHED FROM OUTSIDE (pick one)
+#   a) SAME NETWORK (home, office): nothing to do. It just works.
 #
-#   b) VPN — Tailscale o WireGuard. ES LA BUENA, y no por purismo: la
-#      dirección de la VPN es LA MISMA en casa y desde Marte. Pon `bind` en
-#      esa dirección y el QR que escaneaste en el sofá sigue sirviendo desde
-#      otro continente, sin tocar nada. Además el puerto no queda expuesto a
-#      internet: sólo existe dentro de tu red privada, así que los escaneos de
-#      internet no lo ven siquiera. Y funciona bajo CGNAT, igual que el túnel,
-#      porque la conexión también sale desde aquí.
+#   b) VPN — Tailscale or WireGuard. THIS IS THE GOOD ONE, and not out of
+#      purism: the VPN address is THE SAME at home and from Mars. Put `bind` on
+#      that address and the QR you scanned on the sofa still works from another
+#      continent, without touching anything. The port is also not exposed to the
+#      internet: it only exists inside your private network, so internet-wide
+#      scans never see it. And it works under CGNAT, like the tunnel, because
+#      the connection goes out from here too.
 #
-#      Con Tailscale, entero:
+#      With Tailscale, in full:
 #
-#        # en el PC y en el teléfono (app de Tailscale), con la MISMA cuenta:
+#        # on the PC and on the phone (Tailscale app), with the SAME account:
 #        sudo tailscale up
-#        tailscale ip -4            # => 100.101.102.103  ← esta va en bind
+#        tailscale ip -4            # => 100.101.102.103  ← this goes in bind
 #
 #        bind = "100.101.102.103:8443"
 #
-#      Con MagicDNS puedes poner el nombre en `advertise` si prefieres leerlo
-#      ("mi-pc.tailnet-1234.ts.net:8443"); `bind` sigue siendo la IP, que es
-#      lo que esta máquina tiene de verdad.
+#      With MagicDNS you can put the name in `advertise` if you prefer reading
+#      it ("my-pc.tailnet-1234.ts.net:8443"); `bind` stays the IP, which is what
+#      this machine actually has. Full guide: tutorial-tailscale.md.
 #
-#      Arranque: la 100.x no existe hasta que tailscaled está arriba, así que
-#      el daemon espera hasta un minuto a que aparezca antes de rendirse (y el
-#      unit ya va detrás de tailscaled.service). Si lo ves quejarse de que la
-#      dirección no existe, es eso.
+#      Startup: the 100.x does not exist until tailscaled is up, so the daemon
+#      waits up to a minute for it to appear before giving up (and the unit
+#      already orders itself after tailscaled.service). If you see it complain
+#      that the address does not exist, that is this.
 #
-#      Lo que cuesta, porque también lo tiene: Tailscale coordina las claves
-#      con un servidor suyo. El tráfico NO pasa por ahí (es WireGuard punto a
-#      punto, y si no hay ruta directa el relay DERP sólo ve cifrado), pero
-#      ese servidor sabe qué equipos tienes, cómo se llaman y cuándo se
-#      conectan. Si eso te sobra, WireGuard a pelo no tiene coordinador, y
-#      Headscale es el plano de control de Tailscale hecho en tu casa.
+#      What it costs, because it has a cost too: Tailscale coordinates keys
+#      through a server of theirs. The traffic does NOT go through it (it is
+#      WireGuard point to point, and where there is no direct route the DERP
+#      relay only sees ciphertext), but that server knows which machines you
+#      have, what they are called and when they connect. If that is too much,
+#      plain WireGuard has no coordinator, and Headscale is Tailscale's control
+#      plane run at home.
 #
-#   c) Port forward en el router + DDNS. Funciona perfectamente y no depende
-#      de nadie: tu router, tu nombre, tu casa. Es lo que hay que montar:
+#   c) Port forward on the router + DDNS. Works perfectly and depends on nobody:
+#      your router, your name, your house. This is what to set up:
 #
-#        - En el router: redirige un puerto externo a esta máquina.
-#          El externo NO tiene por qué ser el mismo que el interno; si lo
-#          cambias, el que va en `advertise` es el EXTERNO.
+#        - On the router: forward an external port to this machine. The external
+#          one does NOT have to match the internal one; if you change it, the
+#          one that goes in `advertise` is the EXTERNAL one.
 #            TCP  45678  ->  192.168.1.5:8443
-#        - DDNS (el del propio router, o duckdns/no-ip/desec/Cloudflare) para
-#          no perseguir la IP cada vez que el ISP te la cambia.
-#        - Aquí:
-#            bind      = "192.168.1.5:8443"     # la interfaz local
-#            advertise = "casa.duckdns.org:45678"  # lo que va al QR
+#        - DDNS (the router's own, or duckdns/no-ip/desec/Cloudflare) so you do
+#          not have to chase the address every time the ISP changes it.
+#        - Here:
+#            bind      = "192.168.1.5:8443"        # the local interface
+#            advertise = "home.duckdns.org:45678"  # what goes in the QR
 #
-#      `bind` NUNCA lleva el nombre DDNS ni la IP pública: eso no es una
-#      dirección de esta máquina y el daemon no arranca (te lo dice así).
+#      `bind` NEVER holds the DDNS name or the public address: that is not an
+#      address of this machine and the daemon will not start (and says so).
 #
-#      Dos cosas que muerden, y ninguna es culpa tuya:
+#      Two things that bite, and neither is your fault:
 #
-#        - HAIRPIN NAT. Muchos routers no dejan que un equipo de dentro salga
-#          a la IP pública y vuelva a entrar. O sea: funciona desde la calle y
-#          falla EN TU CASA, que es donde lo vas a probar primero. Si te pasa,
-#          no está roto: en casa usa la dirección LAN y fuera la DDNS (se
-#          cambia en la app, toca `equipo: …`), o mira si tu router tiene
-#          "NAT loopback"/"hairpin" para activarlo.
-#        - CGNAT. Si tu ISP te da IP compartida (mira si la WAN del router es
-#          10.x / 100.64-127.x / 192.168.x), no hay puerto que redirigir
-#          porque la IP pública no es tuya. Ahí toca (b) o (d).
+#        - HAIRPIN NAT. Plenty of routers will not let an inside host leave to
+#          the public address and come back. So: it works from the street and
+#          fails AT HOME, which is where you will test it first. If that happens
+#          nothing is broken: use the LAN address at home and the DDNS one away
+#          (change it in the app, tap `machine: …`), or look for "NAT
+#          loopback"/"hairpin" in the router and turn it on.
+#        - CGNAT. If your ISP gives you a shared address (check whether the
+#          router's WAN is 10.x / 100.64-127.x / 192.168.x), there is no port to
+#          forward because the public address is not yours. Then it is (b) or
+#          (d).
 #
-#      Lo que cuesta: deja ese puerto a la vista de internet entero. Entrar no
-#      entran (sin la clave y sin la firma del móvil registrado no pasan del
-#      primer frame), pero van a tocarlo — escaneos automáticos, todo el día —
-#      y te estás jugando la superficie a que el parseo de ese primer frame no
-#      tenga un fallo. Un puerto alto y raro no es seguridad, pero te quita de
-#      encima el ruido de los escaneos a puertos típicos.
+#      What it costs: it leaves that port visible to the whole internet. They do
+#      not get in (without the key AND the registered handset's signature they
+#      do not get past the first frame), but they will knock — automated scans,
+#      all day — and you are betting that parsing that first frame has no bug. A
+#      high, odd port is not security, but it does keep the noise of scans
+#      against the usual ports off you.
 #
-#   d) Un túnel tipo ngrok / Cloudflare / un forward por SSH. Funciona, y es
-#      la salida cuando no puedes tocar el router o estás detrás de CGNAT:
-#      el túnel sale DESDE aquí, así que no hace falta abrir nada.
+#   d) A tunnel — ngrok / Cloudflare / an SSH forward. Works, and it is the way
+#      out when you cannot touch the router or you are behind CGNAT: the tunnel
+#      goes out FROM here, so nothing needs opening.
 #
-#      Tiene que ser un túnel TCP, no HTTP: esto no habla HTTP.
+#      It has to be a TCP tunnel, not HTTP: this does not speak HTTP.
 #
 #        ngrok tcp 8443          # => tcp://0.tcp.ngrok.io:19876
-#        bind      = "127.0.0.1:8443"        # el túnel es quien da la cara
-#        advertise = "0.tcp.ngrok.io:19876"  # esto es lo que va al QR
+#        bind      = "127.0.0.1:8443"        # the tunnel is what faces the world
+#        advertise = "0.tcp.ngrok.io:19876"  # this is what goes in the QR
 #
-#      Lo que ngrok NO ve: nada de lo que os decís. Cada frame va sellado con
-#      AEAD bajo la clave de emparejamiento y él sólo reenvía bytes opacos —
-#      no es como el bot de chat que quitamos, donde el tercero leía el
-#      contenido. Lo que SÍ ve: que esta máquina tiene un túnel abierto, a qué
-#      hora se conecta tu teléfono y cuánto tráfico hay. En un vigilante, ese
-#      patrón ya es información: "el equipo habló con su dueño a las 03:14" es
-#      justo lo que produce una alarma.
+#      What ngrok does NOT see: anything you say. Every frame is AEAD-sealed
+#      under the pairing key and it only forwards opaque bytes — unlike the chat
+#      bot that was removed, where the third party read the content. What it DOES
+#      see: that this machine has a tunnel open, when your phone connects, and
+#      how much traffic there is. On a watchdog that pattern is already
+#      information: "the machine talked to its owner at 03:14" is exactly what
+#      produces an alarm.
 #
-#      Lo demás que cuesta, sin adornos:
-#        - Vuelve a haber un token al portador en esta máquina (el authtoken de
-#          ngrok), que es la clase de cosa de la que veníamos huyendo.
-#        - El endpoint es público: cualquiera puede marcar a ese host:puerto.
-#          No entra — sin la clave y sin la firma del móvil registrado se queda
-#          en el primer frame — pero te tocan la puerta desconocidos.
-#        - En el plan gratis la dirección CAMBIA cada vez que reinicias el
-#          túnel, así que el QR y lo guardado en la app se quedan viejos y hay
-#          que corregir la dirección a mano cada vez. Dirección fija = de pago.
-#        - Depende de que un tercero siga en pie y no te limite.
+#      The rest of what it costs, without dressing it up:
+#        - There is a bearer token on this machine again (ngrok's authtoken),
+#          which is the class of thing this design was getting away from.
+#        - The endpoint is public: anyone can dial that host:port. They do not
+#          get in — without the key and the registered handset's signature they
+#          stop at the first frame — but strangers knock on the door.
+#        - On the free tier the address CHANGES every time you restart the
+#          tunnel, so the QR and whatever the app saved go stale and the address
+#          has to be corrected by hand each time. A fixed address is paid.
+#        - It depends on a third party staying up and not rate-limiting you.
 #
-#      Por eso está el cuarto y no el primero: Tailscale resuelve el MISMO
-#      problema de CGNAT (sin abrir puertos, saliendo desde aquí), te da una
-#      dirección estable, y no publica ningún endpoint. Usa (d) si no puedes
-#      instalar (b), o para algo puntual.
+#      That is why it is fourth and not first: Tailscale solves the SAME CGNAT
+#      problem (no ports opened, going out from here), gives you a stable
+#      address, and publishes no endpoint at all. Use (d) if you cannot install
+#      (b), or for something one-off.
 #
-# ¿Y si ya emparejaste con la IP de casa y te vas de viaje? No hay que volver
-# a emparejar: en la app se edita host y puerto a mano. La clave y la identidad
-# del teléfono siguen valiendo — lo que cambia es a dónde marca.
+# And if you already paired with the home address and then travel? No need to
+# pair again: the host and port are editable in the app. The key and the phone's
+# identity still hold — what changes is where it dials.
 #
-# Y si en algún momento no hay ruta (avión, sin datos, VPN caída): las alertas
-# se escriben a disco ANTES de intentar entregarlas y sólo se borran cuando el
-# teléfono las confirma. "No había nadie escuchando" retrasa una alerta, no la
-# destruye: te llegan enteras al reconectar.
+# And if at some point there is no route at all (a plane, no data, the VPN
+# down): alerts are written to disk BEFORE any attempt to deliver them and are
+# only removed once the phone acknowledges them. "Nobody was listening" delays
+# an alert, it does not destroy it: they arrive whole when you reconnect.
 #
-# Ojo: esto hace que un daemon con privilegios escuche en un socket. Es una
-# superficie que antes no existía. Por eso está apagado, y por eso `bind` no
-# tiene valor por defecto: decidir desde qué interfaz es alcanzable es la
-# decisión, y se toma a mano.
+# Note: this does make a privileged daemon listen on a socket. That is a surface
+# that did not exist before. Which is why it is off, and why `bind` has no
+# default: deciding which interface it is reachable from IS the decision, and it
+# is made by hand.
 
 [phone]
 enabled = false
-# bind: la dirección por la que el TELÉFONO te ve, no "por dónde escucho".
-# No pongas 0.0.0.0: el QR lleva esa cadena tal cual y el móvil no sabría a
-# dónde marcar. El daemon te avisa si lo detecta.
+# bind: the address the PHONE sees you on, not "where do I listen".
+# Do not use 0.0.0.0: the QR carries that string verbatim and the phone would
+# not know where to dial. The daemon warns you if it spots one.
 #   LAN:        bind = "192.168.1.5:8443"
-#   Tailscale:  bind = "100.101.102.103:8443"   ← la misma desde cualquier país
+#   Tailscale:  bind = "100.101.102.103:8443"   ← the same from any country
 # bind = "192.168.1.5:8443"
 #
-# advertise: sólo si el QR tiene que decir algo DISTINTO de `bind`. Es el caso
-# del túnel: escuchas en loopback y el que da la cara es el túnel, así que la
-# dirección a la que marca el teléfono no es ninguna de esta máquina. Sin
-# poner, el QR lleva `bind` tal cual (que es lo correcto en LAN y en VPN).
-# El daemon te avisa si la dirección que va al QR es un comodín (0.0.0.0) o
-# loopback, porque desde el teléfono eso no es ningún sitio.
+# advertise: only when the QR has to say something DIFFERENT from `bind`. That
+# is the tunnel case: you listen on loopback and the tunnel is what faces the
+# world, so the address the phone dials is not one of this machine's. Unset, the
+# QR carries `bind` verbatim (which is right on a LAN and on a VPN). The daemon
+# warns when the address going into the QR is a wildcard (0.0.0.0) or loopback,
+# because from the phone neither is anywhere.
 # advertise = "0.tcp.ngrok.io:19876"
-# pairing_key: arranca sin ella y el daemon te genera una.
+#
+# pairing_key: start without one and the daemon generates it for you.
 # pairing_key = "…64 hex…"
 #
-# EMPAREJAR: sin teléfono registrado, el daemon dibuja el QR en la consola al
-# arrancar. `/pair` lo vuelve a mostrar (en la consola del equipo, nunca por el
-# canal: mandar la clave por el canal que esa clave abre sería justo al revés).
+# PAIRING: with no phone registered, the daemon draws the QR on the console at
+# startup. `/pair` shows it again (on the machine's console, never over the
+# channel: sending the key through the channel that key opens would be exactly
+# backwards).
 #
-# Quien vea esa pantalla puede leer la clave. Por eso deja de bastar en cuanto
-# hay un teléfono registrado: a partir de ahí el equipo exige además la firma
-# de ESE móvil, y rechaza la conexión de cualquier otro — aunque sea el mismo
-# modelo.
+# Whoever sees that screen can read the key. That is why it stops being enough
+# the moment a handset is registered: from then on the machine also demands a
+# signature from THAT phone, and refuses any other — even the same model.
 queue_capacity = 500
 queue_path = "/var/lib/sysentinel/phone-queue.json"
 

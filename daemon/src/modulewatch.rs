@@ -20,7 +20,7 @@
 //! language whether to remove it. Verdict words are then mapped to the armed
 //! state machine in the bot:
 //!
-//! * `sácalo`            → `rmmod <name>`
+//! * `sácalo` / `remove it` → `rmmod <name>`
 //! * `dejalo`/`no lo saques` → keep it loaded
 //! * `no estoy seguro`   → the persona *explains* it will run `objdump` against
 //!   the module and — on an API backend — warns conversationally that it

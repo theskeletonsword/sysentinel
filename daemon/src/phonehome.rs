@@ -91,12 +91,12 @@ impl PhoneProfile {
     /// the model is there to be recognisable, not to be trusted.
     pub fn describe(&self) -> String {
         let proof = if self.attestation_verified {
-            format!("{} (atestado)", self.claimed_backing)
+            format!("{} (attested)", self.claimed_backing)
         } else {
-            format!("{} — SIN atestación verificada", self.claimed_backing)
+            format!("{} — NO verified attestation", self.claimed_backing)
         };
         format!(
-            "clave {} · {proof} · {} {} (el modelo es contexto, no identidad)",
+            "key {} · {proof} · {} {} (the model is context, not identity)",
             self.key_id(),
             self.manufacturer,
             self.model,
@@ -121,13 +121,13 @@ impl PhoneVerdict {
     pub fn describe(&self) -> &'static str {
         match self {
             PhoneVerdict::SameDevice =>
-                "es el mismo teléfono con el que emparejaste",
+                "this is the same phone you paired with",
             PhoneVerdict::DifferentDevice =>
-                "NO es el teléfono con el que emparejaste. La clave del dispositivo es \
-                 distinta, y esa clave no se puede copiar: o restauraste de fábrica / \
-                 reinstalaste, o alguien más tiene tu clave de emparejamiento",
+                "this is NOT the phone you paired with. The device key is different, \
+                 and that key cannot be copied: either you factory-reset or \
+                 reinstalled, or somebody else has your pairing key",
             PhoneVerdict::NotPaired =>
-                "todavía no hay ningún teléfono emparejado",
+                "no phone has been paired yet",
         }
     }
 }
@@ -339,7 +339,7 @@ mod tests {
     fn nothing_paired_is_its_own_answer() {
         let (_, key) = a_phone();
         assert_eq!(identify(None, &key), PhoneVerdict::NotPaired);
-        assert!(PhoneVerdict::NotPaired.describe().contains("todavía no"));
+        assert!(PhoneVerdict::NotPaired.describe().contains("no phone has been paired"));
     }
 
     #[test]
@@ -484,11 +484,11 @@ mod tests {
     fn the_description_leads_with_the_key_and_flags_a_missing_attestation() {
         let (_, key) = a_phone();
         let mut p = profile_for(key, "Pixel 8");
-        assert!(p.describe().starts_with("clave "));
-        assert!(p.describe().contains("contexto, no identidad"));
+        assert!(p.describe().starts_with("key "));
+        assert!(p.describe().contains("context, not identity"));
 
         p.attestation_verified = false;
-        assert!(p.describe().contains("SIN atestación"), "{}", p.describe());
+        assert!(p.describe().contains("NO verified attestation"), "{}", p.describe());
 
         // The key id is stable and short enough to eyeball.
         assert_eq!(p.key_id().len(), 16);

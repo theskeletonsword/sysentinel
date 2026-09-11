@@ -92,34 +92,34 @@ confirm() {
 # that could mean an initramfs that was regenerated without the tools it now
 # refers to.
 
-step "Comprobando el entorno"
+step "Checking the environment"
 
-[[ $EUID -ne 0 ]] || die "no lo ejecutes como root: compila como tú y pide sudo solo para instalar.
-       Con sudo, cada build.rs de cientos de dependencias correría como root."
+[[ $EUID -ne 0 ]] || die "do not run this as root: it builds as you and asks sudo only to install.
+       Under sudo, every build.rs of hundreds of dependencies would run as root."
 
-command -v sudo >/dev/null || die "hace falta sudo para los pasos de instalación"
+command -v sudo >/dev/null || die "sudo is needed for the install steps"
 command -v cargo >/dev/null || die "falta cargo — instala Rust (https://rustup.rs)"
 ok "cargo $(cargo --version | awk '{print $2}')"
 
 MUSL_TARGET=x86_64-unknown-linux-musl
 if ! rustup target list --installed 2>/dev/null | grep -qx "$MUSL_TARGET"; then
-    warn "falta el target $MUSL_TARGET (lo necesitan las herramientas del initramfs)"
-    if confirm "¿Lo instalo con rustup?"; then
+    warn "the $MUSL_TARGET target is missing (the initramfs tools need it)"
+    if confirm "Install it with rustup?"; then
         run rustup target add "$MUSL_TARGET"
     else
-        die "sin $MUSL_TARGET no se pueden construir sysentinel-cam ni sysentinel-face"
+        die "without $MUSL_TARGET neither sysentinel-cam nor sysentinel-face can be built"
     fi
 fi
 ok "target $MUSL_TARGET"
 
-command -v musl-gcc >/dev/null 2>&1 || warn "no encuentro musl-gcc; si el enlazado musl falla, instala musl-gcc/musl-tools"
+command -v musl-gcc >/dev/null 2>&1 || warn "musl-gcc not found; if musl linking fails, install musl-gcc/musl-tools"
 
 if (( WITH_MODULE )); then
     KVER="$(uname -r)"
     [[ -d "/lib/modules/$KVER/build" ]] \
-        || die "no hay cabeceras del kernel para $KVER (/lib/modules/$KVER/build).
+        || die "no kernel headers for $KVER (/lib/modules/$KVER/build).
        Instala kernel-devel, o usa --no-module."
-    ok "cabeceras del kernel para $KVER"
+    ok "kernel headers for $KVER"
 fi
 
 if (( WITH_INITRAMFS )); then
@@ -131,7 +131,7 @@ if (( WITH_GUI )); then
     if pkg-config --exists gtk4 libadwaita-1 2>/dev/null; then
         ok "gtk4 $(pkg-config --modversion gtk4) + libadwaita $(pkg-config --modversion libadwaita-1)"
     else
-        warn "faltan gtk4-devel/libadwaita-devel — me salto la GUI"
+        warn "gtk4-devel/libadwaita-devel missing — skipping the GUI"
         WITH_GUI=0
     fi
 fi
@@ -142,45 +142,45 @@ fi
 # include_bytes!, so they have to exist on disk or the binary will not compile.
 
 if (( WITH_MODELS )); then
-    step "Modelos de reconocimiento facial (ONNX)"
+    step "Face recognition models (ONNX)"
     if [[ -f ramdisk/face/models/scrfd_2.5g_bnkps.onnx && -f ramdisk/face/models/mobilefacenet.onnx ]]; then
-        ok "ya están (verificación de integridad en fetch-face-models.sh)"
+        ok "already here (integrity checked by fetch-face-models.sh)"
     else
-        info "descargando y verificando sha256…"
+        info "downloading and verifying sha256…"
         run ./scripts/fetch-face-models.sh
     fi
 else
-    warn "--no-models: sysentinel-face no se podrá construir (embebe los modelos)"
+    warn "--no-models: sysentinel-face cannot be built (it embeds the models)"
 fi
 
 # ── Build ─────────────────────────────────────────────────────────────────────
 #
 # All of it as the invoking user.
 
-step "Compilando (sin privilegios)"
+step "Building (unprivileged)"
 
 info "daemon (release)…"
 run cargo build --release --manifest-path daemon/Cargo.toml
 ok "daemon/target/release/sysentinel-daemon"
 
 if [[ -f ramdisk/face/models/scrfd_2.5g_bnkps.onnx ]]; then
-    info "herramientas del initramfs, estáticas musl…"
+    info "initramfs tools, static musl…"
     run cargo build --release --manifest-path ramdisk/Cargo.toml --target "$MUSL_TARGET"
     ok "sysentinel-cam + sysentinel-face"
 else
-    info "herramientas del initramfs (solo cam, sin modelos)…"
+    info "initramfs tools (cam only, no models)…"
     run cargo build --release --manifest-path ramdisk/Cargo.toml --target "$MUSL_TARGET" -p sysentinel-cam
     ok "sysentinel-cam"
 fi
 
 if (( WITH_MODULE )); then
-    info "módulo del kernel…"
+    info "kernel module…"
     run make -C kernel_module
     ok "kernel_module/sysentinel_metrics.ko"
 fi
 
 if (( WITH_GUI )); then
-    info "GUI de escritorio (GTK4)…"
+    info "desktop GUI (GTK4)…"
     run cargo build --release --manifest-path gui/linux/Cargo.toml
     ok "gui/linux/target/release/sysentinel-gui"
 fi
@@ -192,37 +192,37 @@ if (( ! DRY_RUN )); then
         p="ramdisk/target/$MUSL_TARGET/release/$b"
         [[ -f "$p" ]] || continue
         file "$p" | grep -qE 'static-pie linked|statically linked' \
-            || die "$b no quedó enlazado estáticamente; en el initramfs no arrancaría"
+            || die "$b did not link statically; it would not start inside the initramfs"
     done
-    ok "las herramientas del initramfs son estáticas"
+    ok "the initramfs tools are static"
 fi
 
 # ── Install ───────────────────────────────────────────────────────────────────
 
-step "Instalando (aquí sí hace falta sudo)"
+step "Installing (this is where sudo is needed)"
 
-if ! confirm "¿Instalo en el sistema?"; then
-    info "nada instalado. Los binarios están compilados."
+if ! confirm "Install onto this system?"; then
+    info "nothing installed. The binaries are built."
     exit 0
 fi
 
 if (( WITH_MODULE )); then
-    info "módulo del kernel → /lib/modules/$(uname -r)/…"
+    info "kernel module → /lib/modules/$(uname -r)/…"
     sudo_run make -C kernel_module modules_install
     sudo_run depmod -a
-    ok "módulo instalado (cárgalo con: sudo modprobe sysentinel_metrics write_gid=\$(id -g sysentinel))"
+    ok "module installed (load it with: sudo modprobe sysentinel_metrics write_gid=\$(id -g sysentinel))"
 fi
 
 info "daemon, config, unidad systemd…"
 sudo_run ./scripts/install.sh
 
 if (( WITH_INITRAMFS )); then
-    info "herramientas del initramfs + hooks de dracut + regenerar initramfs…"
-    warn "esto regenera tu initramfs actual (install-dracut.sh hace copia antes)"
-    if confirm "¿Sigo?"; then
+    info "initramfs tools + dracut hooks + regenerating the initramfs…"
+    warn "this regenerates your current initramfs (install-dracut.sh backs it up first)"
+    if confirm "Go ahead?"; then
         sudo_run ./scripts/install-dracut.sh
     else
-        warn "initramfs sin tocar: no habrá captura pre-LUKS hasta que lo hagas"
+        warn "initramfs untouched: no pre-LUKS capture until you do this"
     fi
 fi
 
@@ -238,36 +238,36 @@ fi
 # picks a listen address or mints a key without being asked has made a security
 # decision on the owner's behalf.
 
-step "Listo — lo que queda es tuyo"
+step "Done — what is left is yours"
 cat <<'NEXT'
-    1. Configura el daemon. Lo más fácil, sin abrir el fichero:
+    1. Configure the daemon. Easiest, without opening the file:
            sudo ./scripts/configure-credentials.sh
 
-       Te pregunta el proveedor de LLM y su clave (si no tienes, contesta
-       "ninguno" y sigue funcionando todo menos la explicación), la dirección
-       por la que te ve el teléfono, y genera la clave de emparejamiento.
+       It asks for the LLM provider and its key (if you have none, answer
+       "none" and everything keeps working except the explanation), the
+       address the phone sees you on, and generates the pairing key.
 
-       A mano, si prefieres:
+       By hand, if you prefer:
            sudoedit /etc/sysentinel/config.toml
 
-       Mínimo para que el teléfono funcione:
+       The minimum for the phone to work:
            [phone]
            enabled = true
-           bind = "TU_IP:8443"      # la IP por la que te ve el móvil,
-                                    # NO 0.0.0.0 (es de escucha, no un destino)
+           bind = "YOUR_IP:8443"    # the address the phone sees you on,
+                                    # NOT 0.0.0.0 (a listen address, not a destination)
 
-    2. Arranca y mira el log: sin teléfono emparejado dibuja un QR.
+    2. Start it and watch the log: with no phone paired it draws a QR.
            sudo systemctl enable --now sysentinel
            sudo journalctl -u sysentinel -f
 
-    3. Escanéalo desde la app. Después del primer emparejamiento la clave
-       deja de bastar: el equipo exige además la firma de ESE móvil.
+    3. Scan it from the app. After the first pairing the key stops being
+       enough: the machine also demands a signature from THAT handset.
 
-    4. Módulo del kernel (opcional, habilita el canal ring 0 → ring −3):
+    4. Kernel module (optional, enables the ring 0 → ring −3 channel):
            sudo modprobe sysentinel_metrics write_gid=$(id -g sysentinel)
 
-       El write_gid es lo que deja al daemon mandar controles confirmados y
-       leer CR2/CR3. Sin él el módulo funciona igual, pero esos dos registros
-       salen como `restricted`: son direcciones, y publicarlas a cualquier
-       proceso local es justo lo que quiere un exploit para saltarse KASLR.
+       The write_gid is what lets the daemon send confirmed controls and read
+       CR2/CR3. Without it the module works the same, but those two registers
+       come back as `restricted`: they are addresses, and publishing them to
+       every local process is exactly what an exploit wants to defeat KASLR.
 NEXT

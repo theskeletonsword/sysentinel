@@ -1,0 +1,64 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Spanish (es) — the phrases the daemon says on its own.
+#
+# The source is English. Every string here has an English original written
+# inline at the call site, and that original is what ships when this file is
+# absent, incomplete or broken: no key here is load-bearing, and deleting the
+# file changes the language, never the behaviour.
+#
+# A regional tag falls back to its language, so `[persona] language = "es-CL"`
+# finds this file without an es-CL.toml existing.
+#
+# What is deliberately NOT here:
+#
+#   - Log lines and error chains. Those are read in journalctl at three in the
+#     morning and pasted into bug reports; one language is worth more there
+#     than a familiar one.
+#   - The persona's own voice. The model already answers in
+#     `[persona] language`; this file is the fixed text around it.
+#
+# Adding a language: copy this file to `<tag>.toml`, translate the values, and
+# leave any key you are unsure about out — it falls back to English on its own.
+
+# ── Face scenes ──────────────────────────────────────────────────────────────
+
+"face.scene.empty" = "no hay nadie en el encuadre — la cámara vio la silla vacía, no a un desconocido"
+"face.scene.owner_alone" = "el dueño, solo — situación normal"
+"face.scene.owner_under_watch" = "el dueño acompañado de alguien no registrado: o alguien mira por encima del hombro, o está ahí para asegurarse de que el dueño entre. Trátalo como posible coerción y NO hagas nada visible en la máquina"
+"face.scene.inconclusive" = "hay una cara pero el parecido no es concluyente — verifícalo tú"
+"face.scene.intruder_alone" = "una persona no registrada y el dueño ausente: acceso oportunista a una máquina desatendida"
+"face.scene.custody_lost" = "varias personas no registradas y el dueño ausente: la máquina ya no está bajo tu custodia y la están trabajando entre varios. Dos personas es la firma de un procedimiento, no de una casualidad — un registro o una incautación llevan testigo por norma. También encaja un robo con examen posterior, o alguien de casa enseñándole tu equipo a una visita: por eso la alerta es fuerte pero no destruye nada por su cuenta"
+
+"face.head.empty" = "👤 Sin caras en el encuadre"
+"face.head.owner_alone" = "👤 El dueño, solo"
+"face.head.owner_under_watch" = "🚨 *POSIBLE COERCIÓN* — el dueño con {n} persona(s) no registrada(s) al lado"
+"face.head.inconclusive" = "👤 Parecido no concluyente"
+"face.head.intruder_alone" = "🚨 Rostro *NO registrado*, dueño ausente"
+"face.head.custody_lost" = "🚨 *PÉRDIDA DE CUSTODIA* — {n} personas no registradas y ningún dueño"
+
+"face.engine_nn" = "\n_(red neuronal, {cos})_"
+"face.discarded_on_size" = "\n_{n} cara(s) descartada(s) por tamaño — retrato, pantalla o fondo._"
+"face.no_local_action" = "\n\n⚠️ No se ejecuta ninguna acción local: si te están coaccionando, una máquina que se apaga sola delata que avisó. Responde tú desde aquí."
+
+# ── The confirmation ladder ──────────────────────────────────────────────────
+
+"confirm.one_time_code" = "código de un solo uso escrito en el chat"
+"confirm.software_key" = "clave en almacenamiento normal del teléfono (sin respaldo de hardware)"
+"confirm.device_credential" = "clave respaldada por hardware, liberada con el PIN del teléfono"
+"confirm.tee" = "clave en la TEE (TrustZone), liberada con biometría"
+"confirm.strongbox" = "clave en elemento seguro dedicado (Titan M / StrongBox), liberada con biometría"
+"confirm.audit_prefix" = "confirmado por:"
+"confirm.downgraded" = " ⚠️ (el dispositivo dijo «{claimed}» pero no lo demostró: sin cadena de atestación verificada, así que cuenta como el escalón de arriba)"
+"confirm.replayable" = " · ⚠️ reutilizable por alguien que no esté presente"
+
+# ── Asks the owner answers ───────────────────────────────────────────────────
+
+"presence.ask_title" = "🔌 ¿Conectaste algo?"
+"presence.ask_footer" = "_Responde *sí* si fuiste tú (lo acepto como normal) o *no* si no._"
+"login.ask_footer" = "¿Fuiste tú? Responde *`si fui yo`* para dejarla, *`no`* para cerrar.\n⏳ Sin respuesta en {timeout}s se cierra por defecto."
+
+# ── SELinux ──────────────────────────────────────────────────────────────────
+
+"selinux.blocked" = "⛔ *SELinux* — me bloquearon un acceso"
+"selinux.ask" = "¿De qué se trata, lo permito o lo dejo?"

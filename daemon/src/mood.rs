@@ -23,10 +23,14 @@ pub fn telemetry_available() -> bool {
 
 /// Compute the machine's current mood as a one-line human sentence.
 ///
-/// Output is localised by `persona.language` (Spanish when the tag starts
-/// with `es`, English otherwise).
+/// The line is written in English, and it is *context for the model* rather
+/// than something the owner reads directly: the system prompt already tells
+/// the model to answer in `persona.language`, so a Chilean owner gets a
+/// Chilean answer out of an English mood line. This used to carry a full
+/// second copy of every phrase in Spanish, which was two sets of wording to
+/// keep in step for no gain.
 pub fn compute(cfg: &PersonaConfig) -> String {
-    let es = cfg.language.trim().to_lowercase().starts_with("es");
+    let _ = cfg;
 
     let (load, ncpu) = read_load();
     let (mem_avail_mb, mem_total_mb) = read_memory();
@@ -42,30 +46,14 @@ pub fn compute(cfg: &PersonaConfig) -> String {
         let ratio = l / ncpu as f64;
         if ratio >= 2.0 {
             stress = stress.saturating_add(2);
-            reasons.push(if es {
-                format!("sobrecargada (load {l:.1} / {ncpu} cores)")
-            } else {
-                format!("overloaded (load {l:.1} / {ncpu} cores)")
-            });
+            reasons.push(format!("overloaded (load {l:.1} / {ncpu} cores)"));
         } else if ratio >= 1.0 {
             stress = stress.saturating_add(1);
-            reasons.push(if es {
-                format!("con bastante que hacer (load {l:.1} / {ncpu} cores)")
-            } else {
-                format!("busy (load {l:.1} / {ncpu} cores)")
-            });
+            reasons.push(format!("busy (load {l:.1} / {ncpu} cores)"));
         } else if ratio >= 0.6 {
-            reasons.push(if es {
-                format!("con algo de actividad (load {l:.1} / {ncpu} cores)")
-            } else {
-                format!("lightly active (load {l:.1} / {ncpu} cores)")
-            });
+            reasons.push(format!("lightly active (load {l:.1} / {ncpu} cores)"));
         } else {
-            reasons.push(if es {
-                format!("descansada (load {l:.1} / {ncpu} cores)")
-            } else {
-                format!("resting (load {l:.1} / {ncpu} cores)")
-            });
+            reasons.push(format!("resting (load {l:.1} / {ncpu} cores)"));
         }
     }
 
@@ -74,42 +62,22 @@ pub fn compute(cfg: &PersonaConfig) -> String {
         let avail_pct = avail_mb as f64 * 100.0 / total_mb as f64;
         if avail_pct < 10.0 {
             stress = stress.saturating_add(2);
-            reasons.push(if es {
-                format!("ahogando de RAM (solo {avail_mb} MB libres de {total_mb} MB)")
-            } else {
-                format!("choking for RAM (only {avail_mb} MB free of {total_mb} MB)")
-            });
+            reasons.push(format!("choking for RAM (only {avail_mb} MB free of {total_mb} MB)"));
         } else if avail_pct < 25.0 {
             stress = stress.saturating_add(1);
-            reasons.push(if es {
-                format!("memoria justa ({avail_mb} MB libres de {total_mb} MB)")
-            } else {
-                format!("memory tight ({avail_mb} MB free of {total_mb} MB)")
-            });
+            reasons.push(format!("memory tight ({avail_mb} MB free of {total_mb} MB)"));
         } else {
-            reasons.push(if es {
-                format!("memoria de sobra ({avail_mb} MB libres)")
-            } else {
-                format!("plenty of RAM ({avail_mb} MB free)")
-            });
+            reasons.push(format!("plenty of RAM ({avail_mb} MB free)"));
         }
     }
 
     // ── PMU: instruction throughput ───────────────────────────────────────────
     if let Some(ipc) = ipc {
         if ipc >= 2.0 {
-            reasons.push(if es {
-                format!("con la pipeline a tope (IPC {ipc:.2})")
-            } else {
-                format!("pipeline humming (IPC {ipc:.2})")
-            });
+            reasons.push(format!("pipeline humming (IPC {ipc:.2})"));
         } else if ipc < 1.0 {
             stress = stress.saturating_add(1);
-            reasons.push(if es {
-                format!("atascada en la pipeline (IPC {ipc:.2})")
-            } else {
-                format!("stalling in the pipeline (IPC {ipc:.2})")
-            });
+            reasons.push(format!("stalling in the pipeline (IPC {ipc:.2})"));
         }
     }
 
@@ -118,66 +86,42 @@ pub fn compute(cfg: &PersonaConfig) -> String {
         let c = mc as f64 / 1000.0;
         if mc >= 90_000 {
             stress = stress.saturating_add(2);
-            reasons.push(if es {
-                format!("ardiendo a {c:.0} °C")
-            } else {
-                format!("running hot at {c:.0} °C")
-            });
+            reasons.push(format!("running hot at {c:.0} °C"));
         } else if mc >= 75_000 {
             stress = stress.saturating_add(1);
-            reasons.push(if es {
-                format!("con fiebre a {c:.0} °C")
-            } else {
-                format!("feeling feverish at {c:.0} °C")
-            });
+            reasons.push(format!("feeling feverish at {c:.0} °C"));
         } else if mc >= 40_000 {
-            reasons.push(if es {
-                format!("templada a {c:.0} °C")
-            } else {
-                format!("at a comfy {c:.0} °C")
-            });
+            reasons.push(format!("at a comfy {c:.0} °C"));
         } else {
-            reasons.push(if es {
-                format!("fresquita a {c:.0} °C")
-            } else {
-                format!("running cool at {c:.0} °C")
-            });
+            reasons.push(format!("running cool at {c:.0} °C"));
         }
     }
 
     // ── Undervolt flag ────────────────────────────────────────────────────────
     if undervolted {
-        reasons.push(if es {
-            "undervolteada para gastar menos energia".to_string()
-        } else {
-            "undervolted for lower power draw".to_string()
-        });
+        reasons.push("undervolted for lower power draw".to_string());
     }
 
     // ── Dominant mood label ───────────────────────────────────────────────────
     let (emoji, label): (&str, &str) = if stress >= 2 {
-        if es { ("🔥", "acelerada y al limite") } else { ("🔥", "revved up to the limit") }
+        ("🔥", "revved up to the limit")
     } else if stress == 1 {
-        if es { ("😮💨", "atareada, pero bajo control") } else { ("😮💨", "busy, but handling it") }
+        ("😮💨", "busy, but handling it")
     } else if undervolted {
-        if es { ("🌿", "de bajo consumo, en modo zen") } else { ("🌿", "efficiency mode, zen") }
+        ("🌿", "efficiency mode, zen")
     } else if temp_mc.is_some_and(|mc| mc < 50_000) {
-        if es { ("❄️", "fresca y despejada") } else { ("❄️", "cool and clear-headed") }
+        ("❄️", "cool and clear-headed")
     } else {
-        if es { ("😌", "tranquila") } else { ("😌", "at ease") }
+        ("😌", "at ease")
     };
 
     let joined = if reasons.is_empty() {
-        if es { "sin senales particulares".to_string() } else { "no special signals".to_string() }
+        "no special signals".to_string()
     } else {
         reasons.join(", ")
     };
 
-    if es {
-        format!("Animo del sistema: {emoji} {label} — {joined}. Habla y componte desde ese animo.")
-    } else {
-        format!("System mood: {emoji} {label} — {joined}. Speak and behave from this mood.")
-    }
+    format!("System mood: {emoji} {label} — {joined}. Speak and behave from this mood.")
 }
 
 /// (load1, ncpu) from `/proc/loadavg` + `/proc/cpuinfo`.

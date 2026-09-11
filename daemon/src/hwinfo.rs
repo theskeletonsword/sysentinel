@@ -349,7 +349,7 @@ pub fn display_report() -> String {
     let slots = pci_list();
     let adapters = display_adapters(&slots);
     if adapters.is_empty() {
-        return "No hay adaptador grafico en este equipo 😔".to_string();
+        return "No graphics adapter on this machine 😔".to_string();
     }
     let mut out = String::from("🎨 *Adaptadores graficos (PCI class 0x03):*\n");
     for a in &adapters {
@@ -519,7 +519,7 @@ fn human_size(bytes: u64) -> String {
 pub fn block_report() -> String {
     let devs = block_devices();
     if devs.is_empty() {
-        return "No hay dispositivos de bloques 😕".to_string();
+        return "No block devices 😕".to_string();
     }
     let mut out = String::from("💾 *lsblk*\n");
     for d in &devs {
@@ -538,7 +538,7 @@ pub fn block_report() -> String {
 pub fn usb_report() -> String {
     let devs = usb_devices();
     if devs.is_empty() {
-        return "No hay dispositivos USB 😕".to_string();
+        return "No USB devices 😕".to_string();
     }
     let mut out = String::from("🔌 *lsusb*\n");
     for d in devs.iter().take(30) {

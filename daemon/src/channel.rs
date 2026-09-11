@@ -4,7 +4,7 @@
 //! one.
 //!
 //! Everything this daemon does is worthless if it cannot tell anyone. The
-//! duress alert, the "¿fuiste tú?" question about a new disk, the LUKS
+//! duress alert, the "was that you?" question about a new disk, the LUKS
 //! tripwire, the ARM → confirm ritual: all of it is a conversation with a
 //! person who is somewhere else. That conversation needs a transport, and
 //! *which* transport is a security decision in its own right.
@@ -100,9 +100,9 @@ impl Channels {
             return None;
         }
         Some(format!(
-            "canal(es) alcanzables por terceros: {} — el endpoint existe para \
-             cualquiera que lo encuentre, y quien pase por ahí ve que hablaste, \
-             cuándo y con quién",
+            "channel(s) reachable by third parties: {} — the endpoint exists for \
+             anyone who finds it, and whoever carries it sees that you spoke, \
+             when, and with whom",
             exposed.join(", ")
         ))
     }
@@ -256,7 +256,7 @@ mod tests {
         // and cannot report is not a hardened one.
         let c = Channels::new(vec![]);
         assert!(c.is_deaf());
-        assert_eq!(c.notify("algo pasó"), 0);
+        assert_eq!(c.notify("something happened"), 0);
 
         let c = Channels::new(vec![Box::new(Fake::new("off", false, true, false))]);
         assert!(c.is_deaf(), "a configured-but-not-ready channel is not a channel");
@@ -283,7 +283,7 @@ mod tests {
         let c = Channels::new(vec![Box::new(Fake::new("relay", true, true, false))]);
         let note = c.exposure_note().expect("an exposed live channel must be declared");
         assert!(note.contains("relay"), "{note}");
-        assert!(note.contains("terceros"), "{note}");
+        assert!(note.contains("third parties"), "{note}");
 
         // A channel nobody else can reach raises no note.
         let c = Channels::new(vec![Box::new(Fake::new("phone", true, false, false))]);

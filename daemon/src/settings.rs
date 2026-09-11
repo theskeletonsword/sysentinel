@@ -2,7 +2,7 @@
 //!
 //! Per-user notification preferences, driven by the bot's `/settings`.
 //!
-//! Every category the daemon can *tell you about* lives here, so "avísame de
+//! Every category the daemon can *tell you about* lives here, so "tell me about
 //! todo" is the default and the user trims what they do not want:
 //!
 //! | Category   | What it notifies about                              |
@@ -21,7 +21,7 @@
 //! | `hypercall`| Guest -> KVM-host hypercall interception digests   |
 //! | `modwatch` | Foreign kernel modules announced (keep/remove/analyse)|
 //! | `exec`     | `/exec <cmd>` arbitrary commands (module loaded + confirm) |
-//! | `luks`     | LUKS tripwire: asks `¿fui yo?` when initramfs saw a decrypt |
+//! | `luks`     | LUKS tripwire: asks "was that me?" when initramfs saw a decrypt |
 //! | `proactive`| LLM reviews sensors+dmesg on its own and decides   |
 //! |             | whether to tell you, beyond fixed thresholds (off   |
 //! |             | by default; costs a small LLM call per review)      |
@@ -70,7 +70,7 @@ pub struct Settings {
     #[serde(default = "default_exec_timeout")] pub exec_timeout: u64,
     /// Stop a bogus `/exec` burst: max running background jobs at once.
     #[serde(default = "default_exec_max_jobs")] pub exec_max_jobs: u64,
-    /// Ask the "¿fui yo?" question every boot after the initramfs LUKS
+    /// Ask the "was that me?" question every boot after the initramfs LUKS
     /// tripwire reports the disk was decrypted (evidence captured before the
     /// password prompt; post-decrypt fallback hook).
     #[serde(default = "default_true")] pub lukswatch: bool,
@@ -78,7 +78,7 @@ pub struct Settings {
     /// `poweroff` (ACPI, "a la buena"), `triplefault` (forced power-down), or
     /// `none` (just log it). Only the module-backed actions need ring-0.
     #[serde(default = "default_luks_deny")] pub luks_deny_action: String,
-    /// Seconds to answer the LUKS "¿fui yo?" ask before the deny action runs.
+    /// Seconds to answer the LUKS "was that me?" ask before the deny action runs.
     #[serde(default = "default_luks_timeout")] pub luks_timeout: u64,
     #[serde(default = "default_false")] pub proactive:  bool,
     /// Active LLM provider chosen live via `/llm` (persisted here so it

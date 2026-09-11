@@ -36,6 +36,7 @@ mod hyperwatch;
 mod ipc;
 mod kernel_snap;
 mod kmsg;
+mod lang;
 mod llm;
 mod loginwatch;
 mod luks;
@@ -174,6 +175,10 @@ fn main() -> Result<()> {
     let args   = Args::parse();
     let config = Config::load(&args.config)
         .with_context(|| format!("loading config from {}", args.config.display()))?;
+
+    // Load the owner's language before anything can speak. English is what the
+    // source says, so this only ever adds.
+    lang::init(&config.persona.language);
 
     if args.check_config {
         print_config_summary(&args.config, &config);
@@ -353,7 +358,7 @@ fn main() -> Result<()> {
         log::info!("login-watch: wtmp watcher thread started");
     }
 
-    // ── LUKS tripwire watcher thread (¿fui yo? from initramfs evidence) ──────
+    // ── LUKS tripwire watcher thread (was that me? from initramfs evidence) ──
     {
         let cfg3   = config.clone();
         let state3 = Arc::clone(&shared_state);
@@ -526,7 +531,7 @@ fn run_kmsg_loop(
                 continue;
             }
 
-            // Phrase the denial in the persona's dialect (chileno o el que sea)
+            // Phrase the denial in the persona's own dialect, whatever it is
             // — cold log lines only if chatty_alerts is off. Persona + prompt
             // are resolved fresh so a `/systemprompt` override applies live.
             let persona = llm::resolved_persona(config);
@@ -555,11 +560,15 @@ fn run_kmsg_loop(
             );
 
             let alert_text = format!(
-                "⛔ *SELinux* — me bloquearon un acceso\n\n{denied_human}\n\n\
-                 ¿De qué se trata, lo permito o lo dejo?\n\
-                 *Explicar:* `/selinux explain {id}`\n\
-                 *Permitir* (vas a confirmar): `/selinux allow {id}`\n\
-                 *Denegar / ignorar:* `/selinux deny {id}`"
+                "{}\n\n{denied_human}\n\n{}\n\
+                 *Explain:* `/selinux explain {id}`\n\
+                 *Allow* (you will confirm): `/selinux allow {id}`\n\
+                 *Deny / ignore:* `/selinux deny {id}`",
+                lang::t("selinux.blocked", "⛔ *SELinux* — an access of mine was blocked"),
+                lang::t(
+                    "selinux.ask",
+                    "What is this about — do I allow it or leave it?"
+                )
             );
 
             if dry_run {

@@ -58,7 +58,7 @@ class ChatActivity : AppCompatActivity() {
 
         val identity = DeviceIdentity.ensureKey()
         pairing = Pairing(this)
-        engine = ChatEngine(pairing, BuildConfig.VERSION_NAME)
+        engine = ChatEngine(this, pairing, BuildConfig.VERSION_NAME)
 
         identityView = findViewById(R.id.identity)
         statusPrefix = describe(identity)
@@ -119,25 +119,21 @@ class ChatActivity : AppCompatActivity() {
         val port = intent?.getStringExtra("port")?.toIntOrNull() ?: pairing.port
 
         val what = if (keyed) {
-            "Vincular este teléfono con $host:$port\n\ny guardar la clave y la huella " +
-                "TLS que vienen en la orden."
+            getString(R.string.intent_pair, host, port)
         } else {
-            "Cambiar la dirección del equipo a $host:$port\n\nLa clave y el vínculo no se tocan."
+            getString(R.string.intent_move, host, port)
         }
         androidx.appcompat.app.AlertDialog.Builder(this)
-            .setTitle("¿Fuiste tú?")
-            .setMessage(
-                "$what\n\nEsto llegó en la orden con la que se abrió la app. Si no " +
-                    "acabas de hacerlo tú desde un PC, di que no."
-            )
+            .setTitle(getString(R.string.intent_title))
+            .setMessage(what + getString(R.string.intent_explain))
             .setCancelable(false)
-            .setNegativeButton("No") { d, _ ->
+            .setNegativeButton(getString(R.string.intent_no)) { d, _ ->
                 // Do not keep offering it every time the app is reopened.
                 intent?.removeExtra("host")
                 intent?.removeExtra("key")
                 d.dismiss()
             }
-            .setPositiveButton("Sí, fui yo") { d, _ ->
+            .setPositiveButton(getString(R.string.intent_yes)) { d, _ ->
                 pairing.host = host
                 pairing.port = port
                 if (keyed) {
@@ -165,10 +161,10 @@ class ChatActivity : AppCompatActivity() {
     /** Says what this handset can prove, in the same words the modern one uses. */
     private fun describe(id: DeviceIdentity.Identity): String {
         val backing = when (id.backing) {
-            DeviceIdentity.Backing.STRONGBOX -> "elemento seguro dedicado"
-            DeviceIdentity.Backing.TEE -> "TrustZone"
-            DeviceIdentity.Backing.SOFTWARE -> "SIN respaldo de hardware"
-            DeviceIdentity.Backing.NONE -> "sin identidad"
+            DeviceIdentity.Backing.STRONGBOX -> getString(R.string.backing_strongbox)
+            DeviceIdentity.Backing.TEE -> getString(R.string.backing_tee)
+            DeviceIdentity.Backing.SOFTWARE -> getString(R.string.backing_software)
+            DeviceIdentity.Backing.NONE -> getString(R.string.backing_none)
         }
         val aead = if (id.aead == DeviceIdentity.Aead.AES_256_GCM)
             "AES-256-GCM" else "ChaCha20-Poly1305"

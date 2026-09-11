@@ -1,0 +1,88 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  SPDX-License-Identifier: Apache-2.0
+
+  Español. El original está en values/strings.xml y manda cuando discrepen.
+  Android elige este fichero según el idioma del teléfono; lo que falte aquí
+  cae al inglés por su cuenta, así que una traducción parcial es válida.
+-->
+<resources>
+    <string name="hint_message">Escribe un mensaje…</string>
+    <string name="send">Enviar</string>
+    <string name="conversation">Conversación</string>
+
+    <string name="pair_title">Emparejar</string>
+    <string name="pair_blurb">Conexión directa con tu equipo: no hay relay ni servidor de por medio. La primera vez, ponte en el mismo WiFi que el PC y escanea su QR. Después da igual dónde estés: el vínculo no caduca, sólo hace falta que puedas llegar al equipo — misma red, o tu VPN. Si cambia la dirección, corrígela aquí; no hay que volver a emparejar.</string>
+    <string name="pair_scan">Escanear el QR del equipo</string>
+    <string name="pair_scan_prompt">Apunta al QR que muestra el equipo</string>
+    <string name="pair_or_by_hand">…o escríbelo a mano:</string>
+    <string name="pair_host">Equipo (IP o nombre)</string>
+    <string name="pair_port">Puerto</string>
+    <string name="pair_key">Clave de emparejamiento (64 hex)</string>
+    <string name="pair_key_ok">formato correcto</string>
+    <string name="pair_key_short">faltan caracteres: son 64 hexadecimales</string>
+    <string name="pair_save">Guardar y conectar</string>
+    <string name="pair_scan_error">Ese QR no es de sysentinel, o le falta algo (dirección, clave o la huella TLS del equipo). Si el equipo escucha en 0.0.0.0, cámbialo por la IP concreta.</string>
+    <string name="pair_scan_cancelled">Cancelado.</string>
+
+    <string name="backing_strongbox">Elemento seguro dedicado · huella</string>
+    <string name="backing_tee">TrustZone · huella</string>
+    <string name="backing_software">Sin respaldo de hardware — confirmaciones débiles</string>
+    <string name="backing_none">Sin identidad de dispositivo</string>
+    <string name="crypto_aes">cifrado: AES-256-GCM (extensiones ARM)</string>
+    <string name="crypto_chacha">cifrado: ChaCha20-Poly1305 (sin AES por hardware)</string>
+    <string name="machine_change">equipo: %1$s:%2$d · cambiar</string>
+
+    <string name="confirm_with_biometric">Confirmar con huella</string>
+    <string name="confirm_waiting">Hay una orden armada esperando</string>
+    <string name="confirm_can_sign">Tu huella la autoriza. No hace falta teclear el código.</string>
+    <string name="confirm_cannot_sign">Este teléfono no puede firmar: responde con %1$s.</string>
+    <string name="confirm_button">Confirmar</string>
+    <string name="confirm_prompt_title">Confirmar: %1$s</string>
+    <string name="confirm_prompt_subtitle">Tu huella autoriza esta orden y solo esta.</string>
+    <string name="confirm_cancel">Cancelar</string>
+    <string name="confirm_cancelled">Cancelado. La orden sigue armada hasta que expire.</string>
+    <string name="confirm_biometric_failed">Biometría fallida (%1$s). No confirmé nada.</string>
+    <string name="confirm_no_signature">El sistema no devolvió la firma; no confirmé nada.</string>
+    <string name="confirm_sign_failed">No pude firmar la confirmación: %1$s</string>
+    <string name="confirm_unavailable">Este teléfono no puede firmar confirmaciones (sin biometría registrada o sin Keystore utilizable). Usa el código.</string>
+    <string name="confirm_default_label">la orden armada</string>
+
+    <string name="intent_title">¿Fuiste tú?</string>
+    <string name="intent_pair">Vincular este teléfono con %1$s:%2$d\n\ny guardar la clave y la huella TLS que vienen en la orden.</string>
+    <string name="intent_move">Cambiar la dirección del equipo a %1$s:%2$d\n\nLa clave y el vínculo no se tocan.</string>
+    <string name="intent_explain">\n\nEsto llegó en la orden con la que se abrió la app. Si no acabas de hacerlo tú desde un PC, di que no.</string>
+    <string name="intent_yes">Sí, fui yo</string>
+    <string name="intent_no">No</string>
+
+    <string name="state_unpaired">Sin emparejar — falta el equipo y la clave</string>
+    <string name="state_connected">Conectado a %1$s</string>
+    <string name="state_waiting">%1$d esperando</string>
+    <string name="state_recognised">teléfono reconocido</string>
+    <string name="state_registered">teléfono registrado como tuyo</string>
+    <string name="state_different">⚠️ TELÉFONO DISTINTO</string>
+    <string name="state_signature_failed">la firma no verificó</string>
+    <string name="state_no_device_key">sin clave de dispositivo</string>
+    <string name="state_wrong_phone">⚠️ El equipo dice que este NO es el teléfono con el que se emparejó. Si no lo re-emparejaste tú, alguien más tiene la clave de emparejamiento.</string>
+    <string name="state_lost">conexión perdida</string>
+    <string name="state_offline_send">sin conexión — no puedo enviarlo todavía</string>
+    <string name="state_send_failed">no se pudo enviar</string>
+    <string name="state_offline_photo">sin conexión — la foto no salió</string>
+    <string name="state_photo_failed">no se pudo enviar la foto</string>
+    <string name="state_offline_confirm">sin conexión — no pude confirmar</string>
+    <string name="state_confirm_failed">la confirmación falló</string>
+
+    <string name="err_no_pin">Este emparejamiento es de antes de que el canal llevara TLS y no tiene la huella del equipo guardada.\n\nVuelve a escanear el QR: no voy a conectarme sin poder comprobar que al otro lado está tu equipo y no otro.</string>
+    <string name="err_connect">No pude conectar con %1$s:%2$d.\n\nEsta es una conexión directa: no hay relay. Comprueba que estás en la misma red que el equipo, o que la VPN está levantada.</string>
+    <string name="err_tls">No pude establecer TLS con %1$s:%2$d.\n\n%3$s</string>
+    <string name="err_tls_too_old">Este teléfono no ofrece TLS 1.2 ni 1.3. Es demasiado viejo para hablar con el equipo de forma segura.</string>
+    <string name="err_no_cert">el equipo no presentó certificado</string>
+    <string name="err_pin_mismatch">La llave del equipo no es la que guardaste al emparejar.\n\nEsperaba %1$s\ny llegó %2$s.\n\nO reinstalaron el daemon (y hay que volver a emparejar), o alguien está respondiendo en su lugar.</string>
+    <string name="err_daemon">error del daemon</string>
+    <string name="err_hello_refused">el daemon rechazó el saludo</string>
+    <string name="err_confirm_refused">el equipo rechazó la confirmación</string>
+    <string name="err_photo_refused">el equipo rechazó la foto</string>
+    <string name="err_no_connection">no hay conexión abierta</string>
+    <string name="err_frame_size">el daemon anunció un frame de %1$d bytes</string>
+    <string name="err_frame_auth">El frame no autenticó.\n\nCasi siempre significa que la clave de emparejamiento no coincide con la del equipo. Si el equipo usa ChaCha20-Poly1305 (CPU sin AES por hardware), este teléfono necesita Android 9 o superior.</string>
+</resources>

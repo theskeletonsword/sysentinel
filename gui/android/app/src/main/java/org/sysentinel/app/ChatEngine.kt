@@ -22,7 +22,12 @@ import java.util.concurrent.Executors
  * "ROSTRO NO REGISTRADO" while somebody is standing over its owner has just
  * announced that the machine informed on them.
  */
-class ChatEngine(private val pairing: Pairing, private val appVersion: String) {
+class ChatEngine(
+    /** For string resources: everything here ends up in front of a person. */
+    private val ctx: android.content.Context,
+    private val pairing: Pairing,
+    private val appVersion: String,
+) {
 
     private val io = Executors.newSingleThreadExecutor()
     private val main = Handler(Looper.getMainLooper())
@@ -36,7 +41,7 @@ class ChatEngine(private val pairing: Pairing, private val appVersion: String) {
     /** Connect and drain whatever the daemon has been holding. */
     fun start(listener: Listener) {
         if (!pairing.isPaired) {
-            listener.onStatus("Sin emparejar — falta el equipo y la clave", false)
+            listener.onStatus(ctx.getString(R.string.state_unpaired), false)
             return
         }
         io.execute {
@@ -56,8 +61,8 @@ class ChatEngine(private val pairing: Pairing, private val appVersion: String) {
                     // exists to catch.
                     post(listener) {
                         it.onMessages(listOf(Message(
-                            "⚠️ El equipo dice que este NO es el teléfono con el que " +
-                                "emparejaste.\n\n${identity.detail}",
+                            ctx.getString(R.string.state_wrong_phone) +
+                                "\n\n${identity.detail}",
                             fromMe = false,
                         )))
                     }
@@ -77,14 +82,14 @@ class ChatEngine(private val pairing: Pairing, private val appVersion: String) {
                 drain(listener, l)
             } catch (e: Exception) {
                 link = null
-                post(listener) { it.onStatus(e.message ?: "conexión perdida", false) }
+                post(listener) { it.onStatus(e.message ?: ctx.getString(R.string.state_lost), false) }
             }
         }
     }
 
     fun send(text: String, listener: Listener) {
         val l = link ?: run {
-            listener.onStatus("sin conexión — no puedo enviarlo todavía", false)
+            listener.onStatus(ctx.getString(R.string.state_offline_send), false)
             return
         }
         io.execute {
@@ -93,7 +98,7 @@ class ChatEngine(private val pairing: Pairing, private val appVersion: String) {
                 post(listener) { it.onMessages(replies) }
             } catch (e: Exception) {
                 link = null
-                post(listener) { it.onStatus(e.message ?: "no se pudo enviar", false) }
+                post(listener) { it.onStatus(e.message ?: ctx.getString(R.string.state_send_failed), false) }
             }
         }
     }
@@ -101,7 +106,7 @@ class ChatEngine(private val pairing: Pairing, private val appVersion: String) {
     /** Send a photo for `/face register`. */
     fun sendPhoto(jpeg: ByteArray, listener: Listener) {
         val l = link ?: run {
-            listener.onStatus("sin conexión — la foto no salió", false)
+            listener.onStatus(ctx.getString(R.string.state_offline_photo), false)
             return
         }
         io.execute {
@@ -110,19 +115,19 @@ class ChatEngine(private val pairing: Pairing, private val appVersion: String) {
                 post(listener) { it.onStatus("foto enviada", true) }
                 drain(listener, l)
             } catch (e: Exception) {
-                post(listener) { it.onStatus(e.message ?: "no se pudo enviar la foto", false) }
+                post(listener) { it.onStatus(e.message ?: ctx.getString(R.string.state_photo_failed), false) }
             }
         }
     }
 
     /** Send a signed confirmation for an armed order. */
     fun confirm(nonce: String, signature: ByteArray, onResult: (String) -> Unit) {
-        val l = link ?: run { onResult("sin conexión — no pude confirmar"); return }
+        val l = link ?: run { onResult(ctx.getString(R.string.state_offline_confirm)); return }
         io.execute {
             val msg = try {
                 l.confirm(nonce, signature)
             } catch (e: Exception) {
-                e.message ?: "la confirmación falló"
+                e.message ?: ctx.getString(R.string.state_confirm_failed)
             }
             main.post { onResult(msg) }
         }
@@ -157,15 +162,16 @@ class ChatEngine(private val pairing: Pairing, private val appVersion: String) {
     }
 
     private fun statusLine(w: PhoneLink.Welcome, id: PhoneLink.Identity?): String {
-        val base = "Conectado a ${w.host}" +
-            if (w.queued > 0) " · ${w.queued} esperando" else ""
-        return when (id?.verdict) {
-            "same_device" -> "$base · teléfono reconocido"
-            "paired" -> "$base · teléfono registrado como tuyo"
-            "different_device" -> "$base · ⚠️ TELÉFONO DISTINTO"
-            "rejected" -> "$base · la firma no verificó"
-            else -> "$base · sin clave de dispositivo"
+        val base = ctx.getString(R.string.state_connected, w.host) +
+            if (w.queued > 0) " · " + ctx.getString(R.string.state_waiting, w.queued) else ""
+        val tail = when (id?.verdict) {
+            "same_device" -> ctx.getString(R.string.state_recognised)
+            "paired" -> ctx.getString(R.string.state_registered)
+            "different_device" -> ctx.getString(R.string.state_different)
+            "rejected" -> ctx.getString(R.string.state_signature_failed)
+            else -> ctx.getString(R.string.state_no_device_key)
         }
+        return "$base · $tail"
     }
 
     /**

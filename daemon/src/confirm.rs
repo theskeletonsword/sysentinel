@@ -69,18 +69,28 @@ pub enum ConfirmMethod {
 
 impl ConfirmMethod {
     /// Plain description for a log line or an audit trail.
-    pub fn describe(&self) -> &'static str {
+    pub fn describe(&self) -> String {
         match self {
-            ConfirmMethod::OneTimeCode =>
-                "código de un solo uso escrito en el chat",
-            ConfirmMethod::SoftwareKey =>
-                "clave en almacenamiento normal del teléfono (sin respaldo de hardware)",
-            ConfirmMethod::DeviceCredential =>
-                "clave respaldada por hardware, liberada con el PIN del teléfono",
-            ConfirmMethod::Tee =>
-                "clave en la TEE (TrustZone), liberada con biometría",
-            ConfirmMethod::StrongBox =>
-                "clave en elemento seguro dedicado (Titan M / StrongBox), liberada con biometría",
+            ConfirmMethod::OneTimeCode => crate::lang::t(
+                "confirm.one_time_code",
+                "a one-time code typed into the chat",
+            ),
+            ConfirmMethod::SoftwareKey => crate::lang::t(
+                "confirm.software_key",
+                "a key in the phone's ordinary storage (no hardware backing)",
+            ),
+            ConfirmMethod::DeviceCredential => crate::lang::t(
+                "confirm.device_credential",
+                "a hardware-backed key, released by the phone's PIN",
+            ),
+            ConfirmMethod::Tee => crate::lang::t(
+                "confirm.tee",
+                "a key in the TEE (TrustZone), released by a biometric",
+            ),
+            ConfirmMethod::StrongBox => crate::lang::t(
+                "confirm.strongbox",
+                "a key in a discrete secure element (Titan M / StrongBox), released by a biometric",
+            ),
         }
     }
 
@@ -200,13 +210,20 @@ impl Confirmation {
     /// exactly the sort of thing that must not pass quietly.
     pub fn audit_line(&self) -> String {
         let effective = self.effective();
-        let mut s = format!("confirmado por: {}", effective.describe());
+        let mut s = format!(
+            "{} {}",
+            crate::lang::t("confirm.audit_prefix", "confirmed by:"),
+            effective.describe()
+        );
         if effective < self.claimed {
-            s.push_str(&format!(
-                " ⚠️ (el dispositivo dijo «{}» pero no lo demostró: sin cadena de \
-                 atestación verificada, así que cuenta como lo de arriba)",
-                self.claimed.describe()
-            ));
+            s.push_str(
+                &crate::lang::t(
+                    "confirm.downgraded",
+                    " ⚠️ (the device claimed «{claimed}» and did not demonstrate it: no \
+                     verified attestation chain, so it counts as the rung above)",
+                )
+                .replace("{claimed}", &self.claimed.describe()),
+            );
         }
         if let Some(d) = &self.device {
             s.push_str(&format!(" · {d}"));
@@ -215,7 +232,10 @@ impl Confirmation {
             s.push_str(&format!(" · {}", a.label()));
         }
         if effective.replayable_by_absent_party() {
-            s.push_str(" · ⚠️ reutilizable por alguien que no esté presente");
+            s.push_str(&crate::lang::t(
+                "confirm.replayable",
+                " · ⚠️ reusable by somebody who is not present",
+            ));
         }
         s
     }
@@ -270,8 +290,8 @@ mod tests {
         };
         assert_eq!(c.effective(), ConfirmMethod::SoftwareKey);
         let line = c.audit_line();
-        assert!(line.contains("no lo demostró"), "{line}");
-        assert!(line.contains("reutilizable"), "{line}");
+        assert!(line.contains("did not demonstrate it"), "{line}");
+        assert!(line.contains("reusable by somebody"), "{line}");
         // And it must not clear a bar it did not reach.
         assert!(!c.satisfies(ConfirmMethod::Tee));
         assert!(!c.satisfies(ConfirmMethod::StrongBox));
@@ -290,7 +310,7 @@ mod tests {
         assert!(c.proves_presence_now());
         assert!(!c.effective().replayable_by_absent_party());
         let line = c.audit_line();
-        assert!(!line.contains("no lo demostró"), "{line}");
+        assert!(!line.contains("did not demonstrate it"), "{line}");
         assert!(line.contains("Titan"), "{line}");
     }
 
@@ -304,7 +324,7 @@ mod tests {
         assert!(!c.satisfies(ConfirmMethod::SoftwareKey));
         assert!(c.effective().replayable_by_absent_party());
         assert!(!c.proves_presence_now());
-        assert!(c.audit_line().contains("reutilizable"));
+        assert!(c.audit_line().contains("reusable by somebody"));
     }
 
     #[test]

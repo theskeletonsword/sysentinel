@@ -125,11 +125,11 @@ pub fn handle(
         }
 
         Request::Volumes => {
-            let mut out = String::from("Volúmenes:\n");
+            let mut out = String::from("Volumes:\n");
             for b in crate::hwinfo::block_devices() {
                 let kind = crate::fsprobe::probe_block(&b.name)
                     .map(|k| k.label().to_string())
-                    .unwrap_or_else(|| "sin poder leer (¿permisos?)".to_string());
+                    .unwrap_or_else(|| "unreadable (permissions?)".to_string());
                 out.push_str(&format!(
                     "  {:<12} {:>7} GB  {:<6}  {kind}\n",
                     b.name,
@@ -142,12 +142,12 @@ pub fn handle(
 
         Request::Chat { text } => {
             if text.trim().is_empty() {
-                return Response::err("pregunta vacía");
+                return Response::err("empty question");
             }
             if !config.llm.llm_enabled() {
                 return Response::err(
-                    "el LLM está desactivado en config.toml — los paneles siguen \
-                     funcionando, pero no hay con quién hablar",
+                    "the LLM is switched off in config.toml — the panels still \
+                     work, but there is nobody to talk to",
                 );
             }
             let persona = crate::llm::resolved_persona(config);
@@ -169,25 +169,25 @@ pub fn handle(
                 max_tokens: config.llm.max_tokens,
             }) {
                 Ok(answer) => Response::ok(answer),
-                Err(e) => Response::err(format!("el modelo no respondió: {e:#}")),
+                Err(e) => Response::err(format!("the model did not answer: {e:#}")),
             }
         }
 
         Request::Face => {
             let engine = if crate::facenn::available(&config.face) {
                 format!(
-                    "red neuronal (coseno ≥ {:.2} dueño, ≥ {:.2} dudoso)",
+                    "neural network (cosine ≥ {:.2} owner, ≥ {:.2} ambiguous)",
                     config.face.nn_owner, config.face.nn_ambiguous
                 )
             } else {
-                format!("hash perceptual — falta {}", config.face.tool_path)
+                format!("perceptual hash — {} is missing", config.face.tool_path)
             };
             let enrolled = crate::fhash::FaceStore::load(Path::new(&config.face.path))
                 .map(|s| s.len())
                 .unwrap_or(0);
             let _ = settings; // reserved: live settings will surface here
             Response::ok(format!(
-                "Motor: {engine}\nEnrolamientos: {enrolled}\nHabilitado: {}",
+                "Engine: {engine}\nEnrolments: {enrolled}\nEnabled: {}",
                 config.face.enabled
             ))
         }

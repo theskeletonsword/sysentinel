@@ -45,7 +45,7 @@ public class Interop {
         dec.init(Cipher.DECRYPT_MODE, new SecretKeySpec(key, "AES"),
                  new GCMParameterSpec(TAG_BITS, nonce));
         String opened = new String(dec.doFinal(body), StandardCharsets.UTF_8);
-        if (!opened.equals("desde rust")) {
+        if (!opened.equals("from rust")) {
             throw new IllegalStateException("opened '" + opened + "'");
         }
         System.out.println("interop: opened Rust's frame");
@@ -79,7 +79,7 @@ public class Interop {
         Cipher enc = Cipher.getInstance("AES/GCM/NoPadding");
         enc.init(Cipher.ENCRYPT_MODE, new SecretKeySpec(key, "AES"),
                  new GCMParameterSpec(TAG_BITS, n2));
-        byte[] sealed = enc.doFinal("desde java".getBytes(StandardCharsets.UTF_8));
+        byte[] sealed = enc.doFinal("from java".getBytes(StandardCharsets.UTF_8));
         byte[] out = new byte[NONCE + sealed.length];
         System.arraycopy(n2, 0, out, 0, NONCE);
         System.arraycopy(sealed, 0, out, NONCE, sealed.length);

@@ -67,25 +67,25 @@ impl std::fmt::Display for IpcError {
         match self {
             IpcError::NotListening(p) => write!(
                 f,
-                "El daemon no está escuchando en {}.\n\n\
-                 El socket está apagado por defecto. Actívalo en config.toml:\n\n\
+                "The daemon is not listening on {}.\n\n\
+                 The socket is off by default. Switch it on in config.toml:\n\n\
                  \t[ipc]\n\tenabled = true\n\n\
                  …y reinicia el daemon.",
                 p.display()
             ),
             IpcError::Forbidden(p) => write!(
                 f,
-                "Sin permiso para abrir {}.\n\n\
-                 El socket es 0600 de root salvo que le des un grupo. Añade tu \
+                "No permission to open {}.\n\n\
+                 The socket is root-only 0600 unless you name a group. Add your \
                  usuario a ese grupo y ponlo en config.toml:\n\n\
                  \t[ipc]\n\tenabled = true\n\tgroup = \"sysentinel\"\n\n\
-                 El daemon detrás del socket corre como root, así que esos \
+                 The daemon behind the socket runs as root, so those \
                  permisos SON el control de acceso.",
                 p.display()
             ),
-            IpcError::Io(e) => write!(f, "Error de E/S hablando con el daemon: {e}"),
-            IpcError::Protocol(m) => write!(f, "Respuesta que no entiendo: {m}"),
-            IpcError::Daemon(m) => write!(f, "El daemon devolvió un error: {m}"),
+            IpcError::Io(e) => write!(f, "I/O error talking to the daemon: {e}"),
+            IpcError::Protocol(m) => write!(f, "An answer I do not understand: {m}"),
+            IpcError::Daemon(m) => write!(f, "The daemon returned an error: {m}"),
         }
     }
 }
@@ -119,7 +119,7 @@ pub fn ask(socket: &Path, req: Request) -> Result<String, IpcError> {
     let n = reader.read_line(&mut answer).map_err(IpcError::Io)?;
     if n == 0 {
         return Err(IpcError::Protocol(
-            "el daemon cerró la conexión sin responder".to_string(),
+            "the daemon closed the connection without answering".to_string(),
         ));
     }
 
