@@ -117,15 +117,32 @@ impl FaceStore {
         (p, w)
     }
 
-    /// Persiste sólo los hashes, con modo 0600.
+    /// Persiste sólo los hashes, con modo 0600 desde que nace.
+    ///
+    /// Escribe a un temporal y renombra, y crea el fichero ya en 0600 en vez
+    /// de apretarlo después. Son plantillas biométricas: el rato entre crear
+    /// y apretar es justo cuando otro usuario puede leerlas, y una escritura a
+    /// medias deja el store ilegible, que aquí significa que la máquina deja
+    /// de reconocer a su dueño.
     pub fn save(&self) -> anyhow::Result<()> {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+
         let json = serde_json::to_string_pretty(&self.entries)?;
         if let Some(dir) = self.path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        std::fs::write(&self.path, json)?;
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&self.path, std::fs::Permissions::from_mode(0o600));
+        let tmp = self.path.with_extension("json.new");
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&tmp)?;
+        f.write_all(json.as_bytes())?;
+        f.sync_all()?;
+        drop(f);
+        std::fs::rename(&tmp, &self.path)?;
         Ok(())
     }
 
@@ -473,6 +490,31 @@ mod tests {
             px.0 = [v, v ^ 0x55, !v];
         }
         image::DynamicImage::ImageRgb8(img)
+    }
+
+    #[test]
+    fn the_template_store_is_owner_only_from_the_moment_it_exists() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("sysentinel-store-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("faces.json");
+
+        let mut store = FaceStore::load(&path).unwrap();
+        store.add_image_with_embedding(
+            &image::DynamicImage::new_rgb8(32, 32),
+            Some(vec![0.5; 4]),
+        );
+        store.save().unwrap();
+
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "biometric templates must never be group- or world-readable");
+        // Staging must not survive a successful save.
+        assert!(!path.with_extension("json.new").exists());
+        // And it round-trips.
+        assert_eq!(FaceStore::load(&path).unwrap().len(), 1);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
