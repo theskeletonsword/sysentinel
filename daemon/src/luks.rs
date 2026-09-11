@@ -34,23 +34,19 @@ fn luks_timeout(settings: &Arc<Mutex<Settings>>) -> u64 {
     settings.lock().expect("settings mutex").luks_timeout.max(10)
 }
 
-/// Walk the evidence locations: the daemon's own dir plus every exposed vfat
-/// ESP (`/proc/mounts`), where the hook mirrors `<esp>/sysentinel/luks/`.
+/// Walk the evidence locations: the daemon's own dir plus the real ESP, where
+/// the initramfs hook mirrors `<esp>/sysentinel/luks/`.
+///
+/// This used to accept **any vfat mount**, which is nearly every USB stick in
+/// existence. On a desktop that automounts removable media, that turned
+/// "somebody walked past and plugged something in" into "the disk was
+/// unlocked while you were away" — an alert the owner never caused, and with
+/// `luks_deny_action = poweroff`, a machine a stranger can switch off by
+/// plugging in a stick. [`crate::esp`] insists on a fixed disk at a
+/// conventional ESP path.
 fn evidence_dirs(config: &Config) -> Vec<PathBuf> {
     let mut dirs = vec![PathBuf::from(&config.camera.evidence_dir)];
-
-    if let Ok(mounts) = std::fs::read_to_string("/proc/mounts") {
-        for line in mounts.lines() {
-            // field[0]=dev field[1]=mountpoint field[2]=fs; skip non-vfat.
-            let mut f = line.splitn(4, ' ');
-            let (_dev, mnt, fs, _rest) = (f.next(), f.next(), f.next(), f.next());
-            if let (Some(mnt), Some(fs)) = (mnt, fs) {
-                if fs == "vfat" && !mnt.is_empty() {
-                    dirs.push(Path::new(mnt).join("sysentinel/luks"));
-                }
-            }
-        }
-    }
+    dirs.extend(crate::esp::mount_points().into_iter().map(|m| m.join("sysentinel/luks")));
     dirs
 }
 
@@ -318,10 +314,15 @@ fn scan_for_markers(
 
         // New evidence → ask. Prefer the marker's matching photo in the same
         // dir; fall back to any cam_*.jpg there.
+        // `photo` names a file *in the same directory*, so only its last
+        // component is used. Joined raw, a marker saying
+        // `photo=../../../../etc/sysentinel/config.toml` would have had the
+        // daemon read that file and send it out as evidence — and markers can
+        // arrive on removable media.
         let photo = marker
             .photo
             .as_ref()
-            .map(|n| dir.join(n))
+            .and_then(|n| Path::new(n).file_name().map(|f| dir.join(f)))
             .filter(|p| p.is_file())
             .or_else(|| {
                 std::fs::read_dir(&dir)

@@ -151,38 +151,57 @@ impl FaceStore {
         serde_json::to_string_pretty(&Db { faces }).unwrap_or_else(|_| r#"{"faces":[]}"#.into())
     }
 
-    /// Espeja el DB de embeddings a `<esp>/sysentinel/faces.json` en cada ESP
-    /// vfat visible (`/proc/mounts`), remontando rw si hace falta y volviendo a
-    /// ro tras escribir. Best-effort: nunca falla la operación principal.
+    /// Espeja el DB de embeddings a `<esp>/sysentinel/faces.json` en el ESP
+    /// real, remontando rw si hace falta y volviendo a ro tras escribir.
+    /// Best-effort: nunca falla la operación principal.
+    ///
+    /// # Por qué el ESP y NADA más
+    ///
+    /// Esto escribe plantillas biométricas. Antes el filtro era "el sistema de
+    /// ficheros es vfat", y vfat es prácticamente todo pendrive que existe: en
+    /// un escritorio que automonta, enchufar un USB se llevaba a casa la cara
+    /// del dueño. [`crate::esp`] exige disco fijo y una ruta de ESP de las de
+    /// verdad, así que un pendrive ya no cuenta aunque lo monten en /boot.
     pub fn mirror_to_esp(&self) {
+        let targets = crate::esp::mount_points();
+        if targets.is_empty() {
+            log::debug!("face: no ESP to mirror the identity DB to");
+            return;
+        }
         let db = self.esp_db();
-        log::info!("face: mirroring ESP identity DB ({} templates)", self.entries.iter().filter(|e| e.embedding.is_some()).count());
-        let algo = || -> anyhow::Result<()> {
-            let mounts = std::fs::read_to_string("/proc/mounts")?;
-            for line in mounts.lines() {
-                let mut f = line.splitn(4, ' ');
-                let (_dev, mnt, fs, _) = (f.next(), f.next(), f.next(), f.next());
-                if fs != Some("vfat") {
-                    continue;
-                }
-                let Some(mnt) = mnt else { continue };
-                let mnt = mnt.to_string();
-                let ro = line.split_whitespace().nth(3).is_some_and(|o| o.split(',').any(|f| f == "ro"));
-                if ro {
-                    let _ = std::process::Command::new("mount").args(["-o", "remount,rw", &mnt]).output();
-                }
-                let dir = std::path::Path::new(&mnt).join("sysentinel");
-                let _ = std::fs::create_dir_all(&dir);
-                let out = dir.join("faces.json");
-                let _ = std::fs::write(&out, db.as_bytes());
-                if ro {
-                    let _ = std::process::Command::new("mount").args(["-o", "remount,ro", &mnt]).output();
-                }
+        log::info!(
+            "face: mirroring ESP identity DB ({} templates) to {} ESP(s)",
+            self.entries.iter().filter(|e| e.embedding.is_some()).count(),
+            targets.len()
+        );
+        let mounted_ro = read_only_mounts();
+        for mnt in targets {
+            let key = mnt.display().to_string();
+            let ro = mounted_ro.contains(&key);
+            if ro {
+                let _ = std::process::Command::new("mount").args(["-o", "remount,rw", &key]).output();
             }
-            Ok(())
-        };
-        let _ = algo();
+            let dir = mnt.join("sysentinel");
+            let _ = std::fs::create_dir_all(&dir);
+            let _ = std::fs::write(dir.join("faces.json"), db.as_bytes());
+            if ro {
+                let _ = std::process::Command::new("mount").args(["-o", "remount,ro", &key]).output();
+            }
+        }
     }
+}
+
+/// Mount points currently mounted read-only, so the mirror can put them back
+/// the way it found them.
+fn read_only_mounts() -> std::collections::HashSet<String> {
+    let Ok(text) = std::fs::read_to_string("/proc/mounts") else {
+        return std::collections::HashSet::new();
+    };
+    crate::esp::parse_mounts(&text)
+        .into_iter()
+        .filter(crate::esp::is_read_only)
+        .map(|m| m.mount_point)
+        .collect()
 }
 
 // ── Hashing en sí ─────────────────────────────────────────────────────────────

@@ -776,8 +776,20 @@ mod tests {
         assert!(!over.contains("HARDWARE REAL DEL SISTEMA"));
 
         // Empty / None override keeps the default builder.
-        assert_eq!(effective_system_prompt(&cfg, None), built);
-        assert_eq!(effective_system_prompt(&cfg, Some("   ")), built);
+        //
+        // Not compared byte for byte against `built`: the generated prompt
+        // embeds live telemetry (load, temperature, PMU), so two calls a few
+        // microseconds apart legitimately differ and this test used to fail
+        // perhaps one run in ten. A flaky test is worse than no test — it
+        // teaches you to ignore the suite that is supposed to catch the real
+        // regression. The property that matters is which *builder* ran.
+        for prompt in [
+            effective_system_prompt(&cfg, None),
+            effective_system_prompt(&cfg, Some("   ")),
+        ] {
+            assert!(prompt.contains("HARDWARE REAL DEL SISTEMA"), "{prompt}");
+            assert!(!prompt.contains("Original normal works"), "{prompt}");
+        }
     }
 
     #[test]
