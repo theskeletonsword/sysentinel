@@ -59,6 +59,12 @@
 #include <linux/sched/signal.h>
 #include <linux/uaccess.h>
 
+#include "sysentinel_shared.h"
+
+#include <linux/capability.h>
+#include <linux/cred.h>
+#include <linux/uidgid.h>
+
 #include <asm/desc.h>		/* store_idt(), struct desc_ptr		  */
 #include <asm/msr.h>		/* rdmsrl() / wrmsrl()		   	  */
 #include <asm/processor.h>
@@ -102,17 +108,38 @@ static int idt_capture(void *out, u32 maxbytes)
 static int idt_write_gate(int vector, const void *gate16)
 {
 	struct desc_ptr idtr;
-	unsigned long cr0, next;
+	unsigned long cr0, next, flags;
 	char *dst;
 
 	store_idt(&idtr);
 	dst = (char *)idtr.address + (vector * 16);
+
+	/*
+	 * CR0 is per-CPU, and WP=0 disables write protection for EVERYTHING
+	 * running on this CPU, not just for us. Two things therefore must not
+	 * happen between clearing it and putting it back:
+	 *
+	 *   - being preempted, which would let another task run on this CPU
+	 *     with kernel write protection off — the exact hardening a rootkit
+	 *     wants disabled, handed to it by the tool that cleans rootkits;
+	 *   - being migrated, which would restore WP on a DIFFERENT CPU and
+	 *     leave the original one with write protection off for good.
+	 *
+	 * Interrupts off pins us here for the handful of instructions this
+	 * takes, and preempt_disable() states the intent for a PREEMPT_RT
+	 * kernel where local_irq_save alone would not.
+	 */
+	preempt_disable();
+	local_irq_save(flags);
 
 	asm volatile("mov %%cr0, %0" : "=r"(cr0));
 	next = cr0 & ~(1UL << 16);			/* clear WP   */
 	asm volatile("mov %0, %%cr0" :: "r"(next));
 	memcpy(dst, gate16, 16);
 	asm volatile("mov %0, %%cr0" :: "r"(cr0));	/* restore WP */
+
+	local_irq_restore(flags);
+	preempt_enable();
 	return 0;
 }
 
@@ -182,8 +209,16 @@ long sysentinel_defense_scan(void)
 	char name[KSYM_SYMBOL_LEN];
 	int diff, changed = 0;
 	int int80 = -1;
-	u8 cur[IDT_VECTORS * 16];
+	u8 *cur;
 	int v;
+
+	/*
+	 * 4 KB is a quarter of a kernel stack, and this runs underneath a
+	 * procfs write with the caller's frames already on it. Off the heap.
+	 */
+	cur = kmalloc(IDT_VECTORS * 16, GFP_KERNEL);
+	if (!cur)
+		return -ENOMEM;
 
 	mutex_lock(&defense_lock);
 	report_clear();
@@ -203,7 +238,7 @@ long sysentinel_defense_scan(void)
 	}
 
 	// IDT — any gate that no longer matches boot.
-	idt_capture(cur, sizeof(cur));
+	idt_capture(cur, IDT_VECTORS * 16);
 	for (v = 0; v < IDT_VECTORS; v++) {
 		if (memcmp(cur + v * 16, (u8 *)idt_baseline + v * 16, 16) != 0) {
 			unsigned long handler =
@@ -243,6 +278,7 @@ long sysentinel_defense_scan(void)
 	diff = idt_first_diff(name, sizeof(name));
 	(void)diff;
 	mutex_unlock(&defense_lock);
+	kfree(cur);
 	return 0;
 }
 
@@ -253,10 +289,14 @@ long sysentinel_defense_scan(void)
 long sysentinel_defense_clean(void)
 {
 	struct desc_ptr idtr;
-	u8 cur[IDT_VECTORS * 16];
+	u8 *cur;
 	u64 lstar_now = 0;
 	int restored = 0;
 	int v;
+
+	cur = kmalloc(IDT_VECTORS * 16, GFP_KERNEL);
+	if (!cur)
+		return -ENOMEM;
 
 	mutex_lock(&defense_lock);
 
@@ -268,7 +308,7 @@ long sysentinel_defense_clean(void)
 	}
 
 	store_idt(&idtr);
-	idt_capture(cur, sizeof(cur));
+	idt_capture(cur, IDT_VECTORS * 16);
 	for (v = 0; v < IDT_VECTORS; v++) {
 		if (memcmp(cur + v * 16, (u8 *)idt_baseline + v * 16, 16) != 0) {
 			idt_write_gate(v, (u8 *)idt_baseline + v * 16);
@@ -294,6 +334,7 @@ long sysentinel_defense_clean(void)
 	report_add("clean done restored=%d sleeping baseline re-check below\n",
 		   restored);
 	mutex_unlock(&defense_lock);
+	kfree(cur);
 
 	// Re-scan so the report reflects the now-clean state.
 	sysentinel_defense_scan();
@@ -344,6 +385,16 @@ static ssize_t defense_proc_read(struct file *f, char __user *buf,
 {
 	ssize_t n;
 
+	/*
+	 * The report names MSR_LSTAR — a kernel text address — and the raw
+	 * CR0. Published to every local process that was a free defeat of
+	 * kernel address randomisation, from the file whose whole job is to
+	 * make the kernel harder to subvert. The inode mode below says the
+	 * same thing; this is the check that still holds if someone widens it.
+	 */
+	if (!sysentinel_caller_is_privileged())
+		return -EPERM;
+
 	mutex_lock(&defense_lock);
 	n = defense_report_len;
 	if ((loff_t)n <= *off) {
@@ -388,13 +439,15 @@ long sysentinel_defense_init(void)
 	defense_report_len = 0;
 	defense_report[0] = '\0';
 
-	defense_entry = proc_create("sysentinel_defense", 0444, NULL,
+	defense_entry = proc_create("sysentinel_defense", 0440, NULL,
 				     &defense_proc_fops);
 	if (!defense_entry) {
 		kfree(idt_baseline);
 		idt_baseline = NULL;
 		return -ENOMEM;
 	}
+	/* root:write_gid — the daemon reads it, nobody else does. */
+	proc_set_user(defense_entry, GLOBAL_ROOT_UID, sysentinel_write_kgid());
 
 	pr_info("sysentinel_defense: armed (LSTAR baseline 0x%llx, 256 IDT "
 		"gates snapshotted)\n", lstar_baseline);

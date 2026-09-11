@@ -42,6 +42,16 @@ use std::time::Duration;
 // 32-bit V4L2 _IOC encodings either way, so we carry them as c_ulong and cast
 // to the target's request type at the call site.
 
+/// Largest frame dimension this will accept from a device.
+///
+/// 8192 px is past any webcam that exists and still only 200 MB of RGB, so a
+/// real camera never meets it and a lying one stops here.
+const MAX_DIMENSION: u32 = 8192;
+
+/// Largest mmap buffer a device may ask for: 64 MiB, generously past one
+/// uncompressed frame at the limit above.
+const MAX_BUFFER_BYTES: usize = 64 * 1024 * 1024;
+
 const REQ_QUERYCAP: IoctlReq = 0x8068_5600u64 as IoctlReq;
 const REQ_S_FMT:    IoctlReq = 0xc0d0_5605u64 as IoctlReq;
 const REQ_REQBUFS:  IoctlReq = 0xc014_5608u64 as IoctlReq;
@@ -367,7 +377,21 @@ fn set_format(fd: RawFd, pixelformat: u32, w: u32, h: u32)
         ));
     }
     let (gw, gh) = (got.width.max(1), got.height.max(1));
-    // A 0x0 answer means "pick the default" — clamp to something sane.
+    // Whatever comes back here was chosen by the device, and a webcam is a
+    // USB peripheral: "the device said so" is not a reason to allocate. The
+    // colour conversion below sizes its buffers as width * height * 3, so a
+    // driver answering 65535 x 65535 asks this process — running as root in
+    // an initramfs, with no OOM killer worth the name and no way to tell
+    // anyone — for thirteen gigabytes. Refuse instead of trying.
+    if gw > MAX_DIMENSION || gh > MAX_DIMENSION {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "the device negotiated {gw}x{gh}, past the {MAX_DIMENSION} px limit — \
+                 refusing to allocate for it"
+            ),
+        ));
+    }
     Ok((gw, gh))
 }
 
@@ -394,6 +418,14 @@ fn grab_frame(fd: RawFd, timeout_secs: u64) -> std::io::Result<Frame> {
     };
     ioctl_ptr(fd, REQ_QUERYBUF, &mut qbuf)?;
     let length = qbuf.length.max(1) as usize;
+    // Also device-driven. An mmap this large would simply fail, but failing
+    // with a sentence beats failing with ENOMEM from somewhere in libc.
+    if length > MAX_BUFFER_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("the device asked for a {length}-byte buffer; that is not a webcam"),
+        ));
+    }
     let offset = qbuf.mmap_offset();
     let map = unsafe {
         libc::mmap(

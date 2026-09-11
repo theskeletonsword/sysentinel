@@ -39,13 +39,19 @@
 // a firewall. The only kernel action driven by guest activity elsewhere in
 // this module is `/proc/sysentinel_hypercalls` being drained by the daemon.
 
+#include <linux/capability.h>
+#include <linux/cred.h>
 #include <linux/kernel.h>
 #include <linux/kprobes.h>
+#include <linux/slab.h>
+#include <linux/uidgid.h>
 #include <linux/kvm_host.h>
 #include <linux/module.h>
 #include <linux/proc_fs.h>
 #include <linux/sched.h>
 #include <linux/uaccess.h>
+
+#include "sysentinel_shared.h"
 
 #include <asm/kvm_host.h>	/* struct kvm_vcpu, VCPU_REGS_* */
 
@@ -147,57 +153,112 @@ static int hcw_format(struct hcw_entry *e, char *buf, size_t cap)
 static ssize_t hcw_proc_read(struct file *f, char __user *buf, size_t count,
 			     loff_t *off)
 {
-	char line[PAGE_SIZE];
+	char *line;
 	unsigned long flags;
 	size_t used = 0;
+	unsigned int drained = 0;
+	unsigned int tail_before;
+	ssize_t ret;
 	int w;
 
 	if (count == 0)
 		return 0;
+
+	/*
+	 * Restricted for two separate reasons, and the second is the one that
+	 * bites:
+	 *
+	 *   - the records carry guest register contents — guest-physical
+	 *     addresses, guest kernel pointers, whatever the guest passed —
+	 *     so on a host running someone else's VM this is cross-guest
+	 *     disclosure to any local account; and
+	 *   - reading DRAINS the ring. An unprivileged process in a loop on
+	 *     this file empties the log before the daemon ever sees it, which
+	 *     turns the audit trail off from an account that should not be
+	 *     able to touch it at all. A log that anyone can quietly empty is
+	 *     not a log.
+	 */
+	if (!sysentinel_caller_is_privileged())
+		return -EPERM;
+
+	/*
+	 * PAGE_SIZE on the kernel stack is a quarter of it, under a procfs
+	 * read that already has the caller's frames below.
+	 */
+	line = kmalloc(PAGE_SIZE, GFP_KERNEL);
+	if (!line)
+		return -ENOMEM;
 
 	raw_spin_lock_irqsave(&hcw_lock, flags);
 
 	if (*off == 0) {
 		if (!hcw_watching) {
 			raw_spin_unlock_irqrestore(&hcw_lock, flags);
-			w = scnprintf(line, sizeof(line),
+			w = scnprintf(line, PAGE_SIZE,
 				      "hypercall_watch=unavailable "
 				      "(kprobe kvm_emulate_hypercall not attached; "
 				      "is the kvm module loaded?)\n");
 			if (w > (int)count)
 				w = count;
-			if (w > 0 && copy_to_user(buf, line, w))
+			if (w > 0 && copy_to_user(buf, line, w)) {
+				kfree(line);
 				return -EFAULT;
+			}
 			*off += w;
+			kfree(line);
 			return w;
 		}
-		w = scnprintf(line, sizeof(line),
+		w = scnprintf(line, PAGE_SIZE,
 			      "hypercall_watch=active entries=%u\n",
 			      hcw_count_locked());
 		if (w > 0)
 			used += w;
 	}
 
-	// Drain whatever still fits in `count` (reserve one full line so a
-	// record partially fitting is NOT lost — it waits for the next read).
-	while (hcw_head != hcw_tail && used + HCW_MAX_LINE < count) {
-		w = hcw_format(&hcw_ring[hcw_tail], line + used,
-			       sizeof(line) - used);
-		if (w <= 0)
-			break;
-		used += w;
-		hcw_tail = (hcw_tail + 1) % HCW_RING_ENTRIES;
+	/*
+	 * Format out of the ring but do NOT advance the tail yet: the copy to
+	 * userspace can fault, and records dropped on a fault are records the
+	 * daemon never gets to see. The tail moves only once the bytes have
+	 * actually landed.
+	 */
+	tail_before = hcw_tail;
+	{
+		unsigned int cursor = hcw_tail;
+
+		while (cursor != hcw_head && used + HCW_MAX_LINE < count &&
+		       used + HCW_MAX_LINE < PAGE_SIZE) {
+			w = hcw_format(&hcw_ring[cursor], line + used,
+				       PAGE_SIZE - used);
+			if (w <= 0)
+				break;
+			used += w;
+			cursor = (cursor + 1) % HCW_RING_ENTRIES;
+			drained++;
+		}
 	}
 	raw_spin_unlock_irqrestore(&hcw_lock, flags);
 
-	if (used == 0)
+	if (used == 0) {
+		kfree(line);
 		return 0;
+	}
 	if (used > count)
 		used = count;
-	if (copy_to_user(buf, line, used))
+	if (copy_to_user(buf, line, used)) {
+		kfree(line);
 		return -EFAULT;
+	}
+	kfree(line);
+
+	/* Delivered. Now they may go. */
+	raw_spin_lock_irqsave(&hcw_lock, flags);
+	if (hcw_tail == tail_before)
+		hcw_tail = (tail_before + drained) % HCW_RING_ENTRIES;
+	raw_spin_unlock_irqrestore(&hcw_lock, flags);
+
 	*off += used;
-	return used;
+	ret = used;
+	return ret;
 }
 
 static const struct proc_ops hcw_proc_fops = {
@@ -216,7 +277,14 @@ long sysentinel_session_kill(long pid)
 	struct pid *target;
 	int rc;
 
-	if (pid <= 0)
+	/*
+	 * Same guards as sysentinel_kill_process, which had them and this did
+	 * not: never pid 1, and never the task carrying out the request. The
+	 * kernel protects init from most signals on its own, but "something
+	 * else will probably stop us" is not a guard, and closing a session by
+	 * killing the process doing the closing is a bug either way.
+	 */
+	if (pid <= 1 || pid == (long)task_pid_nr(current))
 		return -EINVAL;
 
 	target = find_vpid((pid_t)pid);
@@ -254,8 +322,11 @@ long sysentinel_hypercall_watcher_init(void)
 			"guest -> hypervisor hypercalls will be reported\n");
 	}
 
-	hcw_entry = proc_create("sysentinel_hypercalls", 0444, NULL,
+	hcw_entry = proc_create("sysentinel_hypercalls", 0440, NULL,
 				&hcw_proc_fops);
+	if (hcw_entry)
+		proc_set_user(hcw_entry, GLOBAL_ROOT_UID,
+			      sysentinel_write_kgid());
 	if (!hcw_entry) {
 		if (hcw_watching)
 			unregister_kprobe(&sysentinel_kvm_hc_kp);

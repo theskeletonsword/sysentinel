@@ -328,15 +328,47 @@ class PhoneLink(
         val arr: JSONArray = reply.optJSONArray("alerts") ?: return emptyList()
         return (0 until arr.length()).map { i ->
             val o = arr.getJSONObject(i)
+            val text = o.optString("text")
             Message(
-                text = o.optString("text"),
+                text = text,
                 fromMe = false,
                 timestamp = o.optLong("unix_time") * 1000L,
                 serverId = o.optLong("id"),
                 photoPath = o.optString("photo").takeIf { it.isNotEmpty() && it != "null" },
+                confirmNonce = confirmNonceIn(text),
             )
         }
     }
+}
+
+/**
+ * The `CONFIRM-XXXXXX` an armed order is waiting on, if this text carries one.
+ *
+ * The daemon mints the code from `/dev/urandom` over an alphabet with no
+ * lookalike characters and wraps it in backticks. Finding it here is what lets
+ * the app offer a fingerprint instead of asking the owner to type it back —
+ * and typing it back is the weak rung of the ladder in
+ * `daemon/src/confirm.rs`, because a code can be read over a shoulder or
+ * demanded out loud.
+ */
+internal fun confirmNonceIn(text: String): String? =
+    Regex("CONFIRM-[A-Z0-9]{4,16}").find(text)?.value
+
+/**
+ * The order's own words, for the fingerprint prompt.
+ *
+ * The prompt has to name what is being authorised — the entire risk of a
+ * confirmation flow is authorising something other than what you thought — so
+ * this pulls the label out of the daemon's armed notice rather than showing a
+ * generic "confirm".
+ */
+internal fun orderLabelFrom(text: String): String {
+    // The daemon writes it as  *Control armed:* `label`  — the asterisk that
+    // closes the markdown emphasis sits between the colon and the backtick.
+    val marked = Regex("Control armed:\\**\\s*`([^`]{1,60})`")
+        .find(text)?.groupValues?.get(1)
+    return marked ?: text.lineSequence().firstOrNull()?.take(60)?.trim().orEmpty()
+        .ifEmpty { "la orden armada" }
 }
 
 /** Anything that went wrong, phrased for the person holding the phone. */

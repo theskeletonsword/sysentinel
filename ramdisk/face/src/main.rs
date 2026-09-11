@@ -209,17 +209,53 @@ fn run_selfcheck() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Largest image this tool will decode.
+///
+/// A few KB of JPEG can declare a 60000x60000 picture and an unbounded decoder
+/// reserves the memory for it before anyone looks at the result. This one runs
+/// as root in an initramfs where that is a failed boot, and it is also run by
+/// the daemon on photographs that arrived from a phone.
+const MAX_DIMENSION: u32 = 16_384;
+
+/// Largest template database this will read. Real ones are a few KB per face.
+const MAX_DB_BYTES: u64 = 8 * 1024 * 1024;
+
+fn decode_bounded(path: &std::path::Path) -> anyhow::Result<image::DynamicImage> {
+    use image::ImageReader;
+    let mut reader = ImageReader::open(path)?.with_guessed_format()?;
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(MAX_DIMENSION);
+    limits.max_image_height = Some(MAX_DIMENSION);
+    limits.max_alloc = Some((MAX_DIMENSION as u64) * (MAX_DIMENSION as u64) * 4);
+    reader.limits(limits);
+    Ok(reader.decode()?)
+}
+
+/// Read the template database, refusing one too large to be real.
+///
+/// It arrives from the ESP, which the initramfs hook now insists is fixed
+/// media — but the file is still the one thing here that decides whose face
+/// this is, so it gets a size it has to fit in.
+fn read_db(path: &std::path::Path) -> anyhow::Result<FaceDb> {
+    let meta = std::fs::metadata(path)?;
+    anyhow::ensure!(
+        meta.len() <= MAX_DB_BYTES,
+        "{} is {} bytes; a template database is not that big",
+        path.display(),
+        meta.len()
+    );
+    let raw = std::fs::read_to_string(path)?;
+    Ok(serde_json::from_str::<FaceDb>(&raw)?)
+}
+
 /// Detect → (align + embed) every face → JSON on stdout.
 fn run_embed(args: &Args) -> anyhow::Result<()> {
     let path = args.image.as_ref().expect("--embed checks the arg earlier");
-    let img = image::open(path)?.into_rgb8();
+    let img = decode_bounded(path)?.into_rgb8();
     let nn = FaceNn::build()?;
 
     let db = match &args.db {
-        Some(p) => {
-            let raw = std::fs::read_to_string(p)?;
-            Some(serde_json::from_str::<FaceDb>(&raw)?)
-        }
+        Some(p) => Some(read_db(p)?),
         None => None,
     };
 

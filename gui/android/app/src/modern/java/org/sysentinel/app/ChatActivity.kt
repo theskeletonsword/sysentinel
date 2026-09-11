@@ -2,7 +2,6 @@
 package org.sysentinel.app
 
 import android.os.Bundle
-import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import com.journeyapps.barcodescanner.ScanContract
@@ -21,7 +20,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.sp
+import androidx.fragment.app.FragmentActivity
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -42,7 +43,14 @@ import java.util.Locale
  * announced that the machine informed on them. Alerts are read when the app is
  * opened, on purpose.
  */
-class ChatActivity : ComponentActivity() {
+/**
+ * A [FragmentActivity], not a `ComponentActivity`.
+ *
+ * `BiometricPrompt` needs one, and without it the whole fingerprint
+ * confirmation path was unreachable: `Confirmation.confirm` existed, compiled,
+ * and had no caller anywhere in the app. Compose is perfectly happy here.
+ */
+class ChatActivity : FragmentActivity() {
 
     private lateinit var engine: ChatEngine
     private lateinit var pairing: Pairing
@@ -84,10 +92,18 @@ private fun ChatScreen(
     var showPairing by remember { mutableStateOf(!pairing.isPaired) }
     val messages = remember { mutableStateListOf<Message>() }
     val listState = rememberLazyListState()
+    val activity = LocalContext.current as? FragmentActivity
+    // The newest armed order still waiting for an answer. Cleared once the
+    // daemon replies, so a stale bar cannot invite a second confirmation.
+    var pending by remember { mutableStateOf<Message?>(null) }
+    var confirming by remember { mutableStateOf(false) }
 
     val listener = remember {
         object : ChatEngine.Listener {
-            override fun onMessages(m: List<Message>) { messages.addAll(m) }
+            override fun onMessages(m: List<Message>) {
+                messages.addAll(m)
+                m.lastOrNull { it.confirmNonce != null }?.let { pending = it }
+            }
             override fun onStatus(text: String, ok: Boolean) {
                 status = text; statusOk = ok
             }
@@ -122,6 +138,27 @@ private fun ChatScreen(
             }
         },
         bottomBar = {
+            Column {
+                val order = pending
+                if (order?.confirmNonce != null && activity != null) {
+                    ConfirmBar(
+                        nonce = order.confirmNonce,
+                        busy = confirming,
+                        canSign = Confirmation.available(activity),
+                    ) {
+                        confirming = true
+                        Confirmation.confirm(
+                            activity = activity,
+                            engine = engine,
+                            nonce = order.confirmNonce,
+                            orderLabel = orderLabelFrom(order.text),
+                        ) { answer ->
+                            confirming = false
+                            pending = null
+                            messages.add(Message(answer, fromMe = false))
+                        }
+                    }
+                }
             Composer(
                 draft = draft,
                 onDraft = { draft = it },
@@ -133,6 +170,7 @@ private fun ChatScreen(
                     }
                 },
             )
+            }
         },
     ) { padding ->
         LazyColumn(
@@ -145,6 +183,56 @@ private fun ChatScreen(
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             items(messages) { Bubble(it) }
+        }
+    }
+}
+
+/**
+ * The bar that replaces typing the code back.
+ *
+ * A `CONFIRM-XXXXXX` proves someone read a screen. It can be read over a
+ * shoulder and demanded out loud, and once spoken anyone can type it. A
+ * signature from a key the Keystore releases only after a fresh fingerprint
+ * proves the owner's finger was on this handset at that moment — which is the
+ * whole point, and until now the app had no way to offer it.
+ *
+ * When the handset cannot sign, the bar says so instead of pretending: the
+ * typed code still works and the daemon grades it for what it is.
+ */
+@Composable
+private fun ConfirmBar(
+    nonce: String,
+    busy: Boolean,
+    canSign: Boolean,
+    onConfirm: () -> Unit,
+) {
+    Surface(color = Color(0xFF2A1D10)) {
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    "Hay una orden armada esperando",
+                    color = Color(0xFFF5C271),
+                    fontSize = 13.sp,
+                )
+                Text(
+                    if (canSign) {
+                        "Tu huella la autoriza. No hace falta teclear el código."
+                    } else {
+                        "Este teléfono no puede firmar: responde con $nonce."
+                    },
+                    color = Color(0xFFB99A6B),
+                    fontSize = 11.sp,
+                )
+            }
+            if (canSign) {
+                Button(onClick = onConfirm, enabled = !busy) {
+                    Text(if (busy) "…" else "Confirmar")
+                }
+            }
         }
     }
 }

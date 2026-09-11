@@ -33,6 +33,8 @@
 #include <linux/uidgid.h>
 #include <linux/uaccess.h>
 
+#include "sysentinel_shared.h"
+
 // Rust-side callbacks (defined in sysentinel_core.rs, #[no_mangle]).
 // Return 0 / positive on success, a negative errno otherwise.
 extern long rs_render_snapshot(unsigned char *buf, unsigned long cap,
@@ -50,11 +52,25 @@ MODULE_PARM_DESC(write_gid,
 		 "GID allowed to send control commands; 0 = root only");
 
 // Does the caller clear the same bar that guards control commands?
-static bool sysentinel_caller_is_privileged(void)
+//
+// Not static: the other proc nodes in this module (the rootkit defender's
+// report, the hypercall log) publish things that are just as sensitive as the
+// control registers here, and they must answer the same question rather than
+// each inventing their own.
+bool sysentinel_caller_is_privileged(void)
 {
 	return capable(CAP_SYS_ADMIN) ||
 	       in_group_p(make_kgid(&init_user_ns, write_gid));
 }
+EXPORT_SYMBOL_GPL(sysentinel_caller_is_privileged);
+
+// The gid allowed to read the restricted nodes and send control commands, for
+// proc_set_user(). 0 means root only, which is make_kgid's answer anyway.
+kgid_t sysentinel_write_kgid(void)
+{
+	return make_kgid(&init_user_ns, write_gid);
+}
+EXPORT_SYMBOL_GPL(sysentinel_write_kgid);
 
 static ssize_t sysentinel_proc_read(struct file *f, char __user *buf,
 				    size_t count, loff_t *off)
