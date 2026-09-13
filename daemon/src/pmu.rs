@@ -1358,6 +1358,54 @@ pub fn quick_snapshot() -> PmuSnapshot {
     snapshot(Duration::from_millis(250))
 }
 
+/// Number of software counters we sample per process.
+pub const SW_COUNTER_COUNT: usize = 4; // cs, pfmin, pfmaj, migrations
+
+/// Hardware PMU counter counts from CPUID leaf 0x0A (x86_64 only).
+///
+/// Returns `(gp_counters, fixed_counters)`:
+/// - `gp_counters`: general-purpose programmable counters per logical CPU
+///   (EAX[15:8] of leaf 0x0A).
+/// - `fixed_counters`: fixed-function counters (ECX[4:0] of leaf 0x0A,
+///   where bits 4:0 hold the count when ECX[28:0] != 0).
+///
+/// Returns `(0, 0)` on non-x86_64 or when CPUID 0x0A is absent.
+#[cfg(target_arch = "x86_64")]
+pub fn hw_counter_count() -> (usize, usize) {
+    let res = std::arch::x86_64::__cpuid(0x0A);
+    // EAX[7:0]  = architectural PMU version (0 = not supported)
+    let version = res.eax & 0xFF;
+    if version == 0 {
+        return (0, 0);
+    }
+    // EAX[15:8] = number of GP counters per logical processor
+    let gp = ((res.eax >> 8) & 0xFF) as usize;
+    // ECX[4:0]  = number of fixed-function counters (valid when ECX[28:0] != 0)
+    let fixed = if (res.ecx & 0x1FFF_FFFF) != 0 {
+        (res.ecx & 0x1F) as usize
+    } else {
+        0
+    };
+    (gp, fixed)
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+pub fn hw_counter_count() -> (usize, usize) {
+    (0, 0)
+}
+
+/// One-line summary of PMU counter availability for logs and reports.
+pub fn counter_summary() -> String {
+    let (gp, fixed) = hw_counter_count();
+    if gp == 0 && fixed == 0 {
+        format!("hw counters: unknown (non-x86 or CPUID 0x0A absent); sw counters: {SW_COUNTER_COUNT}")
+    } else {
+        format!(
+            "hw counters: {gp} GP + {fixed} fixed per logical CPU (CPUID 0x0A); sw counters: {SW_COUNTER_COUNT}"
+        )
+    }
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]

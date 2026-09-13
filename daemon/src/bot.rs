@@ -449,7 +449,7 @@ impl SharedBotState {
     /// previously ignored by the user or is already pending — in both cases
     /// the watcher should not re-alert.
     pub fn push_selinux(&mut self, raw: &str) -> Option<AvcDenial> {
-        let denial = selinux::parse_avc(self.next_selinux_id, raw);
+        let denial = selinux::parse(self.next_selinux_id, raw);
         let fp = selinux::fingerprint(&denial);
         if self.selinux_ignored.contains(&fp) {
             return None;
@@ -727,6 +727,10 @@ impl CommandBot {
             "/secureboot"     => self.cmd_secureboot(chat_id),
             "/battery"        => self.cmd_battery(chat_id),
             "/face"           => self.cmd_face(chat_id, text),
+            "/evidence"       => self.cmd_evidence(chat_id, text),
+            _ if text.trim().starts_with("/evidence ") => {
+                self.cmd_evidence(chat_id, text);
+            }
             _ if text.trim().starts_with("/llm ") => {
                 let rest = &text.trim()["/llm ".len()..];
                 self.cmd_llm(chat_id, rest);
@@ -3374,16 +3378,228 @@ PMU).";
                 self.state.lock().expect("bot state mutex").face_pending = 0;
                 let _ = self.send(chat_id, "Registro de rostro cancelado.");
             }
+            Some("keygen") => self.cmd_face_keygen(chat_id),
             _ => {
                 let _ = self.send(
                     chat_id,
                     "`/face register [N]` — enrol your face (send N photos)\n\
                      `/face status` — how many hashes are stored\n\
                      `/face forget` — delete every hash\n\
-                     `/face cancel` — cancel an enrolment in progress",
+                     `/face cancel` — cancel an enrolment in progress\n\
+                     `/face keygen` — generate P-521 + ML-KEM-1024 keypair for sealed ESP mirror",
                 );
             }
         }
+    }
+
+    /// `/face keygen` — generate a static P-521 ECDH + ML-KEM-1024 keypair.
+    ///
+    /// Public keys are written to `face.seal_pub_ecdh_path` /
+    /// `face.seal_pub_kem_path` (defaults if unset).
+    /// Private keys are written next to them with a `.priv` suffix at mode 0600.
+    /// The golden rule holds: no biometric data is touched here.
+    fn cmd_face_keygen(&self, chat_id: i64) {
+        use aws_lc_rs::{agreement, kem};
+        use aws_lc_rs::encoding::AsDer;
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+
+        let cfg = &self.config.face;
+
+        let ecdh_pub_path = if cfg.seal_pub_ecdh_path.is_empty() {
+            "/var/lib/sysentinel/face_seal_ecdh.pub".to_string()
+        } else {
+            cfg.seal_pub_ecdh_path.clone()
+        };
+        let kem_pub_path = if cfg.seal_pub_kem_path.is_empty() {
+            "/var/lib/sysentinel/face_seal_kem.pub".to_string()
+        } else {
+            cfg.seal_pub_kem_path.clone()
+        };
+        let ecdh_priv_path = format!("{ecdh_pub_path}.priv");
+        let kem_priv_path  = format!("{kem_pub_path}.priv");
+
+        // P-521 ECDH keypair
+        let ecdh_priv = match agreement::PrivateKey::generate(&agreement::ECDH_P521) {
+            Ok(k) => k,
+            Err(_) => {
+                let _ = self.send(chat_id, "keygen: P-521 key generation failed");
+                return;
+            }
+        };
+        let ecdh_pub = match ecdh_priv.compute_public_key() {
+            Ok(k) => k,
+            Err(_) => {
+                let _ = self.send(chat_id, "keygen: P-521 public key derivation failed");
+                return;
+            }
+        };
+        let ecdh_priv_bytes: Vec<u8> = {
+            use aws_lc_rs::encoding::EcPrivateKeyRfc5915Der;
+            let der: Result<EcPrivateKeyRfc5915Der<'static>, _> = AsDer::as_der(&ecdh_priv);
+            match der {
+                Ok(d) => d.as_ref().to_vec(),
+                Err(_) => {
+                    let _ = self.send(chat_id, "keygen: P-521 DER serialization failed");
+                    return;
+                }
+            }
+        };
+
+        // ML-KEM-1024 keypair
+        let kem_dec = match kem::DecapsulationKey::generate(&kem::ML_KEM_1024) {
+            Ok(k) => k,
+            Err(_) => {
+                let _ = self.send(chat_id, "keygen: ML-KEM-1024 key generation failed");
+                return;
+            }
+        };
+        let kem_enc = match kem_dec.encapsulation_key() {
+            Ok(k) => k,
+            Err(_) => {
+                let _ = self.send(chat_id, "keygen: ML-KEM-1024 encapsulation key failed");
+                return;
+            }
+        };
+        let kem_enc_bytes = match kem_enc.key_bytes() {
+            Ok(b) => b,
+            Err(_) => {
+                let _ = self.send(chat_id, "keygen: ML-KEM-1024 encap key bytes failed");
+                return;
+            }
+        };
+        let kem_dec_bytes = match kem_dec.key_bytes() {
+            Ok(b) => b,
+            Err(_) => {
+                let _ = self.send(chat_id, "keygen: ML-KEM-1024 decap key bytes failed");
+                return;
+            }
+        };
+
+        // Write public keys (world-readable is fine; they are public)
+        let write = |path: &str, data: &[u8]| -> std::io::Result<()> {
+            if let Some(parent) = std::path::Path::new(path).parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::write(path, data)
+        };
+        // Write private keys at mode 0600 (root-only)
+        let write_priv = |path: &str, data: &[u8]| -> std::io::Result<()> {
+            if let Some(parent) = std::path::Path::new(path).parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::write(path, data)?;
+            fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+        };
+
+        if let Err(e) = write(&ecdh_pub_path, ecdh_pub.as_ref()) {
+            let _ = self.send(chat_id, &format!("keygen: cannot write ECDH pub: {e}"));
+            return;
+        }
+        if let Err(e) = write_priv(&ecdh_priv_path, &ecdh_priv_bytes) {
+            let _ = self.send(chat_id, &format!("keygen: cannot write ECDH priv: {e}"));
+            return;
+        }
+        if let Err(e) = write(&kem_pub_path, kem_enc_bytes.as_ref()) {
+            let _ = self.send(chat_id, &format!("keygen: cannot write KEM pub: {e}"));
+            return;
+        }
+        if let Err(e) = write_priv(&kem_priv_path, kem_dec_bytes.as_ref()) {
+            let _ = self.send(chat_id, &format!("keygen: cannot write KEM priv: {e}"));
+            return;
+        }
+
+        let _ = self.send(
+            chat_id,
+            &format!(
+                "Keypair generated.\n\
+                 ECDH pub  `{ecdh_pub_path}` ({} B)\n\
+                 ECDH priv `{ecdh_priv_path}` (0600) — seal to TPM, then `shred -u`\n\
+                 KEM pub   `{kem_pub_path}` ({} B)\n\
+                 KEM priv  `{kem_priv_path}` (0600) — seal to TPM, then `shred -u`\n\n\
+                 Set `seal_pub_ecdh_path` and `seal_pub_kem_path` in config.toml to activate \
+                 the sealed ESP mirror.",
+                ecdh_pub.as_ref().len(),
+                kem_enc_bytes.as_ref().len(),
+            ),
+        );
+    }
+
+    /// `/evidence list` — return a JSON array of evidence files found in the
+    /// configured evidence directory, with per-file metadata (type, size,
+    /// mtime, PMU counter summary).
+    ///
+    /// The Android Multimedia screen sends this command and parses the response.
+    fn cmd_evidence(&self, chat_id: i64, text: &str) {
+        let rest = text.trim().strip_prefix("/evidence").unwrap_or("").trim();
+        let sub  = rest.split_whitespace().next().unwrap_or("list");
+        if sub != "list" {
+            let _ = self.send(chat_id, "`/evidence list` — list evidence files with metadata");
+            return;
+        }
+
+        let ev_dir = std::path::Path::new(&self.config.camera.evidence_dir);
+        let tsc    = crate::procinfo::tsc_status();
+        let pmu_summary = crate::pmu::counter_summary();
+
+        let entries = match std::fs::read_dir(ev_dir) {
+            Ok(rd) => rd,
+            Err(e) => {
+                let _ = self.send(
+                    chat_id,
+                    &format!("{{\"error\":\"cannot read evidence dir: {e}\"}}"),
+                );
+                return;
+            }
+        };
+
+        let mut items: Vec<String> = Vec::new();
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Some(name) = path.file_name().and_then(|n| n.to_str()) else { continue };
+            let Ok(meta) = entry.metadata() else { continue };
+            let size = meta.len();
+            let mtime = meta
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+
+            // Classify by extension
+            let ext  = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+            let kind = match ext.as_str() {
+                "jpg" | "jpeg" => "PHOTO",
+                "ogg" | "opus" => "AUDIO",
+                "mkv" | "mp4" | "webm" => "VIDEO",
+                _ => "OTHER",
+            };
+
+            // RDTSCP timestamp at read time (best available, not the file's ctime)
+            let rdtsc_now = crate::procinfo::read_rdtscp();
+            let ppm = if tsc.nominal_khz > 0 && tsc.measured_khz > 0.0 {
+                let drift = (tsc.measured_khz - tsc.nominal_khz as f64) / tsc.nominal_khz as f64;
+                (drift * 1_000_000.0).round() as i64
+            } else {
+                0
+            };
+
+            // Escape the path for JSON
+            let path_str = path.to_string_lossy().replace('\\', "\\\\").replace('"', "\\\"");
+
+            items.push(format!(
+                "{{\"name\":\"{name}\",\"type\":\"{kind}\",\"path\":\"{path_str}\",\
+                 \"size_bytes\":{size},\"mtime_unix\":{mtime},\
+                 \"rdtsc\":{rdtsc_now},\"tsc_ppm\":{ppm},\
+                 \"pmu_counters\":\"{pmu_summary}\"}}",
+            ));
+        }
+
+        // Sort by name for deterministic order
+        items.sort();
+
+        let json = format!("[{}]", items.join(","));
+        let _ = self.send(chat_id, &json);
     }
 
     /// Consume one photo sent while `/face register` is arming: hash it and

@@ -161,6 +161,11 @@ pub fn tsc_status() -> TscStatus {
     TscStatus { nominal_khz, measured_khz, stable }
 }
 
+/// Read the raw RDTSCP counter (u64). Returns 0 on non-x86_64.
+pub fn read_rdtscp() -> u64 {
+    read_tsc() as u64
+}
+
 /// Read the current TSC value via `rdtscp` (no sleeps).
 #[inline(never)]
 fn read_tsc() -> f64 {

@@ -128,6 +128,79 @@ fn read_and_delete(path: &Path) -> Option<BurstRecord> {
 //   sync
 //
 // The daemon (this module) consumes and deletes burst.json on the next boot.
+//
+// ── initramfs audio capture hook (OGG/Opus, max 60 s) ───────────────────────
+//
+// /etc/initramfs-tools/scripts/local-premount/sysentinel-audio-capture:
+//   #!/bin/sh
+//   # Capture ≤ 60 s of audio at the LUKS prompt.
+//   # LED is NOT turned on — no camera, no user-visible indicator.
+//   # Output: <ESP>/sysentinel/luks_audio_<timestamp>.ogg
+//   ESP=$(findmnt -n -o TARGET /boot/efi 2>/dev/null || echo /boot/efi)
+//   OUTDIR="$ESP/sysentinel"
+//   mkdir -p "$OUTDIR"
+//   TS=$(date +%Y%m%d_%H%M%S 2>/dev/null || echo 0)
+//   WAVTMP="/run/sysentinel-luks-audio.wav"
+//   OGGOUT="$OUTDIR/luks_audio_${TS}.ogg"
+//   # arecord: hw:0,0 at 16 kHz mono, max 60 seconds, written to a tmpfs file
+//   # so nothing touches the encrypted disk.  opusenc/oggenc encodes to OGG.
+//   arecord -q -D default -f S16_LE -r 16000 -c 1 -d 60 "$WAVTMP" 2>/dev/null &
+//   ARECORD_PID=$!
+//   # The recording stops automatically after 60 s, or when this script exits
+//   # (cryptsetup succeeds and pivots root).  Either way we encode what we have.
+//   wait $ARECORD_PID 2>/dev/null || true
+//   if [ -s "$WAVTMP" ]; then
+//     # Prefer opusenc (opus-tools); fall back to oggenc (vorbis-tools).
+//     if command -v opusenc >/dev/null 2>&1; then
+//       opusenc --bitrate 24 --quiet "$WAVTMP" "$OGGOUT" 2>/dev/null || true
+//     elif command -v oggenc >/dev/null 2>&1; then
+//       oggenc -q 2 -o "$OGGOUT" "$WAVTMP" 2>/dev/null || true
+//     else
+//       cp "$WAVTMP" "$OUTDIR/luks_audio_${TS}.wav" 2>/dev/null || true
+//     fi
+//     rm -f "$WAVTMP"
+//     sync
+//   fi
+//
+// ── initramfs video capture hook (MKV/H.264, no webcam LED) ─────────────────
+//
+// /etc/initramfs-tools/scripts/local-premount/sysentinel-video-capture:
+//   #!/bin/sh
+//   # Capture video at the LUKS prompt without turning on the webcam LED.
+//   # Uses v4l2-ctl to set exposure then ffmpeg to record; the LED is left OFF
+//   # because we never call V4L2_CID_EXPOSURE_AUTO_PRIORITY, the firmware
+//   # only lights the LED once streaming starts via VIDIOC_STREAMON — and we
+//   # use a raw frame grab (VIDIOC_DQBUF + mmap) rather than streaming.
+//   # sysentinel-cam (ramdisk crate) does exactly this; we delegate to it here.
+//   ESP=$(findmnt -n -o TARGET /boot/efi 2>/dev/null || echo /boot/efi)
+//   OUTDIR="$ESP/sysentinel"
+//   mkdir -p "$OUTDIR"
+//   TS=$(date +%Y%m%d_%H%M%S 2>/dev/null || echo 0)
+//   CAM=/usr/libexec/sysentinel-cam
+//   if [ -x "$CAM" ]; then
+//     # sysentinel-cam grabs one JPEG without triggering the LED.
+//     "$CAM" --out "$OUTDIR/luks_cam_${TS}.jpg" --width 640 --height 480 \
+//            --timeout 5 2>/dev/null || true
+//   fi
+//   # For longer video (30 s), use ffmpeg with /dev/video0 if present.
+//   # The LED WILL light during ffmpeg capture (streaming API) — omit this block
+//   # if a no-LED capture is required; the JPEG above is the LED-free path.
+//   # if [ -e /dev/video0 ] && command -v ffmpeg >/dev/null 2>&1; then
+//   #   ffmpeg -y -f v4l2 -input_format mjpeg -video_size 640x480 \
+//   #          -i /dev/video0 -t 30 -c copy \
+//   #          "$OUTDIR/luks_video_${TS}.mkv" 2>/dev/null &
+//   #   VIDEO_PID=$!
+//   #   # Stop when LUKS succeeds (this script exits before pivot).
+//   #   wait $VIDEO_PID 2>/dev/null || true
+//   #   sync
+//   # fi
+//
+// Setup: install both hooks from scripts/setup.sh with:
+//   install -m 755 hooks/sysentinel-audio-capture \
+//     /etc/initramfs-tools/scripts/local-premount/
+//   install -m 755 hooks/sysentinel-video-capture \
+//     /etc/initramfs-tools/scripts/local-premount/
+//   update-initramfs -u
 
 #[cfg(test)]
 mod tests {

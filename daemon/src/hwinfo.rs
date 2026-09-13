@@ -300,6 +300,7 @@ pub fn hardware_report() -> String {
         tsc.nominal_khz / 1000,
         if tsc.stable { "stable" } else { "⚠ drifting/unstable" }
     ));
+    out.push_str(&format!("  pmu: {}\n", crate::pmu::counter_summary()));
 
     let gpus = gpu_info();
     out.push_str("\n🎨 *GPU*\n");
