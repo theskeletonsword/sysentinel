@@ -338,33 +338,15 @@ fun MultimediaScreen(
     val selected   = remember { mutableStateListOf<LocalMediaItem>() }
 
     LaunchedEffect(Unit) {
-        scope.launch(Dispatchers.IO) {
-            try {
-                var reply = ""
-                val oneShot = object : ChatEngine.Listener {
-                    override fun onMessages(msgs: List<Message>) {
-                        reply = msgs.lastOrNull()?.text.orEmpty()
-                    }
-                    override fun onStatus(text: String, ok: Boolean) = Unit
-                }
-                engine.send("/evidence list", oneShot)
-                delay(3_000)
-                withContext(Dispatchers.Main) {
-                    loading = false
-                    if (reply.startsWith("[") || reply.startsWith("{")) {
-                        val parsed = parseEvidenceList(
-                            if (reply.startsWith("[")) reply else "[$reply]"
-                        )
-                        evidenceItems.addAll(parsed.map { LocalMediaItem.Evidence(it) })
-                    } else if (reply.isNotBlank()) {
-                        errorMsg = reply
-                    }
-                }
-            } catch (e: Exception) {
-                withContext(Dispatchers.Main) {
-                    loading = false
-                    errorMsg = e.message ?: "unknown error"
-                }
+        engine.sendSilent("/evidence list") { reply ->
+            loading = false
+            if (reply.startsWith("[") || reply.startsWith("{")) {
+                val parsed = parseEvidenceList(
+                    if (reply.startsWith("[")) reply else "[$reply]"
+                )
+                evidenceItems.addAll(parsed.map { LocalMediaItem.Evidence(it) })
+            } else if (reply.isNotBlank() && reply != "No evidence files yet.") {
+                errorMsg = reply
             }
         }
     }

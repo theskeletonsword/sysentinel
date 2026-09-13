@@ -3677,7 +3677,11 @@ PMU).";
         }
 
         items.sort();
-        let _ = self.send(chat_id, &format!("[{}]", items.join(",")));
+        if items.is_empty() {
+            let _ = self.send(chat_id, "No evidence files yet.");
+        } else {
+            let _ = self.send(chat_id, &format!("[{}]", items.join(",")));
+        }
     }
 
     /// Consume one photo sent while `/face register` is arming: hash it and

@@ -87,6 +87,31 @@ class ChatEngine(
         }
     }
 
+    /**
+     * Send a command and capture its response WITHOUT showing it in the chat.
+     *
+     * The daemon's command handlers run synchronously before returning Ok, so
+     * calling fetch() right after say() is guaranteed to pick up the response.
+     * The caller gets the raw reply text; the main chat stream never sees it.
+     */
+    fun sendSilent(text: String, onReply: (String) -> Unit) {
+        val l = link ?: return
+        io.execute {
+            try {
+                l.say(text)
+                val replies = l.fetch()
+                val replyText = replies.lastOrNull()?.text.orEmpty()
+                if (replies.isNotEmpty()) {
+                    val highest = l.highestId(replies)
+                    if (highest > 0) { l.acknowledge(highest); pairing.lastAckedId = highest }
+                }
+                main.post { onReply(replyText) }
+            } catch (_: Exception) {
+                main.post { onReply("") }
+            }
+        }
+    }
+
     fun send(text: String, listener: Listener) {
         val l = link ?: run {
             listener.onStatus(ctx.getString(R.string.state_offline_send), false)
