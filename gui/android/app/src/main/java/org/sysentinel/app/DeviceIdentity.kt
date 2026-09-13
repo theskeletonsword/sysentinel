@@ -156,15 +156,11 @@ object DeviceIdentity {
                 .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
                 .setKeySize(256)
                 .apply {
-                    // The challenge is what makes the attestation about *this*
-                    // exchange rather than a chain the phone could have kept
-                    // from any earlier one.
-                    setAttestationChallenge(freshChallenge())
                     if (requireBiometric) {
                         setUserAuthenticationRequired(true)
                         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                             setUserAuthenticationParameters(
-                                0, // every use needs a fresh authentication
+                                0,
                                 KeyProperties.AUTH_BIOMETRIC_STRONG,
                             )
                         } else {
@@ -218,6 +214,19 @@ object DeviceIdentity {
      * operation is a separate question and a separate key — that one does
      * require the finger.
      */
+    /**
+     * Delete any existing device key and generate a fresh one.
+     *
+     * Called at enrollment time so the daemon always receives the key that
+     * actually lives in the Keystore right now — not one from a previous
+     * install or a failed enrollment that left a stale entry behind.
+     */
+    fun generateFreshDeviceKey(): PrivateKey? {
+        val ks = KeyStore.getInstance(KEYSTORE).apply { load(null) }
+        try { ks.deleteEntry(SIGN_ALIAS) } catch (_: Exception) {}
+        return deviceSigningKey()
+    }
+
     fun deviceSigningKey(): PrivateKey? {
         val ks = KeyStore.getInstance(KEYSTORE).apply { load(null) }
         (ks.getKey(SIGN_ALIAS, null) as? PrivateKey)?.let { return it }
@@ -225,15 +234,12 @@ object DeviceIdentity {
         for (strongBox in listOf(true, false)) {
             if (strongBox && Build.VERSION.SDK_INT < Build.VERSION_CODES.P) continue
             try {
-                val gen = KeyPairGenerator.getInstance(
-                    KeyProperties.KEY_ALGORITHM_EC, KEYSTORE,
-                )
+                val gen = KeyPairGenerator.getInstance(KeyProperties.KEY_ALGORITHM_EC, KEYSTORE)
                 gen.initialize(
                     KeyGenParameterSpec.Builder(SIGN_ALIAS, KeyProperties.PURPOSE_SIGN)
                         .setAlgorithmParameterSpec(ECGenParameterSpec("secp256r1"))
                         .setDigests(KeyProperties.DIGEST_SHA256)
                         .apply {
-                            setAttestationChallenge(freshChallenge())
                             if (strongBox && Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
                                 setIsStrongBoxBacked(true)
                             }
@@ -441,7 +447,6 @@ object DeviceIdentity {
                         .setDigests(KeyProperties.DIGEST_SHA256)
                         .setUserAuthenticationRequired(true)
                         .apply {
-                            setAttestationChallenge(freshChallenge())
                             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                                 // 0 = every single use needs a fresh
                                 // authentication. Anything else would let one

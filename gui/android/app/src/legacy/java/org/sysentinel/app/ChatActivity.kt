@@ -4,14 +4,13 @@ package org.sysentinel.app
 import android.os.Bundle
 import android.text.method.LinkMovementMethod
 import android.view.View
-import android.widget.TextView
-import androidx.core.text.HtmlCompat
 import android.view.ViewGroup
 import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.EditText
 import android.widget.ListView
 import android.widget.TextView
+import androidx.core.text.HtmlCompat
 import androidx.appcompat.app.AppCompatActivity
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -67,6 +66,8 @@ class ChatActivity : AppCompatActivity() {
         val identity = DeviceIdentity.ensureKey()
         pairing = Pairing(this)
         engine = ChatEngine(this, pairing, BuildConfig.VERSION_NAME)
+        AlertService.ensureChannels(this)
+        if (pairing.isPaired) AlertService.start(this)
 
         identityView = findViewById(R.id.identity)
         statusPrefix = describe(identity)
@@ -195,12 +196,14 @@ class ChatActivity : AppCompatActivity() {
 
     override fun onStart() {
         super.onStart()
+        AlertService.appInForeground = true
         engine.start(listener)
     }
 
     override fun onStop() {
-        super.onStop()
+        AlertService.appInForeground = false
         engine.stop()
+        super.onStop()
     }
 
     /** Says what this handset can prove, in the same words the modern one uses. */

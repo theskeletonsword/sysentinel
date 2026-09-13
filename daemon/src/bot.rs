@@ -575,6 +575,7 @@ impl CommandBot {
                 Some(guard.llm_model.clone())
             },
             models_by_provider: guard.llm_models.clone(),
+            api_key_overrides: guard.api_key_overrides.clone(),
         }
     }
 
@@ -716,6 +717,10 @@ impl CommandBot {
             "/models"         => self.cmd_models(chat_id, ""),
             "/resetcontext"   => self.cmd_reset_context(chat_id),
             "/unpair"         => self.cmd_unpair(chat_id, username),
+            _ if text.trim().starts_with("/apikey ") => {
+                let rest = &text.trim()["/apikey ".len()..];
+                self.cmd_apikey(chat_id, rest);
+            }
             "/pair"           => self.cmd_pair(chat_id),
             "/definehome"     => self.cmd_definehome(chat_id, ""),
             "/detecthome"     => self.cmd_definehome(chat_id, ""),
@@ -2861,6 +2866,75 @@ PMU).";
         }
     }
 
+    /// `/apikey <provider> <key>` — set an API key live, persisted to settings.
+    ///
+    /// Wins over `[llm.<provider>].api_key` in config.toml without touching
+    /// that file. Rebuilds the LLM chain immediately so the new key is active
+    /// on the next message. `/apikey <provider> clear` removes the override
+    /// and falls back to config.
+    fn cmd_apikey(&self, chat_id: i64, rest: &str) {
+        let mut it = rest.splitn(2, |c: char| c.is_whitespace());
+        let provider = it.next().unwrap_or("").trim().to_lowercase();
+        let key      = it.next().unwrap_or("").trim().to_string();
+
+        if provider.is_empty() || key.is_empty() {
+            let _ = self.send(chat_id,
+                "Usage: `/apikey <provider> <key>` — providers: openai, deepseek, anthropic, gemini\n\
+                 To remove an override: `/apikey <provider> clear`");
+            return;
+        }
+        if !llm::PROVIDER_NAMES.contains(&provider.as_str()) && provider != "none" {
+            let _ = self.send(chat_id,
+                &format!("❌ Unknown provider `{provider}`. Known: {}", llm::PROVIDER_NAMES.join(", ")));
+            return;
+        }
+
+        {
+            let mut guard = self.settings.lock().expect("settings mutex");
+            if key == "clear" {
+                guard.api_key_overrides.remove(&provider);
+            } else {
+                guard.api_key_overrides.insert(provider.clone(), key.clone());
+            }
+            let path = std::path::Path::new(&self.config.general.settings_file);
+            if let Err(e) = guard.save(path) {
+                log::error!("failed to persist apikey override: {e:#}");
+            }
+        }
+
+        let prefs = self.llm_prefs();
+        let guard = self.settings.lock().expect("settings mutex");
+        let chain_names: Vec<String> = if !guard.llm_backends.is_empty() {
+            guard.llm_backends.clone()
+        } else if !guard.llm_provider.is_empty() {
+            vec![guard.llm_provider.clone()]
+        } else {
+            self.config.llm.backend.clone()
+        };
+        drop(guard);
+
+        match llm::build_chain(&self.config, &chain_names, &prefs) {
+            Ok(b) => {
+                self.llm.swap(b);
+                if key == "clear" {
+                    let _ = self.send(chat_id,
+                        &format!("🔑 API key override for `{provider}` cleared — back to config.toml."));
+                } else {
+                    let masked = if key.len() > 8 {
+                        format!("{}…{}", &key[..4], &key[key.len()-4..])
+                    } else {
+                        "•".repeat(key.len())
+                    };
+                    let _ = self.send(chat_id,
+                        &format!("🔑 `{provider}` key set ({masked}) and chain rebuilt. Try a message."));
+                }
+            }
+            Err(e) => {
+                let _ = self.send(chat_id, &format!("⚠️ Key saved but chain rebuild failed: {e}"));
+            }
+        }
+    }
+
     fn cmd_unpair(&self, chat_id: i64, _username: &str) {
         let path = crate::phonehome::profile_path(&self.config.phone.queue_path);
         match std::fs::remove_file(&path) {
@@ -3550,11 +3624,12 @@ PMU).";
 
         let entries = match std::fs::read_dir(ev_dir) {
             Ok(rd) => rd,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                let _ = self.send(chat_id, "No evidence files yet.");
+                return;
+            }
             Err(e) => {
-                let _ = self.send(
-                    chat_id,
-                    &format!("{{\"error\":\"cannot read evidence dir: {}\"}}", e),
-                );
+                let _ = self.send(chat_id, &format!("Cannot read evidence directory: {e}"));
                 return;
             }
         };

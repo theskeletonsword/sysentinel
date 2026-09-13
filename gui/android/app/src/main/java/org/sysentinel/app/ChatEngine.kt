@@ -195,6 +195,12 @@ class ChatEngine(
      */
     fun definePhone(listener: Listener, onResult: (String) -> Unit) {
         io.execute {
+            // Enrollment: delete any stale device key and generate a fresh one
+            // before opening the connection. The daemon receives the key that
+            // actually lives in the Keystore right now, never a leftover from a
+            // previous install or a failed enrollment.
+            DeviceIdentity.generateFreshDeviceKey()
+
             val verdict = try {
                 if (!pairing.isPaired) {
                     ctx.getString(R.string.state_unpaired)

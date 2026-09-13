@@ -123,6 +123,11 @@ pub struct Settings {
     /// use the default builder. Cleared with `/systemprompt clear`.
     #[serde(default)]
     pub system_prompt_override: Option<String>,
+    /// API key overrides set live via `/apikey <provider> <key>` (persisted).
+    /// Win over the `[llm.<provider>]` api_key from config.toml so the owner
+    /// does not have to edit the daemon's config file from the phone.
+    #[serde(default)]
+    pub api_key_overrides: std::collections::HashMap<String, String>,
 }
 
 fn default_true()  -> bool { true }
@@ -168,6 +173,7 @@ impl Default for Settings {
             llm_model: String::new(),
             llm_models: std::collections::HashMap::new(),
             system_prompt_override: None,
+            api_key_overrides: std::collections::HashMap::new(),
         }
     }
 }

@@ -1391,13 +1391,38 @@ fn identify_handset(
             }
         }
         PhoneVerdict::DifferentDevice => {
-            log::error!(
-                "phone: a DIFFERENT handset answered with a valid pairing key — \
-                 the pairing secret may have been copied"
+            // The caller proved possession of both the pairing key (AES-GCM
+            // channel is authenticated at the frame level) and the NEW device
+            // private key (signature above verified). This is explicit
+            // re-enrollment — the owner regenerated their device key (app
+            // reinstall, Keystore reset, etc.) and is identifying the new one.
+            // Accept it, log prominently, and let the audit trail speak.
+            log::warn!(
+                "phone: re-enrollment — a new device key has replaced the previous \
+                 one. The owner regenerated it (reinstall / Keystore reset). \
+                 If you did not do this, revoke the pairing key with /unpair."
             );
-            ToPhone::Identity {
-                verdict: "different_device".to_string(),
-                detail: PhoneVerdict::DifferentDevice.describe().to_string(),
+            let attested = phonehome::verify_attestation(attestation);
+            let profile = phonehome::PhoneProfile {
+                public_key_der: public_key.to_vec(),
+                claimed_backing: backing.to_string(),
+                attestation_verified: attested.verified,
+                model: model.to_string(),
+                manufacturer: manufacturer.to_string(),
+                paired_at_unix: now_unix(),
+                signing_proven: false,
+                attestation: attestation.to_vec(),
+                attested_security_level: attested.level,
+            };
+            let detail = profile.describe();
+            match phonehome::save(profile_path, &profile) {
+                Ok(()) => {
+                    log::warn!("phone: HOME HANDSET RE-ENROLLED — {detail}");
+                    ToPhone::Identity { verdict: "paired".to_string(), detail }
+                }
+                Err(e) => ToPhone::Error {
+                    message: format!("I could not save the re-enrolled phone profile: {e}"),
+                },
             }
         }
     }

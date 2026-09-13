@@ -177,6 +177,9 @@ pub struct RuntimePrefs {
     /// the daemon falls through to the next provider. Empty map = use the
     /// single `model` / `[llm].model`.
     pub models_by_provider: std::collections::HashMap<String, Vec<String>>,
+    /// API key overrides from `/apikey <provider> <key>` (via settings.json).
+    /// When present, win over `[llm.<provider>].api_key` in config.toml.
+    pub api_key_overrides: std::collections::HashMap<String, String>,
 }
 
 
@@ -197,6 +200,16 @@ pub fn build_named(
     // API-only vision models (e.g. `deepseek-v4-flash-vision-exp`) are reached.
     let model: &str = prefs.model.as_deref().unwrap_or(&config.llm.model);
 
+    // Apply any live API key override for a provider: clone the ProviderConfig
+    // and swap the key, so the config.toml is never mutated on disk here.
+    let with_key = |p: &crate::config::ProviderConfig, provider: &str| -> crate::config::ProviderConfig {
+        if let Some(k) = prefs.api_key_overrides.get(provider) {
+            crate::config::ProviderConfig { api_key: k.clone(), base_url: p.base_url.clone() }
+        } else {
+            p.clone()
+        }
+    };
+
     let build_one =
         |config: &Config, name: &str, model: &str, prefs: &RuntimePrefs| -> Result<Box<dyn LlmBackend + Send + Sync>> {
             let llm: &LlmConfig = &config.llm;
@@ -207,8 +220,9 @@ pub fn build_named(
                     let p = llm.openai.as_ref().ok_or_else(|| {
                         anyhow::anyhow!("[llm.openai] section is missing in the config")
                     })?;
+                    let p = with_key(p, "openai");
                     Box::new(openai::OpenAiBackend::new(
-                        p,
+                        &p,
                         model,
                         llm.max_tokens,
                         llm.timeout(),
@@ -219,8 +233,9 @@ pub fn build_named(
                     let p = llm.anthropic.as_ref().ok_or_else(|| {
                         anyhow::anyhow!("[llm.anthropic] section is missing in the config")
                     })?;
+                    let p = with_key(p, "anthropic");
                     Box::new(anthropic::AnthropicBackend::new(
-                        p,
+                        &p,
                         model,
                         llm.max_tokens,
                         llm.timeout(),
@@ -231,8 +246,9 @@ pub fn build_named(
                     let p = llm.deepseek.as_ref().ok_or_else(|| {
                         anyhow::anyhow!("[llm.deepseek] section is missing in the config")
                     })?;
+                    let p = with_key(p, "deepseek");
                     Box::new(deepseek::DeepSeekBackend::new(
-                        p,
+                        &p,
                         model,
                         llm.max_tokens,
                         llm.timeout(),
@@ -243,8 +259,9 @@ pub fn build_named(
                     let p = llm.gemini.as_ref().ok_or_else(|| {
                         anyhow::anyhow!("[llm.gemini] section is missing in the config")
                     })?;
+                    let p = with_key(p, "gemini");
                     Box::new(gemini::GeminiBackend::new(
-                        p,
+                        &p,
                         model,
                         llm.max_tokens,
                         llm.timeout(),

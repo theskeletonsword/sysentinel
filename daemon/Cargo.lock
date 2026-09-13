@@ -1379,6 +1379,7 @@ dependencies = [
  "argon2",
  "asn1-rs",
  "aws-lc-rs",
+ "base64",
  "chrono",
  "clap",
  "env_logger",

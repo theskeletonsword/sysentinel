@@ -133,6 +133,52 @@ object Confirmation {
      * @param onDone runs on cancel or failure with a message (empty on a plain
      *        cancel, so the UI can stay quiet about a decision the owner made).
      */
+    /**
+     * Biometric gate with NO CryptoObject — just "prove you are present".
+     *
+     * Used for enrollment actions (phone registration, etc.) where we need
+     * to confirm the owner is present but don't yet have a key to tie the
+     * auth to. More compatible than [gate]: works even before any Keystore
+     * key has been created, so it never deadlocks on devices that struggle
+     * with key generation.
+     */
+    fun enrollGate(
+        activity: FragmentActivity,
+        title: String,
+        subtitle: String,
+        onSuccess: () -> Unit,
+        onDone: (message: String) -> Unit,
+    ) {
+        val executor: Executor = androidx.core.content.ContextCompat.getMainExecutor(activity)
+        val prompt = BiometricPrompt(
+            activity,
+            executor,
+            object : BiometricPrompt.AuthenticationCallback() {
+                override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
+                    onSuccess()
+                }
+                override fun onAuthenticationError(code: Int, msg: CharSequence) {
+                    onDone(
+                        if (code == BiometricPrompt.ERROR_USER_CANCELED ||
+                            code == BiometricPrompt.ERROR_NEGATIVE_BUTTON
+                        ) "" else activity.getString(R.string.confirm_biometric_failed, msg)
+                    )
+                }
+                override fun onAuthenticationFailed() {}
+            },
+        )
+        prompt.authenticate(
+            BiometricPrompt.PromptInfo.Builder()
+                .setTitle(title)
+                .setSubtitle(subtitle)
+                .setNegativeButtonText(activity.getString(R.string.confirm_cancel))
+                .setAllowedAuthenticators(
+                    androidx.biometric.BiometricManager.Authenticators.BIOMETRIC_STRONG
+                )
+                .build(),
+        )
+    }
+
     fun gate(
         activity: FragmentActivity,
         onSuccess: () -> Unit,

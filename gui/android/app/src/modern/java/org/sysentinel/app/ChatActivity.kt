@@ -71,8 +71,6 @@ class ChatActivity : FragmentActivity() {
     private lateinit var engine: ChatEngine
     private lateinit var pairing: Pairing
 
-    // Force the chosen UI language (English by default) regardless of the phone's
-    // own locale — see LocaleManager.
     override fun attachBaseContext(newBase: Context) {
         super.attachBaseContext(LocaleManager.wrap(newBase))
     }
@@ -84,14 +82,25 @@ class ChatActivity : FragmentActivity() {
         pairing = Pairing(this)
         engine = ChatEngine(this, pairing, BuildConfig.VERSION_NAME)
         AlertService.ensureChannels(this)
-        // If the owner had notifications on, resume the poller on launch.
-        if (AppPrefs(this).notificationsEnabled && pairing.isPaired) AlertService.start(this)
+        // Always run the background service when paired so messages arrive even
+        // when the app is closed. Notifications are a separate opt-in.
+        if (pairing.isPaired) AlertService.start(this)
 
         setContent {
             MaterialTheme(colorScheme = darkColorScheme(primary = Accent)) {
                 AppRoot(identity, engine, pairing)
             }
         }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        AlertService.appInForeground = true
+    }
+
+    override fun onStop() {
+        AlertService.appInForeground = false
+        super.onStop()
     }
 
     override fun onDestroy() {
@@ -121,7 +130,8 @@ private fun AppRoot(
     var statusOk by remember { mutableStateOf(false) }
     var showPairing by remember { mutableStateOf(!pairing.isPaired) }
     var screen by remember { mutableStateOf(Screen.CHAT) }
-    val messages = remember { mutableStateListOf<Message>() }
+    val history = remember(ctx) { MessageHistory(ctx) }
+    val messages = remember { mutableStateListOf<Message>().apply { addAll(history.load()) } }
     val listState = rememberLazyListState()
     val activity = ctx as? FragmentActivity
     var pending by remember { mutableStateOf<Message?>(null) }
@@ -137,8 +147,12 @@ private fun AppRoot(
     val listener = remember {
         object : ChatEngine.Listener {
             override fun onMessages(m: List<Message>) {
-                messages.addAll(m)
-                m.lastOrNull { it.confirmNonce != null }?.let { pending = it }
+                // Deduplicate against what AlertService may have already saved to
+                // history and loaded at startup: same serverId means same message.
+                val knownIds = messages.mapNotNullTo(HashSet()) { it.serverId.takeIf { id -> id > 0L } }
+                val fresh = m.filter { it.serverId == 0L || it.serverId !in knownIds }
+                messages.addAll(fresh)
+                fresh.lastOrNull { it.confirmNonce != null }?.let { pending = it }
             }
             override fun onStatus(text: String, ok: Boolean) {
                 status = text; statusOk = ok
@@ -156,6 +170,7 @@ private fun AppRoot(
         }
     }
     LaunchedEffect(messages.size) {
+        history.save(messages.toList())
         if (messages.isNotEmpty()) listState.animateScrollToItem(messages.lastIndex)
     }
 
@@ -222,6 +237,7 @@ private fun AppRoot(
         // /resetcontext: daemon clears its context window; we also clear the local chat.
         if (cmd.trimStart().startsWith("/resetcontext")) {
             messages.clear()
+            history.clear()
         }
     }
 
@@ -347,7 +363,7 @@ private fun AppRoot(
                         onCommand = { runCommand(it) },
                         onOpenApiKeys = { screen = Screen.APIKEYS },
                     )
-                    Screen.APIKEYS -> ApiKeysScreen()
+                    Screen.APIKEYS -> ApiKeysScreen(onCommand = { runCommand(it) })
                     Screen.PERSONA -> PersonaScreen(onCommand = { runCommand(it) })
                     Screen.OWNERSHIP -> OwnershipScreen(engine, listener) { runCommand(it) }
                     Screen.NOTIFICATIONS -> NotificationsScreen(pairing)
@@ -539,7 +555,7 @@ private fun ProviderScreen(onCommand: (String) -> Unit, onOpenApiKeys: () -> Uni
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun ApiKeysScreen() {
+private fun ApiKeysScreen(onCommand: (String) -> Unit = {}) {
     val ctx = LocalContext.current
     val store = remember { ApiKeys(ctx) }
     var keys by remember { mutableStateOf(store.list()) }
@@ -717,6 +733,9 @@ private fun ApiKeysScreen() {
                         store.save(alias, provider, key)
                         keys = store.list()
                         editorOpen = false
+                        // Push the key to the daemon so it's active immediately,
+                        // without the user having to edit config.toml on the PC.
+                        onCommand("/apikey ${provider.lowercase()} $key")
                     },
                 ) { Text(stringResource(R.string.apikeys_save)) }
             },
@@ -898,6 +917,7 @@ private fun PairingScreen(pairing: Pairing, onDone: () -> Unit) {
     var scanError by remember { mutableStateOf<String?>(null) }
     val ctx = LocalContext.current
     val keyLooksRight = PhoneLink.parseKey(key) != null
+    val pinLooksRight = certPin.startsWith("sha256/") && certPin.length > 7
 
     val scanner = rememberLauncherForActivityResult(ScanContract()) { result ->
         val raw = result.contents
@@ -953,6 +973,19 @@ private fun PairingScreen(pairing: Pairing, onDone: () -> Unit) {
                 )
             },
         )
+        OutlinedTextField(
+            value = certPin, onValueChange = { certPin = it.trim() },
+            label = { Text(stringResource(R.string.pair_cert_pin)) },
+            placeholder = { Text("sha256/…", color = Muted) },
+            singleLine = true,
+            supportingText = {
+                Text(
+                    if (pinLooksRight) stringResource(R.string.pair_cert_pin_ok)
+                    else stringResource(R.string.pair_cert_pin_hint),
+                    color = if (pinLooksRight) Color(0xFF4ADE80) else Muted,
+                )
+            },
+        )
         Button(
             onClick = {
                 pairing.host = host
@@ -961,7 +994,7 @@ private fun PairingScreen(pairing: Pairing, onDone: () -> Unit) {
                 pairing.certPin = certPin
                 onDone()
             },
-            enabled = keyLooksRight && host.isNotBlank() && certPin.isNotBlank(),
+            enabled = keyLooksRight && host.isNotBlank() && pinLooksRight,
         ) { Text(stringResource(R.string.pair_save)) }
     }
 }
@@ -1216,14 +1249,24 @@ private fun OwnershipScreen(
         Divider(color = Theirs)
         Button(
             onClick = {
+                val act = activity ?: return@Button
                 defineWorking = true
                 defineNote = null
-                // The whole exchange runs on the engine's background thread;
-                // the verdict is the daemon's text, shown verbatim.
-                engine.definePhone(listener) { verdict ->
-                    defineWorking = false
-                    defineNote = verdict
-                }
+                Confirmation.enrollGate(
+                    activity = act,
+                    title = ctx.getString(R.string.own_definephone_gate_title),
+                    subtitle = ctx.getString(R.string.own_definephone_gate_subtitle),
+                    onSuccess = {
+                        engine.definePhone(listener) { verdict ->
+                            defineWorking = false
+                            defineNote = verdict
+                        }
+                    },
+                    onDone = { msg ->
+                        defineWorking = false
+                        if (msg.isNotEmpty()) defineNote = msg
+                    },
+                )
             },
             enabled = !defineWorking,
             modifier = Modifier.fillMaxWidth(),

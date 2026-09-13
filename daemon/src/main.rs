@@ -193,6 +193,10 @@ fn main() -> Result<()> {
     let min_severity = Severity::from_str_name(&config.general.min_severity)
         .context("general.min_severity is not a recognised severity name")?;
 
+    // Ensure the evidence directory exists so the camera and evidence commands
+    // never fail with "No such file or directory" on a fresh install.
+    let _ = std::fs::create_dir_all(&config.camera.evidence_dir);
+
     // Shared state: pending decisions, recent alerts, the kmsg ring.
     let shared_state: Arc<Mutex<SharedBotState>> = Arc::new(Mutex::new(SharedBotState::new(None)));
 
@@ -216,6 +220,7 @@ fn main() -> Result<()> {
             local_model: if s.local_model.is_empty() { None } else { Some(s.local_model.clone()) },
             model:       if s.llm_model.is_empty() { None } else { Some(s.llm_model.clone()) },
             models_by_provider: s.llm_models.clone(),
+            api_key_overrides: s.api_key_overrides.clone(),
         }
     };
     let llm_backend = Arc::new(llm::RuntimeLlm::new(
