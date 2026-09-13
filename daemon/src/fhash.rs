@@ -206,6 +206,90 @@ impl FaceStore {
             }
         }
     }
+
+    /// Same as `mirror_to_esp` but writes a sealed `faces.enc` envelope instead
+    /// of `faces.json` in cleartext.  The JSON is the plaintext inside the
+    /// hybrid envelope (P-521 ECDH + ML-KEM-1024 + AES-256-GCM / ChaCha20).
+    ///
+    /// Requires the machine's static P-521 public key and ML-KEM-1024
+    /// encapsulation key, read from the paths in `FaceConfig`.  If those paths
+    /// are missing or unreadable, falls back to `mirror_to_esp` (cleartext) and
+    /// logs a warning so the operator knows the biometric data is not sealed.
+    pub fn mirror_to_esp_sealed(&self, cfg: &crate::config::FaceConfig) {
+        // Read the machine's static public keys.
+        let pub_ecdh = if cfg.seal_pub_ecdh_path.is_empty() {
+            None
+        } else {
+            std::fs::read(&cfg.seal_pub_ecdh_path).ok()
+        };
+        let pub_kem_bytes = if cfg.seal_pub_kem_path.is_empty() {
+            None
+        } else {
+            std::fs::read(&cfg.seal_pub_kem_path).ok()
+        };
+
+        let (Some(ecdh_bytes), Some(kem_bytes)) = (pub_ecdh, pub_kem_bytes) else {
+            log::warn!(
+                "face: seal keys not configured or unreadable — \
+                 falling back to cleartext ESP mirror (set seal_pub_ecdh_path \
+                 and seal_pub_kem_path in [face])"
+            );
+            self.mirror_to_esp();
+            return;
+        };
+
+        // Parse the ML-KEM-1024 encapsulation key.
+        let enc_key = match aws_lc_rs::kem::EncapsulationKey::new(
+            &aws_lc_rs::kem::ML_KEM_1024,
+            &kem_bytes,
+        ) {
+            Ok(k) => k,
+            Err(e) => {
+                log::error!("face: ML-KEM encapsulation key rejected ({e:?}) — cleartext fallback");
+                self.mirror_to_esp();
+                return;
+            }
+        };
+
+        let payload = self.esp_db().into_bytes();
+        let envelope = match crate::faceseal::seal(&ecdh_bytes, &enc_key, &payload) {
+            Ok(e) => e,
+            Err(e) => {
+                log::error!("face: seal failed ({e}) — cleartext fallback");
+                self.mirror_to_esp();
+                return;
+            }
+        };
+        let blob = envelope.to_bytes();
+
+        let targets = crate::esp::mount_points();
+        if targets.is_empty() {
+            log::debug!("face: no ESP to mirror to");
+            return;
+        }
+        log::info!(
+            "face: mirroring sealed ESP identity DB ({} templates, {} B) to {} ESP(s)",
+            self.entries.iter().filter(|e| e.embedding.is_some()).count(),
+            blob.len(),
+            targets.len()
+        );
+        let mounted_ro = read_only_mounts();
+        for mnt in &targets {
+            let key = mnt.display().to_string();
+            let ro = mounted_ro.contains(&key);
+            if ro {
+                let _ = std::process::Command::new("mount").args(["-o", "remount,rw", &key]).output();
+            }
+            let dir = mnt.join("sysentinel");
+            let _ = std::fs::create_dir_all(&dir);
+            let _ = std::fs::write(dir.join("faces.enc"), &blob);
+            // Remove any stale cleartext copy.
+            let _ = std::fs::remove_file(dir.join("faces.json"));
+            if ro {
+                let _ = std::process::Command::new("mount").args(["-o", "remount,ro", &key]).output();
+            }
+        }
+    }
 }
 
 /// Mount points currently mounted read-only, so the mirror can put them back

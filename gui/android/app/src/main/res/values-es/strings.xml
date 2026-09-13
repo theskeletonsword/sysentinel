@@ -10,6 +10,158 @@
     <string name="hint_message">Escribe un mensaje…</string>
     <string name="send">Enviar</string>
     <string name="conversation">Conversación</string>
+    <string name="state_connecting">conectando…</string>
+    <string name="state_photo_sent">foto enviada</string>
+    <string name="state_could_not_connect">no pude conectar</string>
+    <string name="pairing_incomplete">emparejamiento incompleto</string>
+    <string name="confirmed">confirmado</string>
+    <string name="attach_sent">adjunto enviado</string>
+
+    <!-- Menú de adjuntar (+) -->
+    <string name="attach_add">Agregar adjunto</string>
+    <string name="attach_image">Imagen</string>
+    <string name="attach_pdf">PDF</string>
+    <string name="attach_document">Documento (Word, …)</string>
+    <string name="attach_markitdown">Convertir con MarkItDown</string>
+    <string name="attach_markitdown_desc">Extrae el texto localmente en vez de mandar el archivo crudo a un modelo de visión — mucho más barato en tokens. Sirve para PDFs, Word e imágenes sin personas. Requiere `pip install markitdown` en el equipo.</string>
+
+    <!-- Sección Ownership -->
+    <string name="menu_ownership">Ownership</string>
+    <string name="own_title">Ownership</string>
+    <string name="own_blurb">Enséñale tu rostro al equipo y demuestra que es tu equipo. Ese rostro es lo que usan el vigía de LUKS/login y el initramfs para distinguirte de un intruso.</string>
+    <string name="own_enroll">Enrolar mi rostro</string>
+    <string name="own_enroll_hint">Arma `/face register` y envía una foto, que el equipo guarda como tu plantilla (y la replica al ESP para que el initramfs pueda reconocerte antes de arrancar).</string>
+    <string name="own_enroll_unreadable">No pude leer eso como imagen. Elige una foto (JPG/PNG) de tu rostro.</string>
+    <string name="own_enroll_fingerprint_hint">Huella primero: el enrolamiento solo se arma y envía después de que confirmes que eres tú en este teléfono.</string>
+    <string name="own_enroll_no_window">No pude mostrar el aviso de huella. Inténtalo de nuevo.</string>
+    <string name="own_save_local">Guardar también una copia en este teléfono</string>
+    <string name="own_save_local_hint">Guarda la foto de enrolamiento en la carpeta de datos privada de la app en este teléfono, como tu propia referencia.</string>
+    <string name="own_saved_local">Copia guardada en este teléfono.</string>
+    <string name="own_definehome">Definir esto como MI equipo (TPM)</string>
+    <string name="own_definehome_hint">Ejecuta /definehome: liga la identidad del equipo a su TPM, para que pueda demostrar que es tu PC y no un clon.</string>
+    <string name="own_definephone">Definir este teléfono como MÍO (TrustZone / StrongBox)</string>
+    <string name="own_definephone_working">Pidiéndole al equipo que reconozca este teléfono exacto…</string>
+    <string name="own_definephone_hint">Se registra con el equipo por el canal TLS 1.3 anclado: la cadena de attestation de la clave de dispositivo demuestra que la clave vive en el hardware seguro de este teléfono, así el equipo puede nombrarte dueño en vez de creer lo que el teléfono dice.</string>
+    <string name="own_definephone_paired">El equipo ha aceptado este teléfono como tuyo, con su attestation de hardware verificada. Veredicto: %1$s</string>
+    <string name="own_definephone_same">Este ya es el teléfono que el equipo conoce, y volvió a comprobar la attestation. Veredicto: %1$s</string>
+    <string name="own_definephone_different">AVISO: el equipo dice que este teléfono es DISTINTO del emparejado: el secreto de emparejamiento ha sido copiado. Veredicto: %1$s</string>
+    <string name="own_definephone_rejected">El equipo se negó a aceptar la attestation de este teléfono. Veredicto: %1$s</string>
+    <string name="own_definephone_unknown">El equipo devolvió una respuesta que esta app no reconoce (veredicto: %1$s) — léela y actualiza la app.</string>
+    <string name="own_definephone_no_key">No hay clave de dispositivo en este teléfono — toda identificación de esta sesión ha fallado, así que no hay nada que el equipo pueda atestar.</string>
+
+    <!-- Menú de navegación (las tres barritas) -->
+    <string name="menu_open">Menú</string>
+    <string name="menu_conversation">Conversación</string>
+    <string name="menu_section_config">Configuración</string>
+    <string name="menu_language">Idioma</string>
+    <string name="menu_settings">Interruptores de monitoreo</string>
+    <string name="menu_provider">Proveedor de IA y modelos</string>
+    <string name="menu_persona">Prompt de persona</string>
+    <string name="menu_notifications">Notificaciones</string>
+    <string name="menu_multimedia">Multimedia</string>
+    <string name="media_title">Evidencia multimedia</string>
+    <string name="media_blurb">Audio y video capturados en el desbloqueo LUKS y al iniciar sesión. Toca un elemento para reproducirlo; el menú de tres puntos muestra la huella hardware y permite exportar el registro.</string>
+    <string name="media_empty">Aún no hay evidencias. Aparecerán aquí cuando el equipo capture audio o video durante el desbloqueo.</string>
+    <string name="media_play">Reproducir</string>
+    <string name="media_pause">Pausar</string>
+    <string name="media_details">Detalles</string>
+    <string name="media_export_md">Exportar como Markdown</string>
+    <string name="media_export_txt">Exportar como texto plano</string>
+    <string name="media_type_audio">Audio</string>
+    <string name="media_type_video">Video</string>
+    <string name="media_codec">Códec: %1$s</string>
+    <string name="media_sample_rate">Frecuencia de muestreo: %1$s Hz</string>
+    <string name="media_frame_rate">Frecuencia de fotogramas: %1$s fps</string>
+    <string name="media_duration">Duración: %1$s</string>
+    <string name="media_hw_section">Huella hardware al momento de la captura</string>
+    <string name="media_cpu">CPU</string>
+    <string name="media_ram">RAM</string>
+    <string name="media_disks">Discos</string>
+    <string name="media_gpu">GPU</string>
+    <string name="media_tpm">TPM</string>
+    <string name="media_secureboot">Arranque seguro</string>
+    <string name="media_firmware">Firmware (MEI/PSP)</string>
+    <string name="media_vm_detected">Máquina virtual detectada (%1$s)</string>
+    <string name="media_no_vm">Metal desnudo (sin firma de hipervisor)</string>
+    <string name="media_timestamp_label">Marca de tiempo (RDTSCP)</string>
+    <string name="media_loading">Cargando lista de evidencias…</string>
+    <string name="media_error">No se pudo cargar la evidencia: %1$s</string>
+    <string name="menu_section_reports">Informes</string>
+    <string name="menu_status">Estado</string>
+    <string name="menu_selinux">SELinux</string>
+    <string name="menu_hardware">Hardware</string>
+    <string name="menu_firmware">Firmware (ME/PSP)</string>
+    <string name="menu_back">Volver</string>
+
+    <!-- Selector de idioma -->
+    <string name="lang_title">Idioma</string>
+    <string name="lang_blurb">El inglés es el predeterminado. El español es opcional — esta elección anula el idioma del teléfono para esta app.</string>
+
+    <!-- Interruptores de monitoreo (mapean a las categorías /settings del daemon) -->
+    <string name="settings_title">Interruptores de monitoreo</string>
+    <string name="settings_blurb">Enciende o apaga cada vigía en el equipo. El cambio se aplica en vivo y el daemon lo persiste.</string>
+    <string name="toggle_hypercall">Hypercalls (guest → hypervisor)</string>
+    <string name="toggle_selinux">Denegaciones de SELinux</string>
+    <string name="toggle_pmu">Contadores PMU</string>
+    <string name="toggle_kernel">Eventos de kernel (dmesg)</string>
+    <string name="toggle_modwatch">Módulos de kernel ajenos</string>
+    <string name="toggle_login">Inicios de sesión (GUI + SSH)</string>
+    <string name="toggle_battery">Descarga de batería</string>
+    <string name="toggle_thermal">Térmica</string>
+    <string name="toggle_tsc">Integridad TSC</string>
+    <string name="toggle_proactive">Revisión proactiva de la IA</string>
+    <string name="toggle_on">on</string>
+    <string name="toggle_off">off</string>
+
+    <!-- Proveedor de IA y modelos -->
+    <string name="provider_title">Proveedor de IA y modelos</string>
+    <string name="provider_blurb">Elige el proveedor que consulta el equipo y qué modelo responde. El daemon prueba el proveedor en vivo.</string>
+    <string name="provider_select">Proveedor</string>
+    <string name="provider_text_model">Modelo de texto</string>
+    <string name="provider_text_hint">ej: deepseek-chat, gpt-4o, claude-opus-5, gemini-2.5-pro</string>
+    <string name="provider_vision_model">Modelo de visión</string>
+    <string name="provider_vision_hint">El modelo que se usa cuando hay una imagen. Si tu proveedor trae un modelo que hace ambas cosas (como Gemini), pon el mismo nombre aquí.</string>
+    <string name="provider_apply">Aplicar</string>
+    <string name="provider_applied">Enviado al equipo.</string>
+    <string name="provider_manage_keys">Gestionar claves de API…</string>
+    <string name="provider_manage_keys_hint">La lista de referencia del teléfono con las claves detrás de los modelos, cada una bajo un alias.</string>
+
+    <!-- Lista de claves de API -->
+    <string name="menu_apikeys">Claves de API</string>
+    <string name="apikeys_title">Claves de API</string>
+    <string name="apikeys_blurb">El equipo guarda las claves activas en su propia configuración y nunca las imprime. Esta es tu copia de referencia en el teléfono — cada clave bajo el alias que elijas, junto a su proveedor, para que coincida con la lista de modelos. Las claves se guardan envueltas en el hardware seguro de este teléfono cuando está disponible.</string>
+    <string name="apikeys_empty">Aún no hay claves guardadas. Añade la primera abajo.</string>
+    <string name="apikeys_add">Añadir clave de API</string>
+    <string name="apikeys_edit">Editar clave de API</string>
+    <string name="apikeys_alias">Alias</string>
+    <string name="apikeys_key">Clave de API</string>
+    <string name="apikeys_save">Guardar</string>
+    <string name="apikeys_cancel">Cancelar</string>
+    <string name="apikeys_delete">Eliminar</string>
+    <string name="apikeys_show">Mostrar la clave</string>
+    <string name="apikeys_hide">Ocultar la clave</string>
+    <string name="apikeys_err_dup">Ese alias ya está en uso.</string>
+    <string name="apikeys_unreadable">Esta clave ya no se puede desenvolver — el keystore se reinició. Toca la entrada y vuelve a escribirla.</string>
+    <string name="apikeys_plaintext">Guardada sin envoltorio de hardware en este teléfono.</string>
+
+    <!-- Prompt de persona -->
+    <string name="persona_title">Prompt de persona</string>
+    <string name="persona_blurb">Reemplaza todo el system prompt del equipo (persona + contexto de hardware). Déjalo vacío para restaurar el predeterminado.</string>
+    <string name="persona_hint">Cómo debe hablar el equipo…</string>
+    <string name="persona_apply">Aplicar</string>
+    <string name="persona_clear">Restaurar predeterminado</string>
+
+    <!-- Notificaciones -->
+    <string name="notif_title">Notificaciones</string>
+    <string name="notif_blurb">Por diseño esta app no se enciende sola: un teléfono que muestra una alerta mientras alguien te mira por encima del hombro anuncia que el equipo te delató. Actívalo sólo si ese trato te sirve.</string>
+    <string name="notif_toggle">Notificaciones de alertas en segundo plano</string>
+    <string name="notif_permission_denied">Las notificaciones están apagadas en los ajustes de Android — concede el permiso para recibir alertas.</string>
+    <string name="notif_channel_monitoring">Monitoreo</string>
+    <string name="notif_channel_alerts">Alertas</string>
+    <string name="notif_channel_alerts_desc">Alertas enviadas desde tu equipo</string>
+    <string name="notif_monitoring_title">sysentinel está vigilando</string>
+    <string name="notif_monitoring_text">Consultando alertas de tu equipo</string>
+    <string name="notif_alert_title">alerta de sysentinel</string>
 
     <string name="pair_title">Emparejar</string>
     <string name="pair_blurb">Conexión directa con tu equipo: no hay relay ni servidor de por medio. La primera vez, ponte en el mismo WiFi que el PC y escanea su QR. Después da igual dónde estés: el vínculo no caduca, sólo hace falta que puedas llegar al equipo — misma red, o tu VPN. Si cambia la dirección, corrígela aquí; no hay que volver a emparejar.</string>
@@ -42,6 +194,8 @@
     <string name="confirm_prompt_subtitle">Tu huella autoriza esta orden y solo esta.</string>
     <string name="confirm_cancel">Cancelar</string>
     <string name="confirm_cancelled">Cancelado. La orden sigue armada hasta que expire.</string>
+    <string name="gate_prompt_title">Enrolar mi rostro</string>
+    <string name="gate_prompt_subtitle">Confirma que eres tú de verdad antes de que tu rostro se envíe al equipo.</string>
     <string name="confirm_biometric_failed">Biometría fallida (%1$s). No confirmé nada.</string>
     <string name="confirm_no_signature">El sistema no devolvió la firma; no confirmé nada.</string>
     <string name="confirm_sign_failed">No pude firmar la confirmación: %1$s</string>
@@ -75,7 +229,7 @@
     <string name="err_no_pin">Este emparejamiento es de antes de que el canal llevara TLS y no tiene la huella del equipo guardada.\n\nVuelve a escanear el QR: no voy a conectarme sin poder comprobar que al otro lado está tu equipo y no otro.</string>
     <string name="err_connect">No pude conectar con %1$s:%2$d.\n\nEsta es una conexión directa: no hay relay. Comprueba que estás en la misma red que el equipo, o que la VPN está levantada.</string>
     <string name="err_tls">No pude establecer TLS con %1$s:%2$d.\n\n%3$s</string>
-    <string name="err_tls_too_old">Este teléfono no ofrece TLS 1.2 ni 1.3. Es demasiado viejo para hablar con el equipo de forma segura.</string>
+    <string name="err_tls_too_old">Este teléfono no tiene TLS 1.3. El equipo habla solo 1.3 (para que la conexión no revele nada a un observador), y este teléfono es demasiado viejo para eso.</string>
     <string name="err_no_cert">el equipo no presentó certificado</string>
     <string name="err_pin_mismatch">La llave del equipo no es la que guardaste al emparejar.\n\nEsperaba %1$s\ny llegó %2$s.\n\nO reinstalaron el daemon (y hay que volver a emparejar), o alguien está respondiendo en su lugar.</string>
     <string name="err_daemon">error del daemon</string>
@@ -83,6 +237,8 @@
     <string name="err_confirm_refused">el equipo rechazó la confirmación</string>
     <string name="err_photo_refused">el equipo rechazó la foto</string>
     <string name="err_no_connection">no hay conexión abierta</string>
+    <string name="err_frame_too_big">Este payload pesa %1$d bytes y el equipo nunca acepta un frame mayor de 1 MB. Elige un archivo más pequeño.</string>
     <string name="err_frame_size">el daemon anunció un frame de %1$d bytes</string>
+    <string name="err_frame_short">el frame que envió el daemon es demasiado corto para ser válido</string>
     <string name="err_frame_auth">El frame no autenticó.\n\nCasi siempre significa que la clave de emparejamiento no coincide con la del equipo. Si el equipo usa ChaCha20-Poly1305 (CPU sin AES por hardware), este teléfono necesita Android 9 o superior.</string>
 </resources>

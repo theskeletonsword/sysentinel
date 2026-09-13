@@ -14,6 +14,160 @@
     <string name="hint_message">Type a message…</string>
     <string name="send">Send</string>
     <string name="conversation">Conversation</string>
+    <string name="state_connecting">connecting…</string>
+    <string name="state_photo_sent">photo sent</string>
+    <string name="state_could_not_connect">could not connect</string>
+    <string name="pairing_incomplete">pairing incomplete</string>
+    <string name="confirmed">confirmed</string>
+    <string name="attach_sent">attachment sent</string>
+
+    <!-- Attachment (+) menu -->
+    <string name="attach_add">Add attachment</string>
+    <string name="attach_image">Image</string>
+    <string name="attach_pdf">PDF</string>
+    <string name="attach_document">Document (Word, …)</string>
+    <string name="attach_markitdown">Convert with MarkItDown</string>
+    <string name="attach_markitdown_desc">Extract text locally instead of sending the raw file to a vision model — far cheaper in tokens. Good for PDFs, Word, and images with no people. Needs `pip install markitdown` on the machine.</string>
+
+    <!-- Ownership section -->
+    <string name="menu_ownership">Ownership</string>
+    <string name="own_title">Ownership</string>
+    <string name="own_blurb">Teach the machine your face and prove it is your machine. The face is what the LUKS/login watcher and the initramfs use to tell you from an intruder.</string>
+    <string name="own_enroll">Enrol my face</string>
+    <string name="own_enroll_hint">Arms `/face register` and sends a photo, which the machine stores as your template (and mirrors to the ESP so the initramfs can match it before boot).</string>
+    <string name="own_enroll_unreadable">I could not read that as an image. Pick a photo (JPG/PNG) of your face.</string>
+    <string name="own_enroll_fingerprint_hint">Fingerprint first: the enrolment is only armed and sent after you confirm it is really you on this phone.</string>
+    <string name="own_enroll_no_window">I could not show the fingerprint prompt. Try again.</string>
+    <string name="own_save_local">Also keep a copy in this phone</string>
+    <string name="own_save_local_hint">Saves the enrolment photo in the app\'s private data folder on this phone, as your own reference.</string>
+    <string name="own_saved_local">Saved a copy on this phone.</string>
+    <string name="own_definehome">Define this as MY machine (TPM)</string>
+    <string name="own_definehome_hint">Runs /definehome: binds this machine\'s identity to its TPM, so it can prove it is your PC and not a clone.</string>
+    <string name="own_definephone">Define this as MY phone (TrustZone / StrongBox)</string>
+    <string name="own_definephone_working">Asking the machine to recognise this exact handset…</string>
+    <string name="own_definephone_hint">Registers with the machine over the pinned TLS 1.3 channel: the device key\'s attestation chain proves the key lives in this handset\'s secure hardware, so the machine can name you the owner instead of trusting the phone\'s word.</string>
+    <string name="own_definephone_paired">The machine has accepted this phone as yours, with its hardware attestation checked. Verdict: %1$s</string>
+    <string name="own_definephone_same">This is already the handset the machine knows, and it re-checked the attestation. Verdict: %1$s</string>
+    <string name="own_definephone_different">WARNING: the machine says this phone is a DIFFERENT handset than the one paired — the pairing secret has been copied. Verdict: %1$s</string>
+    <string name="own_definephone_rejected">The machine refused to accept this phone\'s attestation. Verdict: %1$s</string>
+    <string name="own_definephone_unknown">The machine returned an answer this app does not recognise (verdict: %1$s) — read it, and update the app.</string>
+    <string name="own_definephone_no_key">No device key on this phone — every identify in this session has failed, so there is nothing the machine can attest.</string>
+
+    <!-- Navigation drawer (the three-bar menu) -->
+    <string name="menu_open">Menu</string>
+    <string name="menu_conversation">Conversation</string>
+    <string name="menu_section_config">Configuration</string>
+    <string name="menu_language">Language</string>
+    <string name="menu_settings">Monitoring toggles</string>
+    <string name="menu_provider">AI provider &amp; models</string>
+    <string name="menu_persona">Persona prompt</string>
+    <string name="menu_notifications">Notifications</string>
+    <string name="menu_multimedia">Multimedia</string>
+    <string name="menu_section_reports">Reports</string>
+    <string name="menu_status">Status</string>
+    <string name="menu_selinux">SELinux</string>
+    <string name="menu_hardware">Hardware</string>
+    <string name="menu_firmware">Firmware (ME/PSP)</string>
+    <string name="menu_back">Back</string>
+
+    <!-- Multimedia evidence browser -->
+    <string name="media_title">Multimedia Evidence</string>
+    <string name="media_blurb">Audio and video evidence captured at LUKS unlock and session start. Tap an item to play; the three-dot menu shows the hardware fingerprint and lets you export the log.</string>
+    <string name="media_empty">No evidence items yet. They appear here after the machine captures audio or video during unlock.</string>
+    <string name="media_play">Play</string>
+    <string name="media_pause">Pause</string>
+    <string name="media_details">Details</string>
+    <string name="media_export_md">Export as Markdown</string>
+    <string name="media_export_txt">Export as plain text</string>
+    <string name="media_type_audio">Audio</string>
+    <string name="media_type_video">Video</string>
+    <string name="media_codec">Codec: %1$s</string>
+    <string name="media_sample_rate">Sample rate: %1$s Hz</string>
+    <string name="media_frame_rate">Frame rate: %1$s fps</string>
+    <string name="media_duration">Duration: %1$s</string>
+    <string name="media_hw_section">Hardware fingerprint at capture time</string>
+    <string name="media_cpu">CPU</string>
+    <string name="media_ram">RAM</string>
+    <string name="media_disks">Disks</string>
+    <string name="media_gpu">GPU</string>
+    <string name="media_tpm">TPM</string>
+    <string name="media_secureboot">Secure Boot</string>
+    <string name="media_firmware">Firmware (MEI/PSP)</string>
+    <string name="media_vm_detected">Virtual machine detected (%1$s)</string>
+    <string name="media_no_vm">Bare-metal (no hypervisor signature)</string>
+    <string name="media_timestamp_label">Timestamp (RDTSCP)</string>
+    <string name="media_loading">Loading evidence list…</string>
+    <string name="media_error">Could not load evidence: %1$s</string>
+
+    <!-- Language picker -->
+    <string name="lang_title">Language</string>
+    <string name="lang_blurb">English is the default. Spanish is optional — this choice overrides the phone\'s own language for this app.</string>
+
+    <!-- Monitoring toggles (map to the daemon\'s /settings categories) -->
+    <string name="settings_title">Monitoring toggles</string>
+    <string name="settings_blurb">Turn each watcher on or off on the machine. The change is applied live and persisted by the daemon.</string>
+    <string name="toggle_hypercall">Hypercalls (guest → hypervisor)</string>
+    <string name="toggle_selinux">SELinux denials</string>
+    <string name="toggle_pmu">PMU counters</string>
+    <string name="toggle_kernel">Kernel events (dmesg)</string>
+    <string name="toggle_modwatch">Foreign kernel modules</string>
+    <string name="toggle_login">Logins (GUI + SSH)</string>
+    <string name="toggle_battery">Battery drain</string>
+    <string name="toggle_thermal">Thermal</string>
+    <string name="toggle_tsc">TSC integrity</string>
+    <string name="toggle_proactive">Proactive AI review</string>
+    <string name="toggle_on">on</string>
+    <string name="toggle_off">off</string>
+
+    <!-- AI provider and models -->
+    <string name="provider_title">AI provider &amp; models</string>
+    <string name="provider_blurb">Pick the provider the machine asks, and which model answers. The daemon tries the provider live.</string>
+    <string name="provider_select">Provider</string>
+    <string name="provider_text_model">Text model</string>
+    <string name="provider_text_hint">e.g. deepseek-chat, gpt-4o, claude-opus-5, gemini-2.5-pro</string>
+    <string name="provider_vision_model">Vision model</string>
+    <string name="provider_vision_hint">The model used when an image is involved. If your provider ships one model that does both (e.g. Gemini), put the same name here.</string>
+    <string name="provider_apply">Apply</string>
+    <string name="provider_applied">Sent to the machine.</string>
+    <string name="provider_manage_keys">Manage API keys…</string>
+    <string name="provider_manage_keys_hint">The phone\'s reference list of keys behind the models, each under an alias.</string>
+
+    <!-- API keys list -->
+    <string name="menu_apikeys">API keys</string>
+    <string name="apikeys_title">API keys</string>
+    <string name="apikeys_blurb">The machine keeps the active keys in its own config and never prints them. This is your reference copy on the phone — each key under the alias you choose, beside its provider, so it matches the model list. Keys are wrapped in this handset\'s secure hardware where available.</string>
+    <string name="apikeys_empty">No keys saved yet. Add the first one below.</string>
+    <string name="apikeys_add">Add API key</string>
+    <string name="apikeys_edit">Edit API key</string>
+    <string name="apikeys_alias">Alias</string>
+    <string name="apikeys_key">API key</string>
+    <string name="apikeys_save">Save</string>
+    <string name="apikeys_cancel">Cancel</string>
+    <string name="apikeys_delete">Delete</string>
+    <string name="apikeys_show">Show the key</string>
+    <string name="apikeys_hide">Hide the key</string>
+    <string name="apikeys_err_dup">That alias is already in use.</string>
+    <string name="apikeys_unreadable">This key can no longer be unwrapped — the keystore was reset. Tap the entry and re-enter it.</string>
+    <string name="apikeys_plaintext">Stored without hardware wrapping on this handset.</string>
+
+    <!-- Persona prompt -->
+    <string name="persona_title">Persona prompt</string>
+    <string name="persona_blurb">Replaces the machine\'s entire system prompt (persona + hardware context). Leave empty to restore the default.</string>
+    <string name="persona_hint">How the machine should speak…</string>
+    <string name="persona_apply">Apply</string>
+    <string name="persona_clear">Restore default</string>
+
+    <!-- Notifications -->
+    <string name="notif_title">Notifications</string>
+    <string name="notif_blurb">By design this app does not light up on its own: a phone that shows an alert while somebody is standing over you announces that the machine informed on you. Turn this on only if that trade is right for you.</string>
+    <string name="notif_toggle">Background alert notifications</string>
+    <string name="notif_permission_denied">Notifications are off in Android settings — grant the permission to receive alerts.</string>
+    <string name="notif_channel_monitoring">Monitoring</string>
+    <string name="notif_channel_alerts">Alerts</string>
+    <string name="notif_channel_alerts_desc">Alerts pushed from your machine</string>
+    <string name="notif_monitoring_title">sysentinel is watching</string>
+    <string name="notif_monitoring_text">Polling your machine for alerts</string>
+    <string name="notif_alert_title">sysentinel alert</string>
 
     <!-- Pairing -->
     <string name="pair_title">Pair</string>
@@ -49,6 +203,8 @@
     <string name="confirm_prompt_subtitle">Your fingerprint authorises this order and only this one.</string>
     <string name="confirm_cancel">Cancel</string>
     <string name="confirm_cancelled">Cancelled. The order stays armed until it expires.</string>
+    <string name="gate_prompt_title">Enrol my face</string>
+    <string name="gate_prompt_subtitle">Confirm this is really you before your face is sent to the machine.</string>
     <string name="confirm_biometric_failed">Biometric failed (%1$s). Nothing was confirmed.</string>
     <string name="confirm_no_signature">The system did not return the signature; nothing was confirmed.</string>
     <string name="confirm_sign_failed">I could not sign the confirmation: %1$s</string>
@@ -85,7 +241,7 @@
     <string name="err_no_pin">This pairing predates TLS on the channel and has no fingerprint for the machine stored.\n\nScan the QR again: I will not connect without being able to check that the thing answering is your machine and not another.</string>
     <string name="err_connect">I could not connect to %1$s:%2$d.\n\nThis is a direct connection: there is no relay. Check that you are on the same network as the machine, or that the VPN is up.</string>
     <string name="err_tls">I could not establish TLS with %1$s:%2$d.\n\n%3$s</string>
-    <string name="err_tls_too_old">This phone offers neither TLS 1.2 nor 1.3. It is too old to talk to the machine safely.</string>
+    <string name="err_tls_too_old">This phone has no TLS 1.3. The machine speaks 1.3 only (so the connection reveals nothing to a watcher), and this handset is too old for it.</string>
     <string name="err_no_cert">the machine presented no certificate</string>
     <string name="err_pin_mismatch">The machine\'s key is not the one you saved when pairing.\n\nExpected %1$s\nand got %2$s.\n\nEither the daemon was reinstalled (and you need to pair again), or somebody is answering in its place.</string>
     <string name="err_daemon">daemon error</string>
@@ -93,6 +249,8 @@
     <string name="err_confirm_refused">the machine refused the confirmation</string>
     <string name="err_photo_refused">the machine refused the photo</string>
     <string name="err_no_connection">no connection is open</string>
+    <string name="err_frame_too_big">This payload is %1$d bytes and the machine never accepts a frame over 1 MB. Pick a smaller file.</string>
     <string name="err_frame_size">the daemon announced a %1$d-byte frame</string>
+    <string name="err_frame_short">the frame the daemon sent was too short to be valid</string>
     <string name="err_frame_auth">The frame did not authenticate.\n\nAlmost always this means the pairing key does not match the machine\'s. If the machine uses ChaCha20-Poly1305 (a CPU with no hardware AES), this phone needs Android 9 or later.</string>
 </resources>
