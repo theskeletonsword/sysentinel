@@ -6,7 +6,7 @@
 eligible for a report.** There is no carve-out, no component that "does not
 count", and no class of finding that gets waved away as by design.
 
-Report to **agustin.pereira.ro@gmail.com**.
+Report to **agustin.pereira.ro@gmail.com** or Signal **theskeletonsword.46**.
 
 ---
 
@@ -101,9 +101,9 @@ costs a lot more.
 
 ## How to report
 
-Email **agustin.pereira.ro@gmail.com** with whatever you have. There is no
-template and no required format — a short paragraph and a reproduction is worth
-more than a polished document.
+Email **agustin.pereira.ro@gmail.com** or Signal **theskeletonsword.46** with
+whatever you have. There is no template and no required format — a short
+paragraph and a reproduction is worth more than a polished document.
 
 Useful, if you have them:
 

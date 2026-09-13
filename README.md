@@ -77,9 +77,9 @@ disk is unlocked, the phone app, the scripts, and the documentation itself.
 Silencing the alerts, feeding it fabricated evidence, or making a check
 disappear by corrupting a file all count, not just memory corruption.
 
-Report to **agustin.pereira.ro@gmail.com**. Details, including what is *not* a
-vulnerability and what this tool admits it cannot protect you from, are in
-[SECURITY.md](SECURITY.md).
+Report to **agustin.pereira.ro@gmail.com** or Signal **theskeletonsword.46**.
+Details, including what is *not* a vulnerability and what this tool admits it
+cannot protect you from, are in [SECURITY.md](SECURITY.md).
 
 ## What it does
 
@@ -102,8 +102,12 @@ vulnerability and what this tool admits it cannot protect you from, are in
 | **Ring −2 SMM** | Firmware **posture, not pokes**: the channel **provably never raises an SMI** — it only reads the tables the firmware publishes. `smm on` performs a read-only ACPI scan: FADT `smi_command` + documented command values (`smm_iface=fadt-smi@0x…`) and the WSMT SMM-mitigation table (`smm_wsmt=0x…(list)`); a firmwware with a published SMI bridge but no WSMT protections is exactly what an SMM bootkit needs. Latency instrument narrowed to the ring −1 hypercall (`hvm_lat=…us`); `ro=ok|dirty` passively watches module rodata. No outb/inb to any APM port exists in the code by construction |
 | **TPM key** | A `/dev/urandom` AEAD key sealed inside the physical TPM accompanies the fingerprint — AES-256-GCM on AES-NI/VAES CPUs, else ChaCha20-Poly1305 (fresh nonce, never reused); fingerprint-only fallback when there's no TPM |
 | **Bootkit audit** | `/bootkit` (or `/definehome audit`): UEFI vars, Secure Boot, kernel lockdown, taint, LSTAR hook, hypervisor, ME/PSP, dmesg + integrity, with hedged verdicts |
-| **PMU counters** | Reads CPU cycles, IPC, LLC misses, branch mispredictions, context switches via `perf_event_open`. Adapts to `perf_event_paranoid` (and `CAP_PERFMON`) by probing rather than guessing, keeping the widest scope actually permitted instead of giving up |
+| **PMU counters** | Reads CPU cycles, IPC, LLC misses, branch mispredictions, context switches via `perf_event_open`. Adapts to `perf_event_paranoid` (and `CAP_PERFMON`) by probing rather than guessing, keeping the widest scope actually permitted instead of giving up. Hardware GP and fixed counter counts are read via CPUID leaf 0x0A and included in hardware reports |
 | **Hybrid CPU split** | On a heterogeneous CPU (Intel P/E, ARM big.LITTLE) the counters are reported **per core type**, so a busy E-core cluster and an idle P-core cluster are not averaged into a number describing neither. Core types come from the silicon itself — `CPUID.1AH` per the Intel SDM, `MIDR_EL1` per the Arm ARM — which cross-checks the kernel's own PMU grouping |
+| **Sealed biometric ESP mirror** | The face-hash database on the EFI System Partition is encrypted under a hybrid envelope: ephemeral P-521 ECDH × static machine key + ML-KEM-1024 → HKDF-SHA384 → AES-256-GCM or ChaCha20-Poly1305. **No photo, embedding, perceptual hash, or face count is ever written in cleartext to the ESP.** The static private key is sealed in the TPM; an Argon2id/HKDF key derived from the LUKS passphrase serves as the initramfs fallback so the private key never lives next to the ciphertext |
+| **Burst detection** | The initramfs hook counts every failed LUKS passphrase attempt and writes a burst log to the ESP. On the next successful boot the daemon reads, reports to the phone, and deletes the log (ESP space is tiny). The attacker already had read access to the ESP — that is why the count is written there for the daemon to find, not to hide it |
+| **Evidence on the phone** | `/evidence list` returns a JSON array of every file in the evidence directory (photos, OGG/Opus audio, MKV video) with per-file type, size, mtime, RDTSCP counter, TSC drift PPM, and PMU counter summary. The Android Multimedia screen parses this to show a WhatsApp-style player |
+| **Initramfs audio/video evidence** | Shell hooks capture ≤ 60 s of OGG/Opus audio at the LUKS prompt (`arecord` → `opusenc`/`oggenc`) and a JPEG snapshot via `sysentinel-cam` — without turning on the webcam LED (V4L2 frame grab, not the streaming API). Both are written to the ESP and consumed by the daemon after boot |
 | **Hypercalls** | Kernel module issues `vmcall`/`vmmcall`/`hvc` with CPUID-based hypervisor detection |
 | **Persona** | Configure the AI's tone per `config.toml` — formal, colloquial, regional slang, whatever |
 | **Multi-backend LLM** | Switch between Anthropic Claude, OpenAI, DeepSeek, Gemini, or a local GGUF model |
@@ -172,6 +176,8 @@ sysentinel/
 │       ├── camera.rs             Webcam evidence via sysentinel-cam
 │       ├── fhash.rs              Perceptual face hashing (pHash/DCT + wHash/Haar) — fallback
 │       ├── facenn.rs             Neural face verification: runs the musl tool from glibc
+│       ├── faceseal.rs           Hybrid envelope for the ESP biometric mirror (P-521 ECDH + ML-KEM-1024 + HKDF-SHA384 → AEAD)
+│       ├── burstlog.rs           LUKS burst-attempt counter: initramfs hook templates + daemon drain
 │       │
 │       ├── pmu.rs                PMU counters via perf_event_open; paranoid ladder + hybrid dispatcher
 │       ├── coretype.rs           Clean-room core-type oracle (CPUID.1AH / MIDR_EL1)
@@ -202,6 +208,9 @@ sysentinel/
 │       ├── sysentinel-init.sh    pre-udev: load sysentinel_metrics + uvcvideo
 │       ├── sysentinel-precrypt.sh pre-trigger: capture BEFORE the LUKS prompt
 │       └── sysentinel-luks.sh    pre-pivot: fallback capture + evidence mirroring
+│
+├── markitdown-rs/                Document-to-Markdown conversion library (MIT, © 2025 uhobnil)
+│   └── src/                      Rust library: DOCX, XLSX, PDF, HTML, CSV → Markdown
 │
 └── scripts/
     ├── sysentinel.service        systemd unit
@@ -332,6 +341,11 @@ Once paired, you can send any message to your bot:
 | `/resetcontext` | Clear conversation history (`context.txt`; `memory.txt` untouched) |
 | `/help` | Command list |
 | `/unpair` | Remove pairing (re-pair required) |
+| `/face register [N]` | Enrol your face: send N photos; only the pHash/wHash pair and the 128-D embedding are kept — the image is never written |
+| `/face status` | How many face hashes are stored and which engine decides a login |
+| `/face forget` | Delete every enrolled face hash |
+| `/face keygen` | Generate a P-521 ECDH + ML-KEM-1024 keypair for the sealed ESP biometric mirror; private keys written at 0600 for TPM sealing |
+| `/evidence list` | JSON list of evidence files (photos, OGG/Opus audio, MKV video) with RDTSCP timestamp, TSC PPM, PMU counter summary — parsed by the Android Multimedia screen |
 | Any question | LLM answers using live system context, `memory.txt`, and `context.txt` |
 
 Example questions:
@@ -425,6 +439,17 @@ Key properties:
 - **Intel ME / AMD PSP** queries use public interfaces: ME firmware is read via the standard kernel MEI bus (`mei_me`) in the module and only a version string crosses to user-space through `/proc/sysentinel_metrics`; AMD PSP/TPM info comes from the kernel's TPM sysfs, correctly labelled by CPU vendor. The daemon never talks raw protocol to `/dev/mei0`, so it needs no root or `mei` group.
 - **Privileged controls are opt-in and confirmation-gated.** The kernel module only accepts a control command (`reboot`, `poweroff`, `crX=0x…`) from uid 0 or from the `write_gid` modparam group; the bot then requires an explicit `confirm` reply within 60 s from the paired chat before it writes. Control paths bypass the LLM entirely (zero token spend).
 
+## Privacy
+
+**We don't collect an IMEI — and can't, by design.** Android has blocked third-party reads of the IMEI since Android 10 (device identifiers are no longer available to apps without privileged permissions), so no build of the app even asks for it. No serial number is read either. What the phone contributes when it registers is deliberately minimal and is hardware, not identity:
+
+- `model` and `manufacturer` read straight from `Build` (e.g. *Pixel 8*, *Google*) — the same two strings the device's own Settings screen shows. They are recorded as context so the chat can say *"your phone is connected"*, and **never consulted to decide anything**.
+- The handset's public key and its **Android Key attestation certificate chain**, proving that key really lives in the phone's TEE or secure element. This is what the machine's later identity checks rest on: the register call is verified once and reused as the key to future identifications.
+
+What is **never** stored or transmitted, by the app or the daemon: IMEI, serial numbers (MEID, SN, etc.), contacts, call logs, SMS, photos (a face enrolment is sent once, down-scaled, only after a fingerprint confirms it, and only the embedding the machine sees the photo for is kept), location, browsing history, clipboard, or anything past the single exchange that created a pairing. The daemon keeps the record of a handset because the phone must have a reason to keep trusting the machine; that record is the four fields above, nothing more, and it lives on your own hardware like everything else in this project.
+
+Paranoid by disposition as well as by design: keys are kept in the platform Keystore (device-attested, so not exportable), travel only inside a pinned TLS 1.3 tunnel inside which every frame is AES-256-GCM sealed under the pairing key (see [Security](#security)), and the only outbound calls the daemon makes are the ones you configured yourself — your LLM provider. Nothing telemetries itself home, because there is no home: this project has no server.
+
 ---
 
 ## Licence
@@ -439,6 +464,7 @@ is authoritative for that file; this map is the summary.
 | `ramdisk/` | MIT OR GPL-2.0-or-later | `ramdisk/LICENSE-MIT`, `ramdisk/LICENSE-GPL` |
 | `scripts/` | MIT OR GPL-2.0-or-later | `ramdisk/LICENSE-MIT`, `ramdisk/LICENSE-GPL` (same terms) |
 | `ramdisk/face/models/` | Apache-2.0 (third-party weights) | `ramdisk/face/models/LICENSE`, `.../NOTICE` |
+| `markitdown-rs/` | MIT (© 2025 uhobnil) | `markitdown-rs/LICENSE` |
 | everything else (root `README`, `Makefile`, …) | Apache-2.0 | `LICENSE` |
 
 ### The one that bites: `kernel_module/`

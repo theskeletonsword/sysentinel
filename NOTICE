@@ -97,4 +97,32 @@ daemon/src/coretype.rs) is Apache-2.0 and incorporates no kernel source:
 - The privilege-ladder behaviour of perf_event_paranoid is documented as
   observable behaviour in our own words; the implementation probes for it
   rather than encoding it.
+- Hardware PMU counter counts (daemon/src/pmu.rs: hw_counter_count()) are
+  read via CPUID leaf 0x0A, as documented in the Intel(R) 64 and IA-32
+  Architectures Software Developer's Manual, Volume 3B, Chapter 18.2.5
+  "Pre-Defined Architectural Performance Events". No kernel source used.
+
+ESP biometric mirror (daemon/src/faceseal.rs) is Apache-2.0. The hybrid
+envelope uses P-521 ECDH and ML-KEM-1024, both provided by aws-lc-rs (Apache-
+2.0, https://github.com/aws/aws-lc-rs), and HKDF-SHA384 / AES-256-GCM /
+ChaCha20-Poly1305 from the same library. No biometric data (photograph,
+embedding, perceptual hash, face count) is ever written in cleartext; only a
+sealed blob is written to the ESP. The private decapsulation key is intended
+to be TPM-sealed (daemon/src/tpmkey.rs) and is never stored next to the
+ciphertext.
+
+markitdown-rs (markitdown-rs/ in this repository):
+
+  markitdown-rs is a Rust library for converting document formats (DOCX, XLSX,
+  PDF, HTML, CSV and more) into Markdown text. It is a Rust implementation of
+  the original markitdown Python library by Microsoft.
+
+  Copyright (c) 2025 uhobnil
+  Licensed under the MIT License.
+  Repository: https://github.com/uhobnil/markitdown-rs
+
+  The full MIT licence text is in markitdown-rs/LICENSE. This library is
+  bundled in the markitdown-rs/ subdirectory of this repository and used by
+  the daemon's optional document-to-Markdown conversion pipeline
+  (daemon/src/markitdown.rs).
 
