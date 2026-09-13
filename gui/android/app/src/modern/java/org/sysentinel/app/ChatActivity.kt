@@ -22,8 +22,11 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
@@ -118,8 +121,9 @@ private fun AppRoot(
     var confirming by remember { mutableStateOf(false) }
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
-    // Message context menu (long-press)
-    var ctxMsg by remember { mutableStateOf<Message?>(null) }
+    // Multi-select state (long-press enters selection mode; replaces the old single-message menu)
+    var selectMode by remember { mutableStateOf(false) }
+    val selectedMsgs = remember { mutableStateSetOf<Message>() }
 
     val listener = remember {
         object : ChatEngine.Listener {
@@ -159,6 +163,10 @@ private fun AppRoot(
         engine.send(cmd, listener)
         scope.launch { drawerState.close() }
         screen = Screen.CHAT
+        // /resetcontext: daemon clears its context window; we also clear the local chat.
+        if (cmd.trimStart().startsWith("/resetcontext")) {
+            messages.clear()
+        }
     }
 
     ModalNavigationDrawer(
@@ -185,42 +193,68 @@ private fun AppRoot(
             bottomBar = {
                 if (screen == Screen.CHAT) {
                     Column {
-                        val order = pending
-                        if (order?.confirmNonce != null && activity != null) {
-                            ConfirmBar(
-                                nonce = order.confirmNonce,
-                                busy = confirming,
-                                canSign = Confirmation.available(activity),
-                            ) {
-                                confirming = true
-                                Confirmation.confirm(
-                                    activity = activity,
-                                    engine = engine,
+                        // Multi-select action bar (shown when in selection mode)
+                        if (selectMode) {
+                            SelectionBar(
+                                count = selectedMsgs.size,
+                                onCopy = {
+                                    val clip = selectedMsgs
+                                        .sortedBy { it.timestamp }
+                                        .joinToString("\n") { m ->
+                                            "${if (m.fromMe) "me" else "machine"}: ${m.text}"
+                                        }
+                                    val cm = ctx.getSystemService(android.content.ClipboardManager::class.java)
+                                    cm?.setPrimaryClip(android.content.ClipData.newPlainText("chat", clip))
+                                    selectMode = false; selectedMsgs.clear()
+                                },
+                                onDelete = {
+                                    messages.removeAll(selectedMsgs)
+                                    selectMode = false; selectedMsgs.clear()
+                                },
+                                onCancel = { selectMode = false; selectedMsgs.clear() },
+                            )
+                        } else {
+                            val order = pending
+                            if (order?.confirmNonce != null && activity != null) {
+                                ConfirmBar(
                                     nonce = order.confirmNonce,
-                                    orderLabel = orderLabelFrom(order.text),
-                                ) { answer ->
-                                    confirming = false
-                                    pending = null
-                                    messages.add(Message(answer, fromMe = false))
+                                    busy = confirming,
+                                    canSign = Confirmation.available(activity),
+                                ) {
+                                    confirming = true
+                                    Confirmation.confirm(
+                                        activity = activity,
+                                        engine = engine,
+                                        nonce = order.confirmNonce,
+                                        orderLabel = orderLabelFrom(order.text),
+                                    ) { answer ->
+                                        confirming = false
+                                        pending = null
+                                        messages.add(Message(answer, fromMe = false))
+                                    }
                                 }
                             }
+                            Composer(
+                                draft = draft,
+                                onDraft = { draft = it },
+                                onSend = {
+                                    if (draft.isNotBlank()) {
+                                        messages.add(Message(draft, fromMe = true))
+                                        engine.send(draft, listener)
+                                        draft = ""
+                                    }
+                                },
+                                onAttach = { filename, bytes, markitdown, localPath ->
+                                    messages.add(Message(
+                                        text = if (localPath != null) filename else "📎 $filename",
+                                        fromMe = true,
+                                        localMediaPath = localPath,
+                                    ))
+                                    engine.sendDocument(filename, bytes, markitdown, listener)
+                                },
+                                onCommand = { runCommand(it) },
+                            )
                         }
-                        Composer(
-                            draft = draft,
-                            onDraft = { draft = it },
-                            onSend = {
-                                if (draft.isNotBlank()) {
-                                    messages.add(Message(draft, fromMe = true))
-                                    engine.send(draft, listener)
-                                    draft = ""
-                                }
-                            },
-                            onAttach = { filename, bytes, markitdown ->
-                                messages.add(Message("📎 $filename", fromMe = true))
-                                engine.sendDocument(filename, bytes, markitdown, listener)
-                            },
-                            onCommand = { runCommand(it) },
-                        )
                     }
                 }
             },
@@ -234,8 +268,20 @@ private fun AppRoot(
                         verticalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
                         items(messages) { msg ->
-                            Bubble(msg,
-                                onLongClick = { ctxMsg = msg },
+                            val sel = msg in selectedMsgs
+                            Bubble(
+                                m = msg,
+                                selected = sel,
+                                onLongClick = {
+                                    selectMode = true
+                                    selectedMsgs.add(msg)
+                                },
+                                onClick = {
+                                    if (selectMode) {
+                                        if (sel) selectedMsgs.remove(msg) else selectedMsgs.add(msg)
+                                        if (selectedMsgs.isEmpty()) selectMode = false
+                                    }
+                                },
                             )
                         }
                     }
@@ -249,38 +295,10 @@ private fun AppRoot(
                     Screen.PERSONA -> PersonaScreen(onCommand = { runCommand(it) })
                     Screen.OWNERSHIP -> OwnershipScreen(engine, listener) { runCommand(it) }
                     Screen.NOTIFICATIONS -> NotificationsScreen(pairing)
-                    Screen.MULTIMEDIA -> MultimediaScreen(engine, listener) { screen = Screen.CHAT }
+                    Screen.MULTIMEDIA -> MultimediaScreen(engine, listener, messages) { screen = Screen.CHAT }
                     Screen.LOGS -> LogsScreen(messages, engine, listener) { screen = Screen.CHAT }  // listener passed but unused (local listener used inside)
                 }
 
-                // Long-press message context menu
-                val ctx2 = ctxMsg
-                if (ctx2 != null) {
-                    AlertDialog(
-                        onDismissRequest = { ctxMsg = null },
-                        containerColor = Theirs,
-                        title = null,
-                        text = {
-                            Text(
-                                ctx2.text.take(120) + if (ctx2.text.length > 120) "…" else "",
-                                color = Color(0xFFC8D6E5), fontSize = 12.sp,
-                            )
-                        },
-                        confirmButton = {
-                            TextButton(onClick = {
-                                val cm = ctx.getSystemService(android.content.ClipboardManager::class.java)
-                                cm?.setPrimaryClip(android.content.ClipData.newPlainText("message", ctx2.text))
-                                ctxMsg = null
-                            }) { Text(stringResource(R.string.msg_copy), color = Accent) }
-                        },
-                        dismissButton = {
-                            TextButton(onClick = {
-                                messages.remove(ctx2)
-                                ctxMsg = null
-                            }) { Text(stringResource(R.string.msg_delete), color = Color(0xFFF87171)) }
-                        },
-                    )
-                }
             }
         }
     }
@@ -894,10 +912,17 @@ private fun PairingScreen(pairing: Pairing, onDone: () -> Unit) {
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun Bubble(m: Message, onLongClick: () -> Unit = {}) {
+private fun Bubble(
+    m: Message,
+    selected: Boolean = false,
+    onLongClick: () -> Unit = {},
+    onClick: () -> Unit = {},
+) {
     val time = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(m.timestamp))
+    // Selection highlight: tint the row background
+    val rowBg = if (selected) Accent.copy(alpha = 0.15f) else Color.Transparent
     Row(
-        Modifier.fillMaxWidth(),
+        Modifier.fillMaxWidth().background(rowBg),
         horizontalArrangement = if (m.fromMe) Arrangement.End else Arrangement.Start,
     ) {
         Surface(
@@ -909,10 +934,34 @@ private fun Bubble(m: Message, onLongClick: () -> Unit = {}) {
             ),
             modifier = Modifier
                 .widthIn(max = 300.dp)
-                .combinedClickable(onLongClick = onLongClick, onClick = {}),
+                .combinedClickable(onLongClick = onLongClick, onClick = onClick),
         ) {
             Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
-                Text(m.text, color = Color(0xFFC8D6E5), fontSize = 14.sp)
+                // Inline image: shown when the message carries a local media file
+                val imgPath = m.localMediaPath
+                if (imgPath != null) {
+                    val bmp = remember(imgPath) {
+                        runCatching {
+                            android.graphics.BitmapFactory.decodeFile(imgPath)?.asImageBitmap()
+                        }.getOrNull()
+                    }
+                    if (bmp != null) {
+                        Image(
+                            bitmap = bmp,
+                            contentDescription = m.text,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = 240.dp)
+                                .clip(RoundedCornerShape(8.dp)),
+                            contentScale = ContentScale.Fit,
+                        )
+                        Spacer(Modifier.height(4.dp))
+                    }
+                    // Show filename below image in small text
+                    Text(m.text, color = Muted, fontSize = 10.sp)
+                } else {
+                    Text(m.text, color = Color(0xFFC8D6E5), fontSize = 14.sp)
+                }
                 Text(
                     time, color = Muted, fontSize = 10.sp,
                     textAlign = TextAlign.End, modifier = Modifier.align(Alignment.End),
@@ -926,6 +975,7 @@ private val QUICK_COMMANDS = listOf(
     "/status", "/selinux", "/hardware", "/firmware", "/help",
     "/evidence list", "/face keygen", "/face register",
     "/settings", "/llm", "/systemprompt clear",
+    "/resetcontext",
     "/reboot", "/poweroff",
 )
 
@@ -934,7 +984,7 @@ private fun Composer(
     draft: String,
     onDraft: (String) -> Unit,
     onSend: () -> Unit,
-    onAttach: (filename: String, bytes: ByteArray, markitdown: Boolean) -> Unit,
+    onAttach: (filename: String, bytes: ByteArray, markitdown: Boolean, localPath: String?) -> Unit,
     onCommand: (String) -> Unit,
 ) {
     val ctx = LocalContext.current
@@ -947,11 +997,11 @@ private fun Composer(
         if (uri != null) {
             val (name, bytes) = readUri(ctx, uri)
             if (bytes != null) {
-                // Images are compressed to fit the 1 MB frame limit before being sent.
-                val finalBytes = if (pickMime.startsWith("image/")) {
-                    compressImageForChannel(bytes)
-                } else bytes
-                onAttach(name, finalBytes, markitdown)
+                val isImage = pickMime.startsWith("image/")
+                val finalBytes = if (isImage) compressImageForChannel(bytes) else bytes
+                // Save image locally so the bubble can display it inline.
+                val localPath = if (isImage) saveMediaFile(ctx, finalBytes, name) else null
+                onAttach(name, finalBytes, markitdown, localPath)
             }
         }
     }
@@ -1153,6 +1203,45 @@ private fun saveFaceLocally(ctx: android.content.Context, jpeg: ByteArray) {
     runCatching {
         val dir = java.io.File(ctx.filesDir, "faces").apply { mkdirs() }
         java.io.File(dir, "owner-${jpeg.size}.jpg").writeBytes(jpeg)
+    }
+}
+
+/** Save any sent/received media file to filesDir/sysentinel_media/ and return its path. */
+private fun saveMediaFile(ctx: android.content.Context, bytes: ByteArray, hint: String): String? {
+    return runCatching {
+        val dir = java.io.File(ctx.filesDir, "sysentinel_media").apply { mkdirs() }
+        val ext = hint.substringAfterLast('.', "jpg").lowercase().take(5)
+        val file = java.io.File(dir, "media_${System.currentTimeMillis()}.$ext")
+        file.writeBytes(bytes)
+        file.absolutePath
+    }.getOrNull()
+}
+
+@Composable
+private fun SelectionBar(
+    count: Int,
+    onCopy: () -> Unit,
+    onDelete: () -> Unit,
+    onCancel: () -> Unit,
+) {
+    Surface(color = Color(0xFF1A2535)) {
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            TextButton(onClick = onCancel) {
+                Text("✕  $count", color = Accent, fontSize = 13.sp)
+            }
+            Spacer(Modifier.weight(1f))
+            OutlinedButton(onClick = onCopy) {
+                Text(stringResource(R.string.msg_copy), color = Accent, fontSize = 13.sp)
+            }
+            OutlinedButton(onClick = onDelete,
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFF87171))) {
+                Text(stringResource(R.string.msg_delete), color = Color(0xFFF87171), fontSize = 13.sp)
+            }
+        }
     }
 }
 

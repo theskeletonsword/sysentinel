@@ -17,4 +17,11 @@ data class Message(
     val serverId: Long = 0L,
     /** Evidence the daemon attached, as a path on the watched machine. */
     val photoPath: String? = null,
+    /**
+     * Path to a locally-saved image file (in app's private storage).
+     * Set when the user sends an image — the compressed JPEG is written to
+     * filesDir/sysentinel_media/ so it can be displayed inline in the chat
+     * bubble and listed in the Multimedia screen.
+     */
+    val localMediaPath: String? = null,
 )

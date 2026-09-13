@@ -29,6 +29,12 @@ import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.*
 import org.json.JSONObject
 import java.io.File
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.text.style.TextOverflow
 
 // ── Data model ────────────────────────────────────────────────────────────────
 
@@ -266,6 +272,13 @@ fun formatDuration(ms: Long): String {
     return "%d:%02d".format(s / 60, s % 60)
 }
 
+// ── Unified media item ────────────────────────────────────────────────────────
+
+sealed class LocalMediaItem {
+    data class ChatImage(val msg: Message, val path: String, val fromMe: Boolean) : LocalMediaItem()
+    data class Evidence(val item: EvidenceItem) : LocalMediaItem()
+}
+
 // ── Composables ───────────────────────────────────────────────────────────────
 
 private val Ground  = Color(0xFF0B0F14)
@@ -278,34 +291,51 @@ private val RedWarn = Color(0xFFEF5350)
 /**
  * Root composable for the Multimedia evidence browser.
  *
- * Opened from the navigation drawer → "Multimedia".  Sends `/evidence list`
- * to the daemon on entry and renders the result as a scrollable list of audio
- * and video items, each with a WhatsApp-style player.
+ * Shows a unified gallery of chat images (user-sent + machine-sent) and daemon
+ * evidence items.  Supports multi-select delete: long-press → select → delete.
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun MultimediaScreen(
     engine: ChatEngine,
     listener: ChatEngine.Listener,
+    messages: List<Message>,
     onBack: () -> Unit,
 ) {
-    val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     var loading by remember { mutableStateOf(true) }
     var errorMsg by remember { mutableStateOf("") }
-    val items = remember { mutableStateListOf<EvidenceItem>() }
-    val prefs = remember { AppPrefs(ctx) }
+    val evidenceItems = remember { mutableStateListOf<LocalMediaItem.Evidence>() }
+    val prefs = remember { AppPrefs(LocalContext.current) }
 
-    // Request the evidence list from the daemon once on entry.
+    val chatImages = remember(messages.size) {
+        messages.mapNotNull { m ->
+            val path = m.localMediaPath ?: m.photoPath
+            if (path != null) LocalMediaItem.ChatImage(msg = m, path = path, fromMe = m.fromMe)
+            else null
+        }
+    }
+
+    val deletedPaths = remember { mutableStateSetOf<String>() }
+    val deletedIds   = remember { mutableStateSetOf<String>() }
+
+    val displayItems = remember(chatImages, evidenceItems.size, deletedPaths.size, deletedIds.size) {
+        buildList {
+            chatImages.forEach { item -> if (item.path !in deletedPaths) add(item) }
+            evidenceItems.forEach { item -> if (item.item.id !in deletedIds) add(item) }
+        }
+    }
+
+    var selectMode by remember { mutableStateOf(false) }
+    val selected   = remember { mutableStateSetOf<LocalMediaItem>() }
+
     LaunchedEffect(Unit) {
         scope.launch(Dispatchers.IO) {
             try {
-                // The engine sends a command and hands the daemon's reply to the
-                // listener; we set a one-shot listener that grabs the first
-                // non-empty response and parses it as an evidence list.
                 var reply = ""
                 val oneShot = object : ChatEngine.Listener {
-                    override fun onMessages(messages: List<Message>) {
-                        reply = messages.lastOrNull()?.text.orEmpty()
+                    override fun onMessages(msgs: List<Message>) {
+                        reply = msgs.lastOrNull()?.text.orEmpty()
                     }
                     override fun onStatus(text: String, ok: Boolean) = Unit
                 }
@@ -317,7 +347,7 @@ fun MultimediaScreen(
                         val parsed = parseEvidenceList(
                             if (reply.startsWith("[")) reply else "[$reply]"
                         )
-                        items.addAll(parsed)
+                        evidenceItems.addAll(parsed.map { LocalMediaItem.Evidence(it) })
                     } else if (reply.isNotBlank()) {
                         errorMsg = reply
                     }
@@ -331,69 +361,235 @@ fun MultimediaScreen(
         }
     }
 
-    Column(
-        Modifier
-            .fillMaxSize()
-            .background(Ground)
+    Scaffold(
+        bottomBar = {
+            if (selectMode) {
+                MediaSelectionBar(
+                    count = selected.size,
+                    onDelete = {
+                        selected.forEach { item ->
+                            when (item) {
+                                is LocalMediaItem.ChatImage -> {
+                                    runCatching { File(item.path).delete() }
+                                    deletedPaths.add(item.path)
+                                }
+                                is LocalMediaItem.Evidence -> deletedIds.add(item.item.id)
+                            }
+                        }
+                        selected.clear()
+                        selectMode = false
+                    },
+                    onCancel = { selected.clear(); selectMode = false },
+                )
+            }
+        },
+        containerColor = Ground,
+    ) { innerPadding ->
+        Column(
+            Modifier
+                .fillMaxSize()
+                .padding(innerPadding)
+                .background(Ground)
+        ) {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .background(Card)
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                IconButton(onClick = {
+                    if (selectMode) { selected.clear(); selectMode = false }
+                    else onBack()
+                }) {
+                    Icon(
+                        if (selectMode) Icons.Default.Close else Icons.Default.ArrowBack,
+                        contentDescription = null, tint = Accent,
+                    )
+                }
+                Text(
+                    text = if (selectMode) "${selected.size} selected"
+                           else stringResource(R.string.media_title),
+                    color = Accent,
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.weight(1f).padding(start = 8.dp),
+                )
+            }
+
+            when {
+                loading && displayItems.isEmpty() -> {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            CircularProgressIndicator(color = Accent)
+                            Spacer(Modifier.height(12.dp))
+                            Text(stringResource(R.string.media_loading), color = Muted, fontSize = 14.sp)
+                        }
+                    }
+                }
+                errorMsg.isNotBlank() && displayItems.isEmpty() -> {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Text(
+                            stringResource(R.string.media_error, errorMsg),
+                            color = RedWarn, fontSize = 14.sp,
+                            modifier = Modifier.padding(24.dp),
+                        )
+                    }
+                }
+                displayItems.isEmpty() -> {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Text(
+                            stringResource(R.string.media_empty),
+                            color = Muted, fontSize = 14.sp,
+                            modifier = Modifier.padding(24.dp),
+                        )
+                    }
+                }
+                else -> {
+                    LazyColumn(
+                        Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        items(displayItems, key = { item ->
+                            when (item) {
+                                is LocalMediaItem.ChatImage -> "chat_${item.path}"
+                                is LocalMediaItem.Evidence  -> "ev_${item.item.id}"
+                            }
+                        }) { item ->
+                            val sel = item in selected
+                            when (item) {
+                                is LocalMediaItem.ChatImage -> ChatImageCard(
+                                    item = item,
+                                    selected = sel,
+                                    onLongClick = { selectMode = true; selected.add(item) },
+                                    onClick = {
+                                        if (selectMode) {
+                                            if (sel) selected.remove(item) else selected.add(item)
+                                            if (selected.isEmpty()) selectMode = false
+                                        }
+                                    },
+                                )
+                                is LocalMediaItem.Evidence -> {
+                                    Box(
+                                        Modifier
+                                            .fillMaxWidth()
+                                            .background(
+                                                if (sel) Accent.copy(alpha = 0.15f) else Color.Transparent,
+                                                RoundedCornerShape(12.dp),
+                                            )
+                                            .combinedClickable(
+                                                onLongClick = { selectMode = true; selected.add(item) },
+                                                onClick = {
+                                                    if (selectMode) {
+                                                        if (sel) selected.remove(item) else selected.add(item)
+                                                        if (selected.isEmpty()) selectMode = false
+                                                    }
+                                                },
+                                            )
+                                    ) {
+                                        EvidenceCard(item.item, prefs.dateFormat)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun ChatImageCard(
+    item: LocalMediaItem.ChatImage,
+    selected: Boolean,
+    onLongClick: () -> Unit,
+    onClick: () -> Unit,
+) {
+    Card(
+        colors = CardDefaults.cardColors(
+            containerColor = if (selected) Accent.copy(alpha = 0.15f) else Card,
+        ),
+        shape = RoundedCornerShape(12.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .combinedClickable(onLongClick = onLongClick, onClick = onClick),
     ) {
-        // Top bar
+        Column(Modifier.padding(12.dp)) {
+            val bmp = remember(item.path) {
+                runCatching {
+                    android.graphics.BitmapFactory.decodeFile(item.path)?.asImageBitmap()
+                }.getOrNull()
+            }
+            if (bmp != null) {
+                Image(
+                    bitmap = bmp,
+                    contentDescription = null,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 200.dp)
+                        .clip(RoundedCornerShape(8.dp)),
+                    contentScale = ContentScale.Fit,
+                )
+                Spacer(Modifier.height(6.dp))
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    if (item.fromMe) "me" else "machine",
+                    color = if (item.fromMe) Accent else Muted,
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.widthIn(min = 52.dp),
+                )
+                Spacer(Modifier.width(4.dp))
+                Text(
+                    item.msg.text,
+                    color = Muted,
+                    fontSize = 11.sp,
+                    modifier = Modifier.weight(1f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    mediaTimestamp(item.msg.timestamp),
+                    color = Muted,
+                    fontSize = 10.sp,
+                )
+            }
+        }
+    }
+}
+
+private fun mediaTimestamp(ms: Long): String {
+    val cal = java.util.Calendar.getInstance().also { it.timeInMillis = ms }
+    return "%02d/%02d %02d:%02d".format(
+        cal.get(java.util.Calendar.DAY_OF_MONTH),
+        cal.get(java.util.Calendar.MONTH) + 1,
+        cal.get(java.util.Calendar.HOUR_OF_DAY),
+        cal.get(java.util.Calendar.MINUTE),
+    )
+}
+
+@Composable
+private fun MediaSelectionBar(count: Int, onDelete: () -> Unit, onCancel: () -> Unit) {
+    Surface(color = Color(0xFF1A2535)) {
         Row(
             Modifier
                 .fillMaxWidth()
-                .background(Card)
-                .padding(horizontal = 16.dp, vertical = 12.dp),
+                .padding(horizontal = 8.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            IconButton(onClick = onBack) {
-                Icon(Icons.Default.ArrowBack, contentDescription = null, tint = Accent)
+            TextButton(onClick = onCancel) {
+                Text("✕  $count selected", color = Accent, fontSize = 13.sp)
             }
-            Text(
-                text = stringResource(R.string.media_title),
-                color = Accent,
-                fontSize = 18.sp,
-                fontWeight = FontWeight.SemiBold,
-                modifier = Modifier.weight(1f).padding(start = 8.dp),
-            )
-        }
-
-        when {
-            loading -> {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        CircularProgressIndicator(color = Accent)
-                        Spacer(Modifier.height(12.dp))
-                        Text(stringResource(R.string.media_loading), color = Muted, fontSize = 14.sp)
-                    }
-                }
-            }
-            errorMsg.isNotBlank() -> {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text(
-                        stringResource(R.string.media_error, errorMsg),
-                        color = RedWarn, fontSize = 14.sp,
-                        modifier = Modifier.padding(24.dp),
-                    )
-                }
-            }
-            items.isEmpty() -> {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text(
-                        stringResource(R.string.media_empty),
-                        color = Muted, fontSize = 14.sp,
-                        modifier = Modifier.padding(24.dp),
-                    )
-                }
-            }
-            else -> {
-                LazyColumn(
-                    Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(12.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    items(items) { item ->
-                        EvidenceCard(item, prefs.dateFormat)
-                    }
-                }
+            Spacer(Modifier.weight(1f))
+            OutlinedButton(
+                onClick = onDelete,
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFF87171)),
+            ) {
+                Text(stringResource(R.string.msg_delete), color = Color(0xFFF87171))
             }
         }
     }
