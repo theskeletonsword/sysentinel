@@ -12,7 +12,6 @@
 
     <!-- Welcome screen -->
     <string name="welcome_title">Welcome to Sysentinel</string>
-    <string name="welcome_body">Sysentinel is your PC\'s best friend — a security daemon that lets you chat with your computer, receive alerts, and review evidence collected at boot.\n\nTo use this app you need to install the daemon on your PC. Download it from GitHub:\n\ngithub.com/theskeletonsword/sysentinel\n\nSysentinel is fully open source, including the kernel module. There are no hidden telemetry calls, no cloud accounts, and no third parties. Everything stays between this phone and your machine.</string>
     <string name="welcome_ok">Get started</string>
 
     <!-- Chat -->

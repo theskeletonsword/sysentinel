@@ -36,9 +36,15 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.foundation.text.ClickableText
+import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
@@ -154,6 +160,19 @@ private fun AppRoot(
     }
 
     if (showWelcome) {
+        val uriHandler = LocalUriHandler.current
+        val ghUrl = "https://github.com/theskeletonsword/sysentinel"
+        val body = buildAnnotatedString {
+            append("Sysentinel is your PC's best friend — a security daemon that lets you chat with your computer, receive alerts, and review evidence collected at boot.\n\n")
+            append("To use this app, install the daemon on your PC. Download it from GitHub:\n\n")
+            pushStringAnnotation("URL", ghUrl)
+            withStyle(SpanStyle(color = Accent, textDecoration = TextDecoration.Underline)) {
+                append("github.com/theskeletonsword/sysentinel")
+            }
+            pop()
+            append("\n\nSysentinel is fully open source, including the kernel module. No telemetry, no cloud accounts, no third parties. Everything stays between this phone and your machine.\n\n")
+            append("This app contains no ads and no in-app purchases.")
+        }
         AlertDialog(
             onDismissRequest = {},
             confirmButton = {
@@ -163,7 +182,19 @@ private fun AppRoot(
                 }) { Text(stringResource(R.string.welcome_ok)) }
             },
             title = { Text(stringResource(R.string.welcome_title)) },
-            text = { Text(stringResource(R.string.welcome_body)) },
+            text = {
+                ClickableText(
+                    text = body,
+                    style = androidx.compose.ui.text.TextStyle(
+                        color = MaterialTheme.colorScheme.onSurface,
+                        fontSize = 14.sp,
+                    ),
+                    onClick = { offset ->
+                        body.getStringAnnotations("URL", offset, offset)
+                            .firstOrNull()?.let { uriHandler.openUri(it.item) }
+                    },
+                )
+            },
         )
         return
     }

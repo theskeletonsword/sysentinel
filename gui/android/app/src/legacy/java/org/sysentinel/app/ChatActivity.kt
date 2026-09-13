@@ -2,7 +2,10 @@
 package org.sysentinel.app
 
 import android.os.Bundle
+import android.text.method.LinkMovementMethod
 import android.view.View
+import android.widget.TextView
+import androidx.core.text.HtmlCompat
 import android.view.ViewGroup
 import android.widget.ArrayAdapter
 import android.widget.Button
@@ -101,9 +104,20 @@ class ChatActivity : AppCompatActivity() {
             offerPairingFromIntent()
             return
         }
-        androidx.appcompat.app.AlertDialog.Builder(this)
+        val html = HtmlCompat.fromHtml(
+            "Sysentinel is your PC&#39;s best friend &#8212; a security daemon that lets you " +
+            "chat with your computer, receive alerts, and review evidence collected at boot.<br><br>" +
+            "To use this app, install the daemon on your PC. Download it from GitHub:<br><br>" +
+            "<a href=\"https://github.com/theskeletonsword/sysentinel\">" +
+            "github.com/theskeletonsword/sysentinel</a><br><br>" +
+            "Sysentinel is fully open source, including the kernel module. " +
+            "No telemetry, no cloud accounts, no third parties.<br><br>" +
+            "<b>This app contains no ads and no in-app purchases.</b>",
+            HtmlCompat.FROM_HTML_MODE_LEGACY,
+        )
+        val dialog = androidx.appcompat.app.AlertDialog.Builder(this)
             .setTitle(getString(R.string.welcome_title))
-            .setMessage(getString(R.string.welcome_body))
+            .setMessage(html)
             .setCancelable(false)
             .setPositiveButton(getString(R.string.welcome_ok)) { d, _ ->
                 prefs.welcomeShown = true
@@ -111,6 +125,8 @@ class ChatActivity : AppCompatActivity() {
                 offerPairingFromIntent()
             }
             .show()
+        dialog.findViewById<TextView>(android.R.id.message)
+            ?.movementMethod = LinkMovementMethod.getInstance()
     }
 
     /**
