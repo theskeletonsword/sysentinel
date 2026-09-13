@@ -102,6 +102,18 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     kotlin { compilerOptions { jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17) } }
+
+    // Rename outputs: sysentinel-arm64-v8a.apk / sysentinel-armeabi-v7a.apk
+    applicationVariants.all {
+        val arch = when (flavorName) {
+            "modern" -> "arm64-v8a"
+            else -> "armeabi-v7a"
+        }
+        outputs.all {
+            (this as com.android.build.gradle.internal.api.BaseVariantOutputImpl)
+                .outputFileName = "sysentinel-$arch.apk"
+        }
+    }
 }
 
 dependencies {

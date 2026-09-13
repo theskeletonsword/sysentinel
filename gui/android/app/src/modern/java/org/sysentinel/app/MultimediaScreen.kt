@@ -313,7 +313,8 @@ fun MultimediaScreen(
     var loading by remember { mutableStateOf(true) }
     var errorMsg by remember { mutableStateOf("") }
     val evidenceItems = remember { mutableStateListOf<LocalMediaItem.Evidence>() }
-    val prefs = remember { AppPrefs(LocalContext.current) }
+    val ctx = LocalContext.current
+    val prefs = remember(ctx) { AppPrefs(ctx) }
 
     val chatImages = remember(messages.size) {
         messages.mapNotNull { m ->
@@ -323,8 +324,8 @@ fun MultimediaScreen(
         }
     }
 
-    val deletedPaths = remember { mutableStateSetOf<String>() }
-    val deletedIds   = remember { mutableStateSetOf<String>() }
+    val deletedPaths = remember { mutableStateListOf<String>() }
+    val deletedIds   = remember { mutableStateListOf<String>() }
 
     val displayItems = remember(chatImages, evidenceItems.size, deletedPaths.size, deletedIds.size) {
         buildList {
@@ -334,7 +335,7 @@ fun MultimediaScreen(
     }
 
     var selectMode by remember { mutableStateOf(false) }
-    val selected   = remember { mutableStateSetOf<LocalMediaItem>() }
+    val selected   = remember { mutableStateListOf<LocalMediaItem>() }
 
     LaunchedEffect(Unit) {
         scope.launch(Dispatchers.IO) {

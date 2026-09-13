@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+<!-- Holo Dark palette for the legacy flavour -->
+<resources>
+    <color name="holo_bg">#FF111111</color>
+    <color name="holo_bg_dark">#FF0A0A0A</color>
+    <color name="holo_blue">#FF33B5E5</color>
+    <color name="holo_text">#FFFFFFFF</color>
+    <color name="holo_text_dim">#FF909090</color>
+</resources>

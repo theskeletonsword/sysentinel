@@ -26,6 +26,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Visibility
@@ -123,7 +124,9 @@ private fun AppRoot(
     val scope = rememberCoroutineScope()
     // Multi-select state (long-press enters selection mode; replaces the old single-message menu)
     var selectMode by remember { mutableStateOf(false) }
-    val selectedMsgs = remember { mutableStateSetOf<Message>() }
+    val selectedMsgs = remember { mutableStateListOf<Message>() }
+    val prefs = remember(ctx) { AppPrefs(ctx) }
+    var showWelcome by remember { mutableStateOf(!prefs.welcomeShown) }
 
     val listener = remember {
         object : ChatEngine.Listener {
@@ -148,6 +151,21 @@ private fun AppRoot(
     }
     LaunchedEffect(messages.size) {
         if (messages.isNotEmpty()) listState.animateScrollToItem(messages.lastIndex)
+    }
+
+    if (showWelcome) {
+        AlertDialog(
+            onDismissRequest = {},
+            confirmButton = {
+                TextButton(onClick = {
+                    prefs.welcomeShown = true
+                    showWelcome = false
+                }) { Text(stringResource(R.string.welcome_ok)) }
+            },
+            title = { Text(stringResource(R.string.welcome_title)) },
+            text = { Text(stringResource(R.string.welcome_body)) },
+        )
+        return
     }
 
     if (showPairing) {
@@ -274,11 +292,11 @@ private fun AppRoot(
                                 selected = sel,
                                 onLongClick = {
                                     selectMode = true
-                                    selectedMsgs.add(msg)
+                                    if (msg !in selectedMsgs) selectedMsgs.add(msg)
                                 },
                                 onClick = {
                                     if (selectMode) {
-                                        if (sel) selectedMsgs.remove(msg) else selectedMsgs.add(msg)
+                                        if (sel) selectedMsgs.remove(msg) else if (msg !in selectedMsgs) selectedMsgs.add(msg)
                                         if (selectedMsgs.isEmpty()) selectMode = false
                                     }
                                 },
@@ -1361,7 +1379,7 @@ private fun selinuxSummary(line: String): String? {
     val action = Regex("""\{\s*(\w+)\s*\}""").find(line)?.groupValues?.getOrNull(1) ?: return null
     val comm   = Regex("""comm="([^"]+)"""").find(line)?.groupValues?.getOrNull(1) ?: "process"
     val path   = Regex("""(?:path|name|dev)="([^"]+)"""").find(line)?.groupValues?.getOrNull(1)
-    return if (path != null) "$comm tried to $action "$path" — SELinux denied"
+    return if (path != null) "$comm tried to $action \"$path\" — SELinux denied"
     else "$comm tried $action — SELinux denied"
 }
 

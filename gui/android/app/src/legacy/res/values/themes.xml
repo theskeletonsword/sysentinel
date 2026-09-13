@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  SPDX-License-Identifier: Apache-2.0
+  Legacy flavour: Holo Dark — available on every Android since API 14.
+  AppCompatActivity accepts Theme.AppCompat; the Holo styling is layered
+  on top by inheriting from Theme.AppCompat and overriding colours to match
+  the classic Holo Dark palette so the dialog and list look native on older
+  hardware.
+-->
+<resources>
+    <style name="Theme.Sysentinel" parent="Theme.AppCompat.NoActionBar">
+        <!-- Holo Dark background: #111 -->
+        <item name="android:windowBackground">@color/holo_bg</item>
+        <item name="android:colorBackground">@color/holo_bg</item>
+        <!-- Accent: Holo Blue Light -->
+        <item name="colorAccent">@color/holo_blue</item>
+        <item name="colorPrimary">@color/holo_bg_dark</item>
+        <item name="colorPrimaryDark">@color/holo_bg_dark</item>
+        <!-- Text -->
+        <item name="android:textColorPrimary">@color/holo_text</item>
+        <item name="android:textColorSecondary">@color/holo_text_dim</item>
+    </style>
+</resources>

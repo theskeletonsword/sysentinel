@@ -53,6 +53,10 @@ class AppPrefs(context: Context) {
         get() = prefs.getLong(KEY_NOTIFIED, 0L)
         set(v) = prefs.edit().putLong(KEY_NOTIFIED, v).apply()
 
+    var welcomeShown: Boolean
+        get() = prefs.getBoolean(KEY_WELCOME, false)
+        set(v) = prefs.edit().putBoolean(KEY_WELCOME, v).apply()
+
     companion object {
         const val DEFAULT_LANG = "en"
         /** The languages offered in the picker: English (source) + Spanish. */
@@ -61,5 +65,6 @@ class AppPrefs(context: Context) {
         private const val KEY_NOTIF = "notifications"
         private const val KEY_NOTIFIED = "last_notified_id"
         private const val KEY_DATE_FMT = "date_format"
+        private const val KEY_WELCOME = "welcome_shown"
     }
 }

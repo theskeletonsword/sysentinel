@@ -91,7 +91,8 @@ modinfo -k "$KVER" sysentinel_metrics > /dev/null 2>&1 \
 # pick them up from one place.
 say "installing shared capture scripts → /usr/libexec/sysentinel/"
 install -d -m755 /usr/libexec/sysentinel
-for s in sysentinel-precrypt.sh sysentinel-luks.sh; do
+for s in sysentinel-precrypt.sh sysentinel-luks.sh \
+         sysentinel-audio-capture.sh sysentinel-video-capture.sh; do
     install -m755 "$RAMDISK/91sysentinel/$s" "/usr/libexec/sysentinel/$s"
 done
 

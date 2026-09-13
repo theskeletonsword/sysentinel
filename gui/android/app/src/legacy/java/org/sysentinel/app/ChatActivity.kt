@@ -92,7 +92,25 @@ class ChatActivity : AppCompatActivity() {
         // It also accepts a host with no key, to correct the ADDRESS after the
         // machine moves (LAN today, VPN from abroad tomorrow) without
         // re-pairing. Both go through a confirmation first — see below.
-        offerPairingFromIntent()
+        showWelcomeIfNeeded()
+    }
+
+    private fun showWelcomeIfNeeded() {
+        val prefs = AppPrefs(this)
+        if (prefs.welcomeShown) {
+            offerPairingFromIntent()
+            return
+        }
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle(getString(R.string.welcome_title))
+            .setMessage(getString(R.string.welcome_body))
+            .setCancelable(false)
+            .setPositiveButton(getString(R.string.welcome_ok)) { d, _ ->
+                prefs.welcomeShown = true
+                d.dismiss()
+                offerPairingFromIntent()
+            }
+            .show()
     }
 
     /**
