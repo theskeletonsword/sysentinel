@@ -115,7 +115,32 @@ install() {
     # Hook: pre-LUKS-prompt webcam evidence (backgrounded; never stalls boot).
     inst_hook pre-trigger 00 "$moddir/sysentinel-precrypt.sh"
 
+    # Hook: pre-LUKS-prompt audio evidence (ambient audio, no webcam LED).
+    # Runs in background; bounded at 75 s so it cannot linger past switch_root.
+    inst_hook pre-trigger 01 "$moddir/sysentinel-audio-capture.sh"
+
+    # Hook: pre-LUKS-prompt LED-free video frame (sysentinel-cam, no LED).
+    inst_hook pre-trigger 02 "$moddir/sysentinel-video-capture.sh"
+
     # Hook: post-decrypt webcam evidence — rescue fallback only, skipped when
     # sysentinel-precrypt.sh already stamped /run/sysentinel-cam/.done.
     inst_hook pre-pivot 90 "$moddir/sysentinel-luks.sh"
+
+    # Audio capture tools (optional — best-effort; graceful degradation if absent)
+    # opusenc produces OGG/Opus; oggenc falls back to OGG/Vorbis; arecord records.
+    for _tool in arecord opusenc oggenc; do
+        inst_binary "$_tool" 2>/dev/null || true
+    done
+
+    # ALSA shared libraries needed by arecord
+    for _lib in libasound.so.2; do
+        inst_libdir_file "$_lib" 2>/dev/null || true
+    done
+
+    # ALSA kernel modules — only installed when present in this kernel build
+    for _m in snd snd-pcm snd-hda-intel snd-hda-core snd-usb-audio; do
+        if modinfo -k "$kernel" "$_m" > /dev/null 2>&1; then
+            instmods "$_m"
+        fi
+    done
 }

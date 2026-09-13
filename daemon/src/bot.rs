@@ -3525,11 +3525,10 @@ PMU).";
         );
     }
 
-    /// `/evidence list` — return a JSON array of evidence files found in the
-    /// configured evidence directory, with per-file metadata (type, size,
-    /// mtime, PMU counter summary).
+    /// `/evidence list` — return a JSON array of evidence files with full
+    /// hardware snapshot + media codec metadata for the Android Multimedia screen.
     ///
-    /// The Android Multimedia screen sends this command and parses the response.
+    /// JSON shape matches `EvidenceItem` + `HardwareSnapshot` in MultimediaScreen.kt.
     fn cmd_evidence(&self, chat_id: i64, text: &str) {
         let rest = text.trim().strip_prefix("/evidence").unwrap_or("").trim();
         let sub  = rest.split_whitespace().next().unwrap_or("list");
@@ -3539,15 +3538,22 @@ PMU).";
         }
 
         let ev_dir = std::path::Path::new(&self.config.camera.evidence_dir);
-        let tsc    = crate::procinfo::tsc_status();
-        let pmu_summary = crate::pmu::counter_summary();
+
+        // Build HW snapshot once — same for every file in this listing.
+        let hw_json = crate::hwsnap::hw_snapshot_json();
+
+        let tsc = crate::procinfo::tsc_status();
+        let ppm = if tsc.nominal_khz > 0 && tsc.measured_khz > 0.0 {
+            let drift = (tsc.measured_khz - tsc.nominal_khz as f64) / tsc.nominal_khz as f64;
+            (drift * 1_000_000.0).round() as i64
+        } else { 0 };
 
         let entries = match std::fs::read_dir(ev_dir) {
             Ok(rd) => rd,
             Err(e) => {
                 let _ = self.send(
                     chat_id,
-                    &format!("{{\"error\":\"cannot read evidence dir: {e}\"}}"),
+                    &format!("{{\"error\":\"cannot read evidence dir: {}\"}}", e),
                 );
                 return;
             }
@@ -3558,48 +3564,45 @@ PMU).";
             let path = entry.path();
             let Some(name) = path.file_name().and_then(|n| n.to_str()) else { continue };
             let Ok(meta) = entry.metadata() else { continue };
-            let size = meta.len();
-            let mtime = meta
-                .modified()
-                .ok()
+
+            let mtime_ms = meta
+                .modified().ok()
                 .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                .map(|d| d.as_secs())
+                .map(|d| d.as_millis() as u64)
                 .unwrap_or(0);
 
-            // Classify by extension
-            let ext  = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
-            let kind = match ext.as_str() {
-                "jpg" | "jpeg" => "PHOTO",
-                "ogg" | "opus" => "AUDIO",
-                "mkv" | "mp4" | "webm" => "VIDEO",
-                _ => "OTHER",
-            };
+            let ext = path.extension()
+                .and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
 
-            // RDTSCP timestamp at read time (best available, not the file's ctime)
+            let (kind, codec_audio, sample_rate, codec_video, frame_rate, duration_ms) =
+                match ext.as_str() {
+                    "jpg" | "jpeg" => ("photo", "", 0, "", 0, 0u64),
+                    "ogg"  => ("audio", "opus",  48000, "", 0,
+                               crate::hwsnap::ogg_duration_ms(&path)),
+                    "opus" => ("audio", "opus",  48000, "", 0,
+                               crate::hwsnap::ogg_duration_ms(&path)),
+                    "mkv"  => ("video", "aac",   44100, "h264", 30, 0u64),
+                    "mp4"  => ("video", "aac",   44100, "h264", 30, 0u64),
+                    "webm" => ("video", "opus",  48000, "vp9",  30, 0u64),
+                    _      => continue,  // skip non-media files
+                };
+
             let rdtsc_now = crate::procinfo::read_rdtscp();
-            let ppm = if tsc.nominal_khz > 0 && tsc.measured_khz > 0.0 {
-                let drift = (tsc.measured_khz - tsc.nominal_khz as f64) / tsc.nominal_khz as f64;
-                (drift * 1_000_000.0).round() as i64
-            } else {
-                0
-            };
-
-            // Escape the path for JSON
-            let path_str = path.to_string_lossy().replace('\\', "\\\\").replace('"', "\\\"");
+            let path_esc  = path.to_string_lossy()
+                .replace('\\', "\\\\").replace('"', "\\\"");
+            let id_esc = name.replace('"', "\\\"");
 
             items.push(format!(
-                "{{\"name\":\"{name}\",\"type\":\"{kind}\",\"path\":\"{path_str}\",\
-                 \"size_bytes\":{size},\"mtime_unix\":{mtime},\
-                 \"rdtsc\":{rdtsc_now},\"tsc_ppm\":{ppm},\
-                 \"pmu_counters\":\"{pmu_summary}\"}}",
+                "{{\"id\":\"{id_esc}\",\"type\":\"{kind}\",\"path\":\"{path_esc}\",\
+                 \"ts_wall\":{mtime_ms},\"ts_rdtsc\":{rdtsc_now},\"ts_ppm\":{ppm},\
+                 \"codec_audio\":\"{codec_audio}\",\"sample_rate\":{sample_rate},\
+                 \"codec_video\":\"{codec_video}\",\"frame_rate\":{frame_rate},\
+                 \"duration_ms\":{duration_ms},\"hw\":{hw_json}}}",
             ));
         }
 
-        // Sort by name for deterministic order
         items.sort();
-
-        let json = format!("[{}]", items.join(","));
-        let _ = self.send(chat_id, &json);
+        let _ = self.send(chat_id, &format!("[{}]", items.join(",")));
     }
 
     /// Consume one photo sent while `/face register` is arming: hash it and

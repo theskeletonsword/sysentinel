@@ -33,6 +33,7 @@ mod fsprobe;
 mod hal;
 mod httpsec;
 mod hwdiag;
+mod hwsnap;
 mod hwinfo;
 mod hyperwatch;
 mod ipc;

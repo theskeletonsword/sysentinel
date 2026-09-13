@@ -110,6 +110,10 @@ data class HardwareSnapshot(
     val tpmPresent: Boolean,
     val meiFwVersion: String,
     val pspFwVersion: String,
+    // PMU counters (CPUID 0x0A)
+    val pmuHwGp: Int,     // general-purpose programmable counters per logical CPU
+    val pmuHwFixed: Int,  // fixed-function counters
+    val pmuSw: Int,       // software counters (context-switches, faults, migrations)
 )
 
 data class DiskSnapshot(
@@ -209,6 +213,9 @@ private fun parseHw(o: JSONObject): HardwareSnapshot {
         tpmPresent       = o.optBoolean("tpm_present"),
         meiFwVersion     = o.optString("mei_fw"),
         pspFwVersion     = o.optString("psp_fw"),
+        pmuHwGp          = o.optInt("pmu_hw_gp"),
+        pmuHwFixed       = o.optInt("pmu_hw_fixed"),
+        pmuSw            = o.optInt("pmu_sw"),
     )
 }
 
@@ -858,6 +865,19 @@ private fun HardwareDetailSection(hw: HardwareSnapshot) {
             DetailGroup(stringResource(R.string.media_firmware)) {
                 if (hw.meiFwVersion.isNotBlank()) DetailRow("MEI firmware", hw.meiFwVersion)
                 if (hw.pspFwVersion.isNotBlank()) DetailRow("PSP firmware", hw.pspFwVersion)
+            }
+        }
+
+        // PMU counters
+        if (hw.pmuHwGp > 0 || hw.pmuHwFixed > 0 || hw.pmuSw > 0) {
+            DetailGroup("PMU counters") {
+                if (hw.pmuHwGp > 0 || hw.pmuHwFixed > 0) {
+                    DetailRow("HW (CPUID 0x0A)",
+                        "${hw.pmuHwGp} GP + ${hw.pmuHwFixed} fixed per logical CPU")
+                }
+                if (hw.pmuSw > 0) {
+                    DetailRow("SW (perf)", "${hw.pmuSw} (cs, pfmin, pfmaj, migrations)")
+                }
             }
         }
     }
