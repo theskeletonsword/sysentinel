@@ -170,8 +170,8 @@ private fun AppRoot(
                 append("github.com/theskeletonsword/sysentinel")
             }
             pop()
-            append("\n\nSysentinel is fully open source, including the kernel module. No telemetry, no cloud accounts, no third parties. Everything stays between this phone and your machine.\n\n")
-            append("This app contains no ads and no in-app purchases.")
+            append("\n\nSysentinel is fully open source, including the kernel module. Your data goes to your own PC — never to us. When you configure an AI provider (OpenAI, Anthropic, etc.) your messages are sent to that provider's API; that is inherent to how AI assistants work and is not hidden.\n\n")
+            append("No ads. No in-app purchases.")
         }
         AlertDialog(
             onDismissRequest = {},

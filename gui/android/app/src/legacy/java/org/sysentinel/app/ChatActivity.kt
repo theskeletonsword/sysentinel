@@ -111,8 +111,10 @@ class ChatActivity : AppCompatActivity() {
             "<a href=\"https://github.com/theskeletonsword/sysentinel\">" +
             "github.com/theskeletonsword/sysentinel</a><br><br>" +
             "Sysentinel is fully open source, including the kernel module. " +
-            "No telemetry, no cloud accounts, no third parties.<br><br>" +
-            "<b>This app contains no ads and no in-app purchases.</b>",
+            "Your data goes to your own PC &#8212; never to us. " +
+            "When you configure an AI provider (OpenAI, Anthropic, etc.) your messages are sent " +
+            "to that provider&#39;s API; this is inherent to how AI assistants work and is not hidden.<br><br>" +
+            "<b>No ads. No in-app purchases.</b>",
             HtmlCompat.FROM_HTML_MODE_LEGACY,
         )
         val dialog = androidx.appcompat.app.AlertDialog.Builder(this)
