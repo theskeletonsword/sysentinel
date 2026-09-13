@@ -110,6 +110,10 @@ class ChatActivity : AppCompatActivity() {
             "To use this app, install the daemon on your PC. Download it from GitHub:<br><br>" +
             "<a href=\"https://github.com/theskeletonsword/sysentinel\">" +
             "github.com/theskeletonsword/sysentinel</a><br><br>" +
+            "For the best privacy and to avoid DDoS exposure, we strongly recommend connecting via " +
+            "<a href=\"https://tailscale.com\">Tailscale</a> (free, peer-to-peer VPN &#8212; " +
+            "your port is never exposed to the internet). DDNS or local network also work but are " +
+            "not recommended: open ports attract automated attacks.<br><br>" +
             "Sysentinel is fully open source, including the kernel module. " +
             "Your data goes to your own PC &#8212; never to us. " +
             "When you configure an AI provider (OpenAI, Anthropic, etc.) your messages are sent " +

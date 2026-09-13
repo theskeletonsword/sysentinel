@@ -280,6 +280,11 @@ fn main() -> Result<()> {
 
         channel::init(channel::Channels::new(notifiers));
 
+        // Log any unlogged evidence files to the system journal so the owner
+        // can retrieve them remotely via:
+        //   journalctl -u sysentinel -g 'EVIDENCE-B64' --no-pager
+        bot::log_evidence_to_journal(&config.camera.evidence_dir);
+
         if channel::is_deaf() {
             log::warn!(
                 "no channel can reach you: this daemon will watch and never be able \

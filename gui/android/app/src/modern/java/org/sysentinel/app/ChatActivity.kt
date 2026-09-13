@@ -170,7 +170,14 @@ private fun AppRoot(
                 append("github.com/theskeletonsword/sysentinel")
             }
             pop()
-            append("\n\nSysentinel is fully open source, including the kernel module. Your data goes to your own PC — never to us. When you configure an AI provider (OpenAI, Anthropic, etc.) your messages are sent to that provider's API; that is inherent to how AI assistants work and is not hidden.\n\n")
+            append("\n\nFor the best privacy and to avoid DDoS exposure, we strongly recommend connecting via ")
+            pushStringAnnotation("URL", "https://tailscale.com")
+            withStyle(SpanStyle(color = Accent, textDecoration = TextDecoration.Underline)) {
+                append("Tailscale")
+            }
+            pop()
+            append(" (free, peer-to-peer VPN — your port is never exposed to the internet). DDNS or local network also work but are not recommended: open ports attract automated attacks.\n\n")
+            append("Sysentinel is fully open source, including the kernel module. Your data goes to your own PC — never to us. When you configure an AI provider (OpenAI, Anthropic, etc.) your messages are sent to that provider's API; that is inherent to how AI assistants work and is not hidden.\n\n")
             append("No ads. No in-app purchases.")
         }
         AlertDialog(

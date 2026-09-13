@@ -4582,3 +4582,62 @@ mod tests {
         assert_eq!(parse_arm_marker("[ARM:kernelpanicx] no"), None);
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Evidence → journal (remote evidence retrieval via Tailscale + journalctl)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Called once at daemon startup. Each evidence file that has not yet been
+// logged is encoded as base64 and emitted to the system journal in 3 KB
+// chunks so journald never truncates a line.  A zero-byte sidecar file
+// (<name>.b64done) is written next to the evidence file so repeated daemon
+// restarts do not re-emit the same data.
+//
+// Retrieve while away from home:
+//   journalctl -u sysentinel -g 'EVIDENCE-B64' --no-pager
+// Then, on your phone or any machine:
+//   echo "<chunk>" | base64 -d > evidence.jpg
+//
+pub fn log_evidence_to_journal(evidence_dir: &str) {
+    use base64::Engine as _;
+    let dir = std::path::Path::new(evidence_dir);
+    let entries = match std::fs::read_dir(dir) {
+        Ok(rd) => rd,
+        Err(e) => {
+            log::debug!("evidence journal: cannot read {}: {}", evidence_dir, e);
+            return;
+        }
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let ext = path.extension()
+            .and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+        if !matches!(ext.as_str(), "jpg" | "jpeg" | "ogg" | "opus" | "mkv" | "mp4" | "webm") {
+            continue;
+        }
+        let flag = path.with_extension("b64done");
+        if flag.exists() { continue; }
+
+        let bytes = match std::fs::read(&path) {
+            Ok(b) => b,
+            Err(e) => { log::warn!("evidence journal: cannot read {:?}: {}", path, e); continue; }
+        };
+
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+        let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+        let chunks: Vec<&str> = b64.as_bytes()
+            .chunks(3000)
+            .map(|c| std::str::from_utf8(c).unwrap_or(""))
+            .collect();
+        let total = chunks.len();
+        log::info!("[EVIDENCE-B64-START] file={name} size_bytes={} parts={total}",
+                   bytes.len());
+        for (i, chunk) in chunks.iter().enumerate() {
+            log::info!("[EVIDENCE-B64] file={name} part={}/{total} data={chunk}",
+                       i + 1);
+        }
+        log::info!("[EVIDENCE-B64-END] file={name}");
+
+        let _ = std::fs::write(&flag, b"");
+    }
+}
