@@ -59,6 +59,7 @@
     <string name="menu_persona">Prompt de persona</string>
     <string name="menu_notifications">Notificaciones</string>
     <string name="menu_multimedia">Multimedia</string>
+    <string name="menu_logs">Registros</string>
     <string name="media_title">Evidencia multimedia</string>
     <string name="media_blurb">Audio y video capturados en el desbloqueo LUKS y al iniciar sesión. Toca un elemento para reproducirlo; el menú de tres puntos muestra la huella hardware y permite exportar el registro.</string>
     <string name="media_empty">Aún no hay evidencias. Aparecerán aquí cuando el equipo capture audio o video durante el desbloqueo.</string>
@@ -238,6 +239,17 @@
     <string name="err_photo_refused">el equipo rechazó la foto</string>
     <string name="err_no_connection">no hay conexión abierta</string>
     <string name="err_frame_too_big">Este payload pesa %1$d bytes y el equipo nunca acepta un frame mayor de 1 MB. Elige un archivo más pequeño.</string>
+
+    <!-- Pantalla de registros -->
+    <string name="logs_title">Registros</string>
+    <string name="logs_refresh">Actualizar</string>
+    <string name="logs_empty">Sin registros aún. Abre el menú y ejecuta un comando de informe, o toca Actualizar.</string>
+    <string name="logs_fetch">Obtener registros</string>
+    <string name="logs_filter_all">Todos</string>
+
+    <!-- Menú contextual de mensaje (pulsación larga) -->
+    <string name="msg_copy">Copiar</string>
+    <string name="msg_delete">Eliminar</string>
     <string name="err_frame_size">el daemon anunció un frame de %1$d bytes</string>
     <string name="err_frame_short">el frame que envió el daemon es demasiado corto para ser válido</string>
     <string name="err_frame_auth">El frame no autenticó.\n\nCasi siempre significa que la clave de emparejamiento no coincide con la del equipo. Si el equipo usa ChaCha20-Poly1305 (CPU sin AES por hardware), este teléfono necesita Android 9 o superior.</string>

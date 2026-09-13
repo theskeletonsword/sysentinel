@@ -21,6 +21,9 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
@@ -94,7 +97,7 @@ private val Theirs = Color(0xFF161C24)
 private val Muted = Color(0xFF6B7C8F)
 
 /** Which configuration screen the drawer has opened, if any. */
-private enum class Screen { CHAT, LANGUAGE, TOGGLES, PROVIDER, APIKEYS, PERSONA, NOTIFICATIONS, OWNERSHIP, MULTIMEDIA }
+private enum class Screen { CHAT, LANGUAGE, TOGGLES, PROVIDER, APIKEYS, PERSONA, NOTIFICATIONS, OWNERSHIP, MULTIMEDIA, LOGS }
 
 @Composable
 private fun AppRoot(
@@ -115,6 +118,8 @@ private fun AppRoot(
     var confirming by remember { mutableStateOf(false) }
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
+    // Message context menu (long-press)
+    var ctxMsg by remember { mutableStateOf<Message?>(null) }
 
     val listener = remember {
         object : ChatEngine.Listener {
@@ -214,6 +219,7 @@ private fun AppRoot(
                                 messages.add(Message("📎 $filename", fromMe = true))
                                 engine.sendDocument(filename, bytes, markitdown, listener)
                             },
+                            onCommand = { runCommand(it) },
                         )
                     }
                 }
@@ -226,7 +232,13 @@ private fun AppRoot(
                         modifier = Modifier.fillMaxSize(),
                         contentPadding = PaddingValues(12.dp),
                         verticalArrangement = Arrangement.spacedBy(6.dp),
-                    ) { items(messages) { Bubble(it) } }
+                    ) {
+                        items(messages) { msg ->
+                            Bubble(msg,
+                                onLongClick = { ctxMsg = msg },
+                            )
+                        }
+                    }
                     Screen.LANGUAGE -> LanguageScreen { screen = Screen.CHAT }
                     Screen.TOGGLES -> TogglesScreen(onCommand = { runCommand(it) })
                     Screen.PROVIDER -> ProviderScreen(
@@ -238,6 +250,36 @@ private fun AppRoot(
                     Screen.OWNERSHIP -> OwnershipScreen(engine, listener) { runCommand(it) }
                     Screen.NOTIFICATIONS -> NotificationsScreen(pairing)
                     Screen.MULTIMEDIA -> MultimediaScreen(engine, listener) { screen = Screen.CHAT }
+                    Screen.LOGS -> LogsScreen(messages, engine, listener) { screen = Screen.CHAT }
+                }
+
+                // Long-press message context menu
+                val ctx2 = ctxMsg
+                if (ctx2 != null) {
+                    AlertDialog(
+                        onDismissRequest = { ctxMsg = null },
+                        containerColor = Theirs,
+                        title = null,
+                        text = {
+                            Text(
+                                ctx2.text.take(120) + if (ctx2.text.length > 120) "…" else "",
+                                color = Color(0xFFC8D6E5), fontSize = 12.sp,
+                            )
+                        },
+                        confirmButton = {
+                            TextButton(onClick = {
+                                val cm = ctx.getSystemService(android.content.ClipboardManager::class.java)
+                                cm?.setPrimaryClip(android.content.ClipData.newPlainText("message", ctx2.text))
+                                ctxMsg = null
+                            }) { Text(stringResource(R.string.msg_copy), color = Accent) }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = {
+                                messages.remove(ctx2)
+                                ctxMsg = null
+                            }) { Text(stringResource(R.string.msg_delete), color = Color(0xFFF87171)) }
+                        },
+                    )
                 }
             }
         }
@@ -269,6 +311,7 @@ private fun DrawerContent(onSelect: (Screen) -> Unit, onReport: (String) -> Unit
         DrawerRow(stringResource(R.string.menu_ownership)) { onSelect(Screen.OWNERSHIP) }
         DrawerRow(stringResource(R.string.menu_notifications)) { onSelect(Screen.NOTIFICATIONS) }
         DrawerRow(stringResource(R.string.menu_multimedia)) { onSelect(Screen.MULTIMEDIA) }
+        DrawerRow(stringResource(R.string.menu_logs)) { onSelect(Screen.LOGS) }
         Divider(color = Ground)
         Section(stringResource(R.string.menu_section_reports))
         DrawerRow(stringResource(R.string.menu_status)) { onReport(DaemonSettings.STATUS) }
@@ -849,8 +892,9 @@ private fun PairingScreen(pairing: Pairing, onDone: () -> Unit) {
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun Bubble(m: Message) {
+private fun Bubble(m: Message, onLongClick: () -> Unit = {}) {
     val time = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(m.timestamp))
     Row(
         Modifier.fillMaxWidth(),
@@ -863,7 +907,9 @@ private fun Bubble(m: Message) {
                 bottomStart = if (m.fromMe) 14.dp else 4.dp,
                 bottomEnd = if (m.fromMe) 4.dp else 14.dp,
             ),
-            modifier = Modifier.widthIn(max = 300.dp),
+            modifier = Modifier
+                .widthIn(max = 300.dp)
+                .combinedClickable(onLongClick = onLongClick, onClick = {}),
         ) {
             Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
                 Text(m.text, color = Color(0xFFC8D6E5), fontSize = 14.sp)
@@ -876,24 +922,37 @@ private fun Bubble(m: Message) {
     }
 }
 
+private val QUICK_COMMANDS = listOf(
+    "/status", "/selinux", "/hardware", "/firmware", "/help",
+    "/evidence list", "/face keygen", "/face register",
+    "/settings", "/llm", "/systemprompt clear",
+    "/reboot", "/poweroff",
+)
+
 @Composable
 private fun Composer(
     draft: String,
     onDraft: (String) -> Unit,
     onSend: () -> Unit,
     onAttach: (filename: String, bytes: ByteArray, markitdown: Boolean) -> Unit,
+    onCommand: (String) -> Unit,
 ) {
     val ctx = LocalContext.current
-    var menuOpen by remember { mutableStateOf(false) }
+    var attachMenuOpen by remember { mutableStateOf(false) }
+    var cmdMenuOpen by remember { mutableStateOf(false) }
     var markitdown by remember { mutableStateOf(true) }
 
-    // One picker, re-aimed by MIME just before launch. Reading the bytes and the
-    // display name happens here because only a composable can hold the launcher.
     var pickMime by remember { mutableStateOf("*/*") }
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if (uri != null) {
             val (name, bytes) = readUri(ctx, uri)
-            if (bytes != null) onAttach(name, bytes, markitdown)
+            if (bytes != null) {
+                // Images are compressed to fit the 1 MB frame limit before being sent.
+                val finalBytes = if (pickMime.startsWith("image/")) {
+                    compressImageForChannel(bytes)
+                } else bytes
+                onAttach(name, finalBytes, markitdown)
+            }
         }
     }
 
@@ -901,10 +960,10 @@ private fun Composer(
         Modifier.background(Ground).fillMaxWidth().padding(10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        // "+" attach menu
         Box {
-            FilledIconButton(onClick = { menuOpen = true }) { Text("+") }
-            DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                // The token-saving toggle lives in the menu, on by default.
+            FilledIconButton(onClick = { attachMenuOpen = true }) { Text("+") }
+            DropdownMenu(expanded = attachMenuOpen, onDismissRequest = { attachMenuOpen = false }) {
                 DropdownMenuItem(
                     text = {
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -916,16 +975,30 @@ private fun Composer(
                 )
                 Divider(color = Ground)
                 DropdownMenuItem(text = { Text(stringResource(R.string.attach_image)) }, onClick = {
-                    menuOpen = false; pickMime = "image/*"; picker.launch("image/*")
+                    attachMenuOpen = false; pickMime = "image/*"; picker.launch("image/*")
                 })
                 DropdownMenuItem(text = { Text(stringResource(R.string.attach_pdf)) }, onClick = {
-                    menuOpen = false; pickMime = "application/pdf"; picker.launch("application/pdf")
+                    attachMenuOpen = false; pickMime = "application/pdf"; picker.launch("application/pdf")
                 })
                 DropdownMenuItem(text = { Text(stringResource(R.string.attach_document)) }, onClick = {
-                    menuOpen = false; pickMime = "*/*"; picker.launch("*/*")
+                    attachMenuOpen = false; pickMime = "*/*"; picker.launch("*/*")
                 })
             }
         }
+
+        // "/" command palette
+        Box {
+            FilledIconButton(onClick = { cmdMenuOpen = true }) { Text("/") }
+            DropdownMenu(expanded = cmdMenuOpen, onDismissRequest = { cmdMenuOpen = false }) {
+                QUICK_COMMANDS.forEach { cmd ->
+                    DropdownMenuItem(
+                        text = { Text(cmd, fontSize = 13.sp, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace) },
+                        onClick = { cmdMenuOpen = false; onCommand(cmd) },
+                    )
+                }
+            }
+        }
+
         Spacer(Modifier.width(6.dp))
         OutlinedTextField(
             value = draft,
@@ -1080,5 +1153,229 @@ private fun saveFaceLocally(ctx: android.content.Context, jpeg: ByteArray) {
     runCatching {
         val dir = java.io.File(ctx.filesDir, "faces").apply { mkdirs() }
         java.io.File(dir, "owner-${jpeg.size}.jpg").writeBytes(jpeg)
+    }
+}
+
+/**
+ * Scale and re-compress an image to fit under the channel's 1 MB frame limit.
+ * Uses a square-root scale so area — and thus byte count — decreases proportionally.
+ */
+private fun compressImageForChannel(bytes: ByteArray, maxBytes: Int = 900_000): ByteArray {
+    return try {
+        val bmp = android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+            ?: return bytes
+        val ratio = if (bytes.size > maxBytes) {
+            kotlin.math.sqrt(maxBytes.toDouble() / bytes.size).toFloat().coerceIn(0.1f, 1f)
+        } else 1f
+        val w = (bmp.width * ratio).toInt().coerceAtLeast(1)
+        val h = (bmp.height * ratio).toInt().coerceAtLeast(1)
+        val scaled = if (ratio < 0.95f) {
+            android.graphics.Bitmap.createScaledBitmap(bmp, w, h, true)
+        } else bmp
+        val out = java.io.ByteArrayOutputStream()
+        var quality = 85
+        scaled.compress(android.graphics.Bitmap.CompressFormat.JPEG, quality, out)
+        while (out.size() > maxBytes && quality > 40) {
+            out.reset(); quality -= 15
+            scaled.compress(android.graphics.Bitmap.CompressFormat.JPEG, quality, out)
+        }
+        out.toByteArray()
+    } catch (_: Exception) { bytes }
+}
+
+// ── Logs screen ───────────────────────────────────────────────────────────────
+
+private data class LogEntry(
+    val text: String,
+    val fromMe: Boolean,
+    val ts: Long,
+    val category: String,  // "selinux" | "kernel" | "hardware" | "info" | "alert"
+)
+
+private fun categorize(m: Message): String {
+    val lower = m.text.lowercase()
+    return when {
+        lower.contains("selinux") || lower.contains("apparmor") || lower.contains("denied") -> "selinux"
+        lower.contains("kernel") || lower.contains("kmod") || lower.contains("rootkit") -> "kernel"
+        lower.contains("cpu") || lower.contains("pmu") || lower.contains("hardware") -> "hardware"
+        lower.contains("alert") || lower.contains("warn") || lower.contains("luks") -> "alert"
+        else -> "info"
+    }
+}
+
+private val CategoryColor = mapOf(
+    "selinux"  to Color(0xFFF59E0B),
+    "kernel"   to Color(0xFFEF4444),
+    "hardware" to Color(0xFF60A5FA),
+    "alert"    to Color(0xFFF87171),
+    "info"     to Color(0xFF6B7C8F),
+)
+
+private val CategoryLabel = mapOf(
+    "selinux"  to "SELinux / AppArmor",
+    "kernel"   to "Kernel",
+    "hardware" to "Hardware",
+    "alert"    to "Alert",
+    "info"     to "Info",
+)
+
+@Composable
+private fun LogsScreen(
+    allMessages: List<Message>,
+    engine: ChatEngine,
+    listener: ChatEngine.Listener,
+    onBack: () -> Unit,
+) {
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var loading by remember { mutableStateOf(false) }
+    var filter by remember { mutableStateOf("all") }
+    var expandedIdx by remember { mutableStateOf<Int?>(null) }
+
+    // Take all daemon messages (not fromMe), most recent first
+    val daemonMessages = remember(allMessages.size) {
+        allMessages.filter { !it.fromMe }.reversed()
+    }
+
+    val filtered = remember(daemonMessages, filter) {
+        if (filter == "all") daemonMessages
+        else daemonMessages.filter { categorize(it) == filter }
+    }
+
+    Column(Modifier.fillMaxSize().background(Ground)) {
+        // Top bar
+        Row(
+            Modifier.fillMaxWidth().background(Color(0xFF161C24))
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            IconButton(onClick = onBack) {
+                Text("←", color = Accent, fontSize = 20.sp)
+            }
+            Text(
+                stringResource(R.string.logs_title),
+                color = Accent, fontSize = 18.sp,
+                fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold,
+                modifier = Modifier.weight(1f).padding(start = 8.dp),
+            )
+            // Refresh: pull fresh reports from the daemon
+            TextButton(onClick = {
+                loading = true
+                scope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                    engine.send(DaemonSettings.STATUS, listener)
+                    engine.send(DaemonSettings.SELINUX, listener)
+                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                        loading = false
+                    }
+                }
+            }) {
+                Text(if (loading) "…" else stringResource(R.string.logs_refresh), color = Accent, fontSize = 13.sp)
+            }
+        }
+
+        // Filter chips
+        androidx.compose.foundation.lazy.LazyRow(
+            Modifier.fillMaxWidth().background(Color(0xFF0F1520)).padding(8.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            val chips = listOf("all", "selinux", "kernel", "hardware", "alert", "info")
+            items(chips) { cat ->
+                val active = cat == filter
+                Surface(
+                    color = if (active) Accent else Color(0xFF1E2A38),
+                    shape = RoundedCornerShape(16.dp),
+                    modifier = Modifier.clickable { filter = cat; expandedIdx = null },
+                ) {
+                    Text(
+                        if (cat == "all") stringResource(R.string.logs_filter_all)
+                        else CategoryLabel[cat] ?: cat,
+                        color = if (active) Ground else Color(0xFFC8D6E5),
+                        fontSize = 12.sp,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                    )
+                }
+            }
+        }
+
+        if (filtered.isEmpty()) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(stringResource(R.string.logs_empty), color = Muted, fontSize = 14.sp)
+                    Spacer(Modifier.height(12.dp))
+                    OutlinedButton(onClick = {
+                        loading = true
+                        scope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                            engine.send(DaemonSettings.STATUS, listener)
+                            engine.send(DaemonSettings.SELINUX, listener)
+                            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                                loading = false
+                            }
+                        }
+                    }) { Text(stringResource(R.string.logs_fetch)) }
+                }
+            }
+        } else {
+            LazyColumn(
+                Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(12.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                items(filtered.size) { i ->
+                    val msg = filtered[i]
+                    val cat = categorize(msg)
+                    val catColor = CategoryColor[cat] ?: Muted
+                    val expanded = expandedIdx == i
+
+                    Surface(
+                        color = Color(0xFF161C24),
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier.fillMaxWidth().clickable {
+                            expandedIdx = if (expanded) null else i
+                        },
+                    ) {
+                        Column(Modifier.padding(12.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Box(
+                                    Modifier.size(8.dp)
+                                        .background(catColor, CircleShape)
+                                )
+                                Spacer(Modifier.width(8.dp))
+                                Text(
+                                    CategoryLabel[cat] ?: cat,
+                                    color = catColor, fontSize = 10.sp,
+                                )
+                                Spacer(Modifier.weight(1f))
+                                Text(
+                                    SimpleDateFormat("HH:mm:ss", Locale.getDefault())
+                                        .format(java.util.Date(msg.timestamp)),
+                                    color = Muted, fontSize = 10.sp,
+                                )
+                            }
+                            Spacer(Modifier.height(4.dp))
+                            // Summary: first line only
+                            Text(
+                                msg.text.lineSequence().firstOrNull()?.take(80) ?: "—",
+                                color = Color(0xFFC8D6E5), fontSize = 13.sp,
+                                maxLines = if (expanded) Int.MAX_VALUE else 1,
+                                overflow = if (expanded) androidx.compose.ui.text.style.TextOverflow.Visible
+                                           else androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                            )
+                            // Detail: full text when expanded
+                            if (expanded && msg.text.contains("\n")) {
+                                Spacer(Modifier.height(6.dp))
+                                Divider(color = Accent.copy(alpha = 0.2f))
+                                Spacer(Modifier.height(6.dp))
+                                Text(
+                                    msg.text,
+                                    color = Color(0xFFB0BEC5),
+                                    fontSize = 11.sp,
+                                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }

@@ -63,6 +63,7 @@
     <string name="menu_persona">Persona prompt</string>
     <string name="menu_notifications">Notifications</string>
     <string name="menu_multimedia">Multimedia</string>
+    <string name="menu_logs">Logs</string>
     <string name="menu_section_reports">Reports</string>
     <string name="menu_status">Status</string>
     <string name="menu_selinux">SELinux</string>
@@ -250,6 +251,17 @@
     <string name="err_photo_refused">the machine refused the photo</string>
     <string name="err_no_connection">no connection is open</string>
     <string name="err_frame_too_big">This payload is %1$d bytes and the machine never accepts a frame over 1 MB. Pick a smaller file.</string>
+
+    <!-- Logs screen -->
+    <string name="logs_title">Logs</string>
+    <string name="logs_refresh">Refresh</string>
+    <string name="logs_empty">No log entries yet. Open the menu and send a report command, or tap Refresh.</string>
+    <string name="logs_fetch">Fetch logs</string>
+    <string name="logs_filter_all">All</string>
+
+    <!-- Message context menu (long-press) -->
+    <string name="msg_copy">Copy</string>
+    <string name="msg_delete">Delete</string>
     <string name="err_frame_size">the daemon announced a %1$d-byte frame</string>
     <string name="err_frame_short">the frame the daemon sent was too short to be valid</string>
     <string name="err_frame_auth">The frame did not authenticate.\n\nAlmost always this means the pairing key does not match the machine\'s. If the machine uses ChaCha20-Poly1305 (a CPU with no hardware AES), this phone needs Android 9 or later.</string>
