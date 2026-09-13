@@ -250,7 +250,7 @@ private fun AppRoot(
                     Screen.OWNERSHIP -> OwnershipScreen(engine, listener) { runCommand(it) }
                     Screen.NOTIFICATIONS -> NotificationsScreen(pairing)
                     Screen.MULTIMEDIA -> MultimediaScreen(engine, listener) { screen = Screen.CHAT }
-                    Screen.LOGS -> LogsScreen(messages, engine, listener) { screen = Screen.CHAT }
+                    Screen.LOGS -> LogsScreen(messages, engine, listener) { screen = Screen.CHAT }  // listener passed but unused (local listener used inside)
                 }
 
                 // Long-press message context menu
@@ -1160,58 +1160,63 @@ private fun saveFaceLocally(ctx: android.content.Context, jpeg: ByteArray) {
  * Scale and re-compress an image to fit under the channel's 1 MB frame limit.
  * Uses a square-root scale so area — and thus byte count — decreases proportionally.
  */
-private fun compressImageForChannel(bytes: ByteArray, maxBytes: Int = 900_000): ByteArray {
+/**
+ * Resize by homothety so the longest side is at most [maxDim] px, then encode
+ * as JPEG at quality 85. Aspect ratio is preserved exactly (no cropping).
+ * Images already within the limit pass through untouched.
+ */
+private fun compressImageForChannel(bytes: ByteArray, maxDim: Int = 900): ByteArray {
     return try {
+        // First pass: read dimensions without decoding pixels.
+        val opts = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
+        val srcW = opts.outWidth.takeIf { it > 0 } ?: return bytes
+        val srcH = opts.outHeight.takeIf { it > 0 } ?: return bytes
+
+        val longest = maxOf(srcW, srcH)
+        if (longest <= maxDim) return bytes  // already fits, send as-is
+
+        // Homothety: scale factor k such that max(dstW, dstH) == maxDim.
+        val k = maxDim.toFloat() / longest
+        val dstW = (srcW * k).toInt().coerceAtLeast(1)
+        val dstH = (srcH * k).toInt().coerceAtLeast(1)
+
         val bmp = android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
             ?: return bytes
-        val ratio = if (bytes.size > maxBytes) {
-            kotlin.math.sqrt(maxBytes.toDouble() / bytes.size).toFloat().coerceIn(0.1f, 1f)
-        } else 1f
-        val w = (bmp.width * ratio).toInt().coerceAtLeast(1)
-        val h = (bmp.height * ratio).toInt().coerceAtLeast(1)
-        val scaled = if (ratio < 0.95f) {
-            android.graphics.Bitmap.createScaledBitmap(bmp, w, h, true)
-        } else bmp
+        val scaled = android.graphics.Bitmap.createScaledBitmap(bmp, dstW, dstH, true)
         val out = java.io.ByteArrayOutputStream()
-        var quality = 85
-        scaled.compress(android.graphics.Bitmap.CompressFormat.JPEG, quality, out)
-        while (out.size() > maxBytes && quality > 40) {
-            out.reset(); quality -= 15
-            scaled.compress(android.graphics.Bitmap.CompressFormat.JPEG, quality, out)
-        }
+        scaled.compress(android.graphics.Bitmap.CompressFormat.JPEG, 85, out)
         out.toByteArray()
     } catch (_: Exception) { bytes }
 }
 
 // ── Logs screen ───────────────────────────────────────────────────────────────
 
+/**
+ * A parsed daemon message split into:
+ *  - [analysis]  Human-readable prose lines (LLM output)
+ *  - [raw]       Technical log lines (avc:, pid=, kmod, hex addresses, etc.)
+ *  - [summary]   First prose sentence, or a simplified form of the first raw line
+ *  - [category]  selinux | kernel | hardware | alert | info
+ *  - [ownership] "mine" | "unknown" | "different" — from TPM identity lines
+ */
 private data class LogEntry(
-    val text: String,
-    val fromMe: Boolean,
     val ts: Long,
-    val category: String,  // "selinux" | "kernel" | "hardware" | "info" | "alert"
+    val category: String,
+    val summary: String,
+    val analysis: String,   // LLM prose
+    val raw: String,        // technical log lines
+    val ownership: String,  // TPM-derived machine ownership
 )
 
-private fun categorize(m: Message): String {
-    val lower = m.text.lowercase()
-    return when {
-        lower.contains("selinux") || lower.contains("apparmor") || lower.contains("denied") -> "selinux"
-        lower.contains("kernel") || lower.contains("kmod") || lower.contains("rootkit") -> "kernel"
-        lower.contains("cpu") || lower.contains("pmu") || lower.contains("hardware") -> "hardware"
-        lower.contains("alert") || lower.contains("warn") || lower.contains("luks") -> "alert"
-        else -> "info"
-    }
-}
-
-private val CategoryColor = mapOf(
+private val CAT_COLOR = mapOf(
     "selinux"  to Color(0xFFF59E0B),
     "kernel"   to Color(0xFFEF4444),
     "hardware" to Color(0xFF60A5FA),
     "alert"    to Color(0xFFF87171),
     "info"     to Color(0xFF6B7C8F),
 )
-
-private val CategoryLabel = mapOf(
+private val CAT_LABEL = mapOf(
     "selinux"  to "SELinux / AppArmor",
     "kernel"   to "Kernel",
     "hardware" to "Hardware",
@@ -1219,61 +1224,212 @@ private val CategoryLabel = mapOf(
     "info"     to "Info",
 )
 
+/** True when the line looks like a raw log / technical line rather than prose. */
+private fun isRawLine(line: String): Boolean {
+    val l = line.trim()
+    val lower = l.lowercase()
+    return lower.contains("avc:") || lower.contains("pid=") ||
+        lower.contains("comm=") || lower.contains("path=") ||
+        lower.contains("scontext=") || lower.contains("tcontext=") ||
+        lower.contains("0x") || Regex("""0[xX][0-9a-fA-F]{4,}""").containsMatchIn(l) ||
+        (l.startsWith("[") && l.contains("]") && Regex("""\d+\.\d+""").containsMatchIn(l)) ||
+        lower.matches(Regex(""".*\w+=\w+.*""")) && l.count { it == '=' } >= 2
+}
+
+private fun categorizeText(text: String): String {
+    val lower = text.lowercase()
+    return when {
+        lower.contains("selinux") || lower.contains("apparmor") ||
+            lower.contains("avc:") || (lower.contains("denied") && lower.contains("access")) -> "selinux"
+        lower.contains("kernel") || lower.contains("kmod") ||
+            lower.contains("rootkit") || lower.contains("dmesg") -> "kernel"
+        lower.contains("cpu") || lower.contains("pmu") ||
+            lower.contains("hardware") || lower.contains("thermal") -> "hardware"
+        lower.contains("alert") || lower.contains("luks") ||
+            lower.contains("burst") || lower.contains("intrusion") -> "alert"
+        else -> "info"
+    }
+}
+
+private fun extractOwnership(text: String): String {
+    val lower = text.lowercase()
+    return when {
+        lower.contains("different_device") || lower.contains("different phone") ||
+            lower.contains("NOT the phone") -> "different"
+        lower.contains("recognised") || lower.contains("registered") ||
+            lower.contains("tpm") && lower.contains("ok") -> "mine"
+        else -> "unknown"
+    }
+}
+
+/**
+ * Turn a selinux raw line into a one-sentence summary, e.g.:
+ *   "avc: denied { write } for pid=1 comm="sh" path="/etc/foo""
+ *   → "sh tried to write /etc/foo — SELinux denied"
+ */
+private fun selinuxSummary(line: String): String? {
+    if (!line.lowercase().contains("avc:") && !line.lowercase().contains("denied")) return null
+    val action = Regex("""\{\s*(\w+)\s*\}""").find(line)?.groupValues?.getOrNull(1) ?: return null
+    val comm   = Regex("""comm="([^"]+)"""").find(line)?.groupValues?.getOrNull(1) ?: "process"
+    val path   = Regex("""(?:path|name|dev)="([^"]+)"""").find(line)?.groupValues?.getOrNull(1)
+    return if (path != null) "$comm tried to $action "$path" — SELinux denied"
+    else "$comm tried $action — SELinux denied"
+}
+
+private fun parseMessage(text: String, ts: Long): LogEntry {
+    val lines = text.lines().map { it.trim() }.filter { it.isNotBlank() }
+    val rawLines = mutableListOf<String>()
+    val prosLines = mutableListOf<String>()
+
+    for (line in lines) {
+        if (isRawLine(line)) rawLines.add(line)
+        else prosLines.add(line)
+    }
+
+    val cat = categorizeText(text)
+    val ownership = extractOwnership(text)
+
+    // Build the summary: prefer first prose line, else synthesize from first raw line.
+    val summary: String = prosLines.firstOrNull()?.take(120)
+        ?: rawLines.firstOrNull()?.let { selinuxSummary(it) }
+        ?: rawLines.firstOrNull()?.take(100)
+        ?: "—"
+
+    return LogEntry(
+        ts = ts,
+        category = cat,
+        summary = summary,
+        analysis = prosLines.joinToString("\n"),
+        raw = rawLines.joinToString("\n"),
+        ownership = ownership,
+    )
+}
+
 @Composable
 private fun LogsScreen(
     allMessages: List<Message>,
     engine: ChatEngine,
-    listener: ChatEngine.Listener,
+    @Suppress("UNUSED_PARAMETER") mainListener: ChatEngine.Listener,
     onBack: () -> Unit,
 ) {
-    val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
+    val entries = remember { mutableStateListOf<LogEntry>() }
     var loading by remember { mutableStateOf(false) }
     var filter by remember { mutableStateOf("all") }
     var expandedIdx by remember { mutableStateOf<Int?>(null) }
+    // Collapsible machine-info panel at the top
+    var machineInfoText by remember { mutableStateOf("") }
+    var machineInfoExpanded by remember { mutableStateOf(false) }
 
-    // Take all daemon messages (not fromMe), most recent first
-    val daemonMessages = remember(allMessages.size) {
-        allMessages.filter { !it.fromMe }.reversed()
+    // LOCAL listener — responses stay in this screen, never touch the main chat.
+    val localListener = remember {
+        object : ChatEngine.Listener {
+            override fun onMessages(msgs: List<Message>) {
+                val newEntries = msgs
+                    .filter { !it.fromMe && it.text.isNotBlank() }
+                    .map { parseMessage(it.text, it.timestamp) }
+                entries.addAll(0, newEntries)
+            }
+            override fun onStatus(text: String, ok: Boolean) = Unit
+        }
     }
 
-    val filtered = remember(daemonMessages, filter) {
-        if (filter == "all") daemonMessages
-        else daemonMessages.filter { categorize(it) == filter }
+    // Also seed from existing chat messages on first enter (historical context).
+    LaunchedEffect(Unit) {
+        val historical = allMessages
+            .filter { !it.fromMe && it.text.isNotBlank() }
+            .map { parseMessage(it.text, it.timestamp) }
+            .reversed()
+        entries.addAll(historical)
+
+        // Auto-fetch fresh status + selinux on open.
+        loading = true
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            engine.send(DaemonSettings.STATUS, localListener)
+            engine.send(DaemonSettings.SELINUX, localListener)
+            engine.send(DaemonSettings.HARDWARE, object : ChatEngine.Listener {
+                override fun onMessages(msgs: List<Message>) {
+                    machineInfoText = msgs.lastOrNull()?.text.orEmpty()
+                }
+                override fun onStatus(text: String, ok: Boolean) = Unit
+            })
+        }
+        loading = false
+    }
+
+    fun doRefresh() {
+        loading = true
+        scope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            engine.send(DaemonSettings.STATUS, localListener)
+            engine.send(DaemonSettings.SELINUX, localListener)
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) { loading = false }
+        }
+    }
+
+    val filtered = remember(entries.size, filter) {
+        if (filter == "all") entries.toList()
+        else entries.filter { it.category == filter }
     }
 
     Column(Modifier.fillMaxSize().background(Ground)) {
-        // Top bar
+
+        // ── Top bar ───────────────────────────────────────────────────────────
         Row(
             Modifier.fillMaxWidth().background(Color(0xFF161C24))
                 .padding(horizontal = 16.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            IconButton(onClick = onBack) {
-                Text("←", color = Accent, fontSize = 20.sp)
-            }
+            IconButton(onClick = onBack) { Text("←", color = Accent, fontSize = 20.sp) }
             Text(
                 stringResource(R.string.logs_title),
                 color = Accent, fontSize = 18.sp,
                 fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold,
                 modifier = Modifier.weight(1f).padding(start = 8.dp),
             )
-            // Refresh: pull fresh reports from the daemon
-            TextButton(onClick = {
-                loading = true
-                scope.launch(kotlinx.coroutines.Dispatchers.IO) {
-                    engine.send(DaemonSettings.STATUS, listener)
-                    engine.send(DaemonSettings.SELINUX, listener)
-                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                        loading = false
-                    }
-                }
-            }) {
-                Text(if (loading) "…" else stringResource(R.string.logs_refresh), color = Accent, fontSize = 13.sp)
+            if (loading) {
+                CircularProgressIndicator(modifier = Modifier.size(18.dp), color = Accent, strokeWidth = 2.dp)
+                Spacer(Modifier.width(8.dp))
+            }
+            TextButton(onClick = ::doRefresh) {
+                Text(stringResource(R.string.logs_refresh), color = Accent, fontSize = 13.sp)
             }
         }
 
-        // Filter chips
+        // ── Machine fingerprint / ownership banner ────────────────────────────
+        if (machineInfoText.isNotBlank()) {
+            val tpmOwner = extractOwnership(machineInfoText)
+            val (ownerColor, ownerLabel) = when (tpmOwner) {
+                "mine"      -> Color(0xFF4ADE80) to "✓ Your machine (TPM verified)"
+                "different" -> Color(0xFFF87171) to "⚠ Different machine — TPM mismatch"
+                else        -> Muted to "Machine identity unknown"
+            }
+            Surface(
+                color = Color(0xFF0F1A24),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { machineInfoExpanded = !machineInfoExpanded },
+            ) {
+                Column(Modifier.padding(horizontal = 16.dp, vertical = 10.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(ownerLabel, color = ownerColor, fontSize = 12.sp, modifier = Modifier.weight(1f))
+                        Text(if (machineInfoExpanded) "▲" else "▼", color = Muted, fontSize = 10.sp)
+                    }
+                    if (machineInfoExpanded) {
+                        Spacer(Modifier.height(8.dp))
+                        Divider(color = Accent.copy(alpha = 0.15f))
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            machineInfoText,
+                            color = Color(0xFFB0C4D8),
+                            fontSize = 11.sp,
+                            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                        )
+                    }
+                }
+            }
+        }
+
+        // ── Filter chips ──────────────────────────────────────────────────────
         androidx.compose.foundation.lazy.LazyRow(
             Modifier.fillMaxWidth().background(Color(0xFF0F1520)).padding(8.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -1287,8 +1443,7 @@ private fun LogsScreen(
                     modifier = Modifier.clickable { filter = cat; expandedIdx = null },
                 ) {
                     Text(
-                        if (cat == "all") stringResource(R.string.logs_filter_all)
-                        else CategoryLabel[cat] ?: cat,
+                        if (cat == "all") stringResource(R.string.logs_filter_all) else CAT_LABEL[cat] ?: cat,
                         color = if (active) Ground else Color(0xFFC8D6E5),
                         fontSize = 12.sp,
                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
@@ -1297,21 +1452,14 @@ private fun LogsScreen(
             }
         }
 
+        // ── Entry list ────────────────────────────────────────────────────────
         if (filtered.isEmpty()) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text(stringResource(R.string.logs_empty), color = Muted, fontSize = 14.sp)
+                    Text(stringResource(R.string.logs_empty), color = Muted, fontSize = 14.sp,
+                        modifier = Modifier.padding(horizontal = 24.dp))
                     Spacer(Modifier.height(12.dp))
-                    OutlinedButton(onClick = {
-                        loading = true
-                        scope.launch(kotlinx.coroutines.Dispatchers.IO) {
-                            engine.send(DaemonSettings.STATUS, listener)
-                            engine.send(DaemonSettings.SELINUX, listener)
-                            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                                loading = false
-                            }
-                        }
-                    }) { Text(stringResource(R.string.logs_fetch)) }
+                    OutlinedButton(onClick = ::doRefresh) { Text(stringResource(R.string.logs_fetch)) }
                 }
             }
         } else {
@@ -1321,9 +1469,8 @@ private fun LogsScreen(
                 verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
                 items(filtered.size) { i ->
-                    val msg = filtered[i]
-                    val cat = categorize(msg)
-                    val catColor = CategoryColor[cat] ?: Muted
+                    val e = filtered[i]
+                    val catColor = CAT_COLOR[e.category] ?: Muted
                     val expanded = expandedIdx == i
 
                     Surface(
@@ -1334,43 +1481,70 @@ private fun LogsScreen(
                         },
                     ) {
                         Column(Modifier.padding(12.dp)) {
+
+                            // Header row: category dot + label + time
                             Row(verticalAlignment = Alignment.CenterVertically) {
-                                Box(
-                                    Modifier.size(8.dp)
-                                        .background(catColor, CircleShape)
-                                )
+                                Box(Modifier.size(8.dp).background(catColor, CircleShape))
                                 Spacer(Modifier.width(8.dp))
-                                Text(
-                                    CategoryLabel[cat] ?: cat,
-                                    color = catColor, fontSize = 10.sp,
-                                )
+                                Text(CAT_LABEL[e.category] ?: e.category, color = catColor, fontSize = 10.sp)
+                                if (e.ownership == "mine") {
+                                    Spacer(Modifier.width(6.dp))
+                                    Text("· Tu equipo", color = Color(0xFF4ADE80), fontSize = 10.sp)
+                                } else if (e.ownership == "different") {
+                                    Spacer(Modifier.width(6.dp))
+                                    Text("· ⚠ Equipo ajeno", color = Color(0xFFF87171), fontSize = 10.sp)
+                                }
                                 Spacer(Modifier.weight(1f))
                                 Text(
                                     SimpleDateFormat("HH:mm:ss", Locale.getDefault())
-                                        .format(java.util.Date(msg.timestamp)),
+                                        .format(java.util.Date(e.ts)),
                                     color = Muted, fontSize = 10.sp,
                                 )
                             }
+
                             Spacer(Modifier.height(4.dp))
-                            // Summary: first line only
+
+                            // Summary line (human-readable, from LLM prose or synthesized)
                             Text(
-                                msg.text.lineSequence().firstOrNull()?.take(80) ?: "—",
-                                color = Color(0xFFC8D6E5), fontSize = 13.sp,
-                                maxLines = if (expanded) Int.MAX_VALUE else 1,
+                                e.summary,
+                                color = Color(0xFFE2E8F0), fontSize = 13.sp,
+                                maxLines = if (expanded) Int.MAX_VALUE else 2,
                                 overflow = if (expanded) androidx.compose.ui.text.style.TextOverflow.Visible
                                            else androidx.compose.ui.text.style.TextOverflow.Ellipsis,
                             )
-                            // Detail: full text when expanded
-                            if (expanded && msg.text.contains("\n")) {
-                                Spacer(Modifier.height(6.dp))
-                                Divider(color = Accent.copy(alpha = 0.2f))
-                                Spacer(Modifier.height(6.dp))
-                                Text(
-                                    msg.text,
-                                    color = Color(0xFFB0BEC5),
-                                    fontSize = 11.sp,
-                                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
-                                )
+
+                            if (expanded) {
+                                // ── LLM analysis section ──────────────────────
+                                if (e.analysis.isNotBlank()) {
+                                    Spacer(Modifier.height(8.dp))
+                                    Text("Análisis LLM", color = Accent.copy(alpha = 0.7f), fontSize = 10.sp)
+                                    Spacer(Modifier.height(4.dp))
+                                    Text(
+                                        e.analysis,
+                                        color = Color(0xFFC8D6E5), fontSize = 12.sp,
+                                    )
+                                }
+
+                                // ── Raw log section ───────────────────────────
+                                if (e.raw.isNotBlank()) {
+                                    Spacer(Modifier.height(8.dp))
+                                    Text("Log crudo", color = Muted, fontSize = 10.sp)
+                                    Spacer(Modifier.height(4.dp))
+                                    Surface(
+                                        color = Color(0xFF0B1018),
+                                        shape = RoundedCornerShape(6.dp),
+                                    ) {
+                                        Text(
+                                            e.raw,
+                                            color = Color(0xFF88C0A0),
+                                            fontSize = 10.sp,
+                                            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(8.dp),
+                                        )
+                                    }
+                                }
                             }
                         }
                     }
