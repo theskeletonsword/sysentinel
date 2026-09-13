@@ -1,0 +1,60 @@
+#!/bin/bash
+# SPDX-License-Identifier: MIT OR GPL-2.0-or-later
+#
+# mkinitcpio BUILD hook (Arch and derivatives).
+#
+# Counterpart of dracut's module-setup.sh and initramfs-tools' hooks/sysentinel:
+# it decides what goes INTO the image. The runtime half is ../hooks/sysentinel.
+
+build() {
+    # The control channel. add_module tolerates a missing module by failing the
+    # build loudly, so ask first: on a kernel this module has not been rebuilt
+    # for yet, a warning beats an initramfs that will not generate at all.
+    if modinfo -k "$KERNELVERSION" sysentinel_metrics &> /dev/null; then
+        add_module sysentinel_metrics
+    else
+        warning "sysentinel: no sysentinel_metrics for %s — early control channel absent" "$KERNELVERSION"
+    fi
+
+    # Webcam stack. The v4l2 module names are not stable across kernel
+    # versions, so each is optional by construction.
+    local m
+    for m in uvcvideo videodev videobuf2-core videobuf2-v4l2 \
+             videobuf2-memops videobuf2-vmalloc v4l2_common; do
+        if modinfo -k "$KERNELVERSION" "$m" &> /dev/null; then
+            add_module "$m"
+        fi
+    done
+
+    if [[ -x /usr/libexec/sysentinel-cam ]]; then
+        add_binary /usr/libexec/sysentinel-cam
+    else
+        warning "sysentinel: /usr/libexec/sysentinel-cam missing — no early capture"
+    fi
+    [[ -x /usr/libexec/sysentinel-face ]] && add_binary /usr/libexec/sysentinel-face
+
+    # Finds the vfat ESP the evidence is written to.
+    add_binary blkid
+
+    # Shared verbatim with the dracut and initramfs-tools paths rather than
+    # reimplemented — the capture logic is plain POSIX sh, and a second copy
+    # would drift from the first.
+    local s
+    for s in sysentinel-precrypt.sh sysentinel-luks.sh; do
+        [[ -f /usr/libexec/sysentinel/$s ]] && add_file "/usr/libexec/sysentinel/$s" "/usr/libexec/sysentinel/$s" 755
+    done
+
+    add_runscript
+}
+
+help() {
+    cat <<HELPEOF
+Brings up the sysentinel ring-0 control channel (/proc/sysentinel_metrics) and
+the webcam stack inside the initramfs, and photographs whoever is at the
+keyboard before the LUKS passphrase prompt.
+
+Place this hook BEFORE 'encrypt' in HOOKS=. After it, the capture would race
+the passphrase prompt, and a photo taken once the machine is already unlocked
+answers a different question than the one worth asking.
+HELPEOF
+}

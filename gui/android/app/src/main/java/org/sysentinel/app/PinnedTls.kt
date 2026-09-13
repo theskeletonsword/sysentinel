@@ -57,27 +57,25 @@ object PinnedTls {
         ssl.init(null, arrayOf(PinnedTrustManager(ctx, pin)), java.security.SecureRandom())
         val socket = ssl.socketFactory.createSocket(plain, host, port, true) as SSLSocket
 
-        // TLS 1.3 where the platform has it. Android 10 (API 29) enables it by
-        // default; older handsets top out at 1.2, and the legacy flavour of
-        // this app deliberately supports them. Asking for a protocol the
-        // platform does not implement throws, so the list is filtered to what
-        // this device actually offers — and 1.2 is a floor, never an offer of
-        // anything older.
-        val wanted = listOf("TLSv1.3", "TLSv1.2")
-        val available = socket.supportedProtocols.toSet()
-        val enabled = wanted.filter { it in available }
-        if (enabled.isEmpty()) {
+        // TLS 1.3 ONLY. Not "1.3 preferred": TLS 1.2 sends the server's
+        // certificate in the clear during the handshake, so a passive observer
+        // on the path learns that this is a sysentinel machine and sees its
+        // pinned key — exactly the information this design works to not reveal.
+        // TLS 1.3 encrypts the certificate, so an attacker watching the wire
+        // learns only that two endpoints spoke. The daemon already refuses
+        // anything but 1.3, so offering 1.2 here never bought a connection — it
+        // only widened what a watcher could see on the attempt.
+        //
+        // The cost is honest: a handset with no TLS 1.3 (Android's default
+        // provider gains it at API 29) cannot talk to the daemon at all, and is
+        // told so rather than downgraded into leaking.
+        if ("TLSv1.3" !in socket.supportedProtocols.toSet()) {
             throw PhoneLinkException(ctx.getString(R.string.err_tls_too_old))
         }
-        socket.enabledProtocols = enabled.toTypedArray()
+        socket.enabledProtocols = arrayOf("TLSv1.3")
 
         socket.startHandshake()
         val negotiated = socket.session.protocol
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && negotiated != "TLSv1.3") {
-            // Not fatal — 1.2 with a pinned key is still sound — but a handset
-            // that *can* do 1.3 and did not is worth a line in the log.
-            Log.w(TAG, "negotiated $negotiated on a device that supports 1.3")
-        }
         Log.i(TAG, "TLS $negotiated with ${socket.session.cipherSuite}")
         return socket
     }

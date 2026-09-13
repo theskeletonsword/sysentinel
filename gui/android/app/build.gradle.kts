@@ -130,6 +130,9 @@ dependencies {
     implementation(composeBom)
     implementation("androidx.compose.runtime:runtime")
     "modernImplementation"("androidx.compose.material3:material3")
+    // Only the two eye icons are used; R8 strips the rest of the library in
+    // release builds, so the APK does not grow.
+    "modernImplementation"("androidx.compose.material:material-icons-extended")
     "modernImplementation"("androidx.compose.ui:ui-tooling-preview")
     "modernImplementation"("androidx.activity:activity-compose:1.9.2")
 }

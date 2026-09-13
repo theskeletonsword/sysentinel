@@ -306,6 +306,11 @@ pub enum FromPhone {
         /// friend's identical handset matches on every one of these.
         model: String,
         manufacturer: String,
+        /// Android Key Attestation chain, base64 (leaf…root). The daemon
+        /// cryptographically checks it instead of taking `backing` on faith;
+        /// see `phonehome::verify_attestation`.
+        #[serde(default)]
+        attestation: Vec<String>,
     },
     /// Give me everything still waiting.
     Fetch,
@@ -327,6 +332,17 @@ pub enum FromPhone {
     /// is roughly six bytes on the wire per byte of image, which turns a 2 MB
     /// photo into 12 MB and straight past the frame cap.
     Photo { jpeg_base64: String },
+    /// A document (PDF, image, Word, …) the owner attached from the `+` menu.
+    ///
+    /// `markitdown` asks the daemon to convert it to Markdown text locally
+    /// before the AI reads it — a fraction of the tokens of shipping the raw
+    /// pages to a vision model. See `crate::markitdown`.
+    Document {
+        filename: String,
+        #[serde(default)]
+        markitdown: bool,
+        data_base64: String,
+    },
 }
 
 /// What the daemon sends back.
@@ -1085,7 +1101,27 @@ fn serve<S: Read + Write>(
                 on_command(&text);
                 ToPhone::Ok
             }
-            FromPhone::Identify { public_key, signature, backing, model, manufacturer } => {
+            FromPhone::Identify {
+                public_key,
+                signature,
+                backing,
+                model,
+                manufacturer,
+                attestation,
+            } => {
+                // Base64 rather than byte arrays: attestation chains are several
+                // kilobytes of X.509, and the channel already carries photos the
+                // same way. A damaged entry fails decoding and the whole chain
+                // then verifies as nothing — never silently accepted in part.
+                let mut chain = Vec::new();
+                let mut decoding_broke = false;
+                for b64 in attestation {
+                    match decode_base64(&b64) {
+                        Some(bytes) => chain.push(bytes),
+                        None => decoding_broke = true,
+                    }
+                }
+                let chain = if decoding_broke { Vec::new() } else { chain };
                 let answer = identify_handset(
                     profile_path,
                     &challenge,
@@ -1094,6 +1130,7 @@ fn serve<S: Read + Write>(
                     &backing,
                     &model,
                     &manufacturer,
+                    &chain,
                 );
                 // Only "this is the handset I know" — or a first pairing —
                 // opens the door. A different device is refused outright rather
@@ -1129,11 +1166,73 @@ fn serve<S: Read + Write>(
                     message: "the photo did not arrive as valid base64".to_string(),
                 },
             },
+            FromPhone::Document { filename, markitdown, data_base64 } => {
+                handle_document(&filename, markitdown, &data_base64, on_command)
+            }
             FromPhone::Hello { .. } => ToPhone::Error {
                 message: "already said hello".to_string(),
             },
         };
         respond(&mut stream, key, &reply)?;
+    }
+}
+
+/// Handle a `Document` attachment: decode it, optionally convert it to text
+/// with MarkItDown, and feed the result to the command/LLM path.
+///
+/// Kept here rather than behind another callback because it is self-contained —
+/// it needs only the existing `on_command` road to reach the AI — and threading
+/// a fourth closure through the whole accept loop to save a few lines would be
+/// the wrong trade.
+fn handle_document(
+    filename: &str,
+    markitdown: bool,
+    data_base64: &str,
+    on_command: &(impl Fn(&str) + Send + Sync),
+) -> ToPhone {
+    let Some(bytes) = decode_base64(data_base64) else {
+        return ToPhone::Error { message: "the document did not arrive as valid base64".to_string() };
+    };
+
+    // The filename reaches the scratch directory, so reduce it to a safe
+    // basename while keeping the extension MarkItDown sniffs the format from.
+    let safe = std::path::Path::new(filename)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .map(|s| s.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '.' || *c == '_' || *c == '-').collect::<String>())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "attachment.bin".to_string());
+
+    if !markitdown {
+        // The toggle is off: the owner wanted the raw file sent to a vision
+        // model. This daemon's LLM turn is text, so without conversion there is
+        // nothing useful to feed it — say so honestly rather than dropping it.
+        return ToPhone::Error {
+            message: format!(
+                "Received `{safe}`. To let the AI read it, turn on the MarkItDown \
+                 toggle in the + menu — it converts the document to text locally \
+                 (far cheaper than sending pages to a vision model)."
+            ),
+        };
+    }
+
+    if !crate::markitdown::available() {
+        return ToPhone::Error { message: crate::markitdown::INSTALL_HINT.to_string() };
+    }
+
+    let staged = match crate::scratch::write(&safe, &bytes) {
+        Ok(h) => h,
+        Err(e) => return ToPhone::Error { message: format!("could not stage the document: {e:#}") },
+    };
+    match crate::markitdown::convert(staged.path()) {
+        Ok(text) => {
+            on_command(&format!(
+                "The owner attached a document `{safe}` (converted to text locally with \
+                 MarkItDown). Its contents follow — read it and respond.\n\n{text}"
+            ));
+            ToPhone::Ok
+        }
+        Err(e) => ToPhone::Error { message: format!("MarkItDown could not convert `{safe}`: {e:#}") },
     }
 }
 
@@ -1151,6 +1250,8 @@ fn unreadable_profile_placeholder() -> crate::phonehome::PhoneProfile {
         manufacturer: "?".to_string(),
         paired_at_unix: 0,
         signing_proven: false,
+        attestation: Vec::new(),
+        attested_security_level: "no_attestation".to_string(),
     }
 }
 
@@ -1176,6 +1277,7 @@ fn identify_handset(
     backing: &str,
     model: &str,
     manufacturer: &str,
+    attestation: &[Vec<u8>],
 ) -> ToPhone {
     use crate::phonehome::{self, PhoneVerdict};
 
@@ -1191,7 +1293,7 @@ fn identify_handset(
         };
     }
 
-    let saved = match phonehome::load(profile_path) {
+    let mut saved = match phonehome::load(profile_path) {
         Ok(p) => p,
         Err(e) => {
             // Never fall through to the NotPaired branch here: that branch
@@ -1207,23 +1309,75 @@ fn identify_handset(
     };
     match phonehome::identify(saved.as_ref(), public_key) {
         PhoneVerdict::SameDevice => {
+            // A handset that first paired through an older app may be recorded
+            // with no attestation at all. This update is strictly an upgrade —
+            // from no evidence to checked evidence — and does not clobber a
+            // previously *verified* claim, so it cannot mask drift.
+            let wants_attestation = !attestation.is_empty()
+                && saved.as_ref().map(|p| p.attestation.is_empty()).unwrap_or(false);
+            if wants_attestation {
+                let attested = phonehome::verify_attestation(attestation);
+                log::info!(
+                    "phone: pairing upgraded with attestation — key attested as living in {}",
+                    attested.level
+                );
+                if let Some(ref mut p) = saved {
+                    p.attestation_verified = attested.verified;
+                    p.attested_security_level = attested.level;
+                    p.attestation = attestation.to_vec();
+                    if let Err(e) = phonehome::save(profile_path, p) {
+                        log::error!("phone: cannot persist the upgraded pairing: {e:#}");
+                    }
+                }
+            }
             let detail = saved.map(|p| p.describe()).unwrap_or_default();
             log::info!("phone: paired handset confirmed — {detail}");
             ToPhone::Identity { verdict: "same_device".to_string(), detail }
         }
         PhoneVerdict::NotPaired => {
+            let attested = phonehome::verify_attestation(attestation);
+            if attested.verified {
+                log::info!(
+                    "phone: attestation verified — key recorded as living in {}",
+                    attested.level
+                );
+            } else {
+                log::warn!(
+                    "phone: attestation not verified ({}) — recording the handset on \
+                     its claim of `{backing}` alone",
+                    attested.level
+                );
+            }
+            // If the handset said its key lives in trusted hardware and the
+            // attestation contradicts that, that is not drift to wave through.
+            if attested.level == "software" && hardware_claimed(backing) {
+                log::error!(
+                    "phone: claimed `{backing}` but the attestation places the key in \
+                     software — refusing to trust that claim"
+                );
+                return ToPhone::Identity {
+                    verdict: "rejected".to_string(),
+                    detail: "your phone claims its key lives in trusted hardware, but \
+                             its own attestation says the key is in software — that \
+                             combination is not acceptable: a key that software can \
+                             read is a key that can be copied"
+                        .to_string(),
+                };
+            }
             let profile = phonehome::PhoneProfile {
                 public_key_der: public_key.to_vec(),
                 claimed_backing: backing.to_string(),
-                // Verified separately once attestation parsing lands; recorded
-                // as unproven so a later upgrade shows up as a change.
-                attestation_verified: false,
+                attestation_verified: attested.verified,
                 model: model.to_string(),
                 manufacturer: manufacturer.to_string(),
                 paired_at_unix: now_unix(),
                 // Nothing has been signed with it yet beyond the pairing
                 // challenge; the stronger confirmation rule waits until it has.
                 signing_proven: false,
+                // Keep the record that proved the claim, so a later replacement
+                // is visible as a difference rather than a silent update.
+                attestation: attestation.to_vec(),
+                attested_security_level: attested.level,
             };
             let detail = profile.describe();
             match phonehome::save(profile_path, &profile) {
@@ -1247,6 +1401,16 @@ fn identify_handset(
             }
         }
     }
+}
+
+/// Whether the backing string the app used claims its key lives in hardware.
+///
+/// `DeviceIdentity.claimedMethod()` names `strong_box` and `tee` for the
+/// hardware rungs of its ladder, and `device_credential` for a key unlocked by
+/// a screen lock (which still lives in the TEE on most devices). Software keys
+/// and `none` are the honest admissions.
+fn hardware_claimed(backing: &str) -> bool {
+    !matches!(backing, "software_key" | "software" | "none")
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

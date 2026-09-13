@@ -116,4 +116,79 @@ object Confirmation {
             BiometricPrompt.CryptoObject(signature),
         )
     }
+
+    /**
+     * A plain "is the owner's finger on this handset right now" gate.
+     *
+     * Unlike [confirm], nothing is signed for the daemon: the fingerprint just
+     * opens the door to an action that is sent afterwards on the normal channel.
+     * It is used to gate face enrolment — a photo of your face should not go
+     * anywhere because the phone happened to be unlocked.
+     *
+     * The same rules as [confirm] apply: the prompt unlocks a signature object
+     * from a key with zero validity, so the gate cannot leak sideways into
+     * authorising a second action, and there is no device-credential fallback.
+     *
+     * @param onSuccess runs only after a fresh biometric has been presented.
+     * @param onDone runs on cancel or failure with a message (empty on a plain
+     *        cancel, so the UI can stay quiet about a decision the owner made).
+     */
+    fun gate(
+        activity: FragmentActivity,
+        onSuccess: () -> Unit,
+        onDone: (message: String) -> Unit,
+    ) {
+        val signature = DeviceIdentity.confirmSignature()
+        if (signature == null) {
+            onDone(activity.getString(R.string.confirm_unavailable))
+            return
+        }
+        val executor: Executor = androidx.core.content.ContextCompat.getMainExecutor(activity)
+        val prompt = BiometricPrompt(
+            activity,
+            executor,
+            object : BiometricPrompt.AuthenticationCallback() {
+                override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
+                    val sig = result.cryptoObject?.signature
+                    if (sig == null) {
+                        onDone(activity.getString(R.string.confirm_no_signature))
+                        return
+                    }
+                    try {
+                        // No payload here: the gate is the fingerprint itself.
+                        // The signature object is still consumed, so this auth
+                        // cannot authorise anything else.
+                        sig.sign()
+                        onSuccess()
+                    } catch (e: Exception) {
+                        Log.e(TAG, "consuming the gate signature failed: ${e.message}")
+                        onDone(activity.getString(R.string.confirm_sign_failed, e.message ?: ""))
+                    }
+                }
+
+                override fun onAuthenticationError(code: Int, msg: CharSequence) {
+                    onDone(
+                        if (code == BiometricPrompt.ERROR_USER_CANCELED ||
+                            code == BiometricPrompt.ERROR_NEGATIVE_BUTTON
+                        ) {
+                            ""
+                        } else {
+                            activity.getString(R.string.confirm_biometric_failed, msg)
+                        }
+                    )
+                }
+            },
+        )
+        prompt.authenticate(
+            BiometricPrompt.PromptInfo.Builder()
+                .setTitle(activity.getString(R.string.gate_prompt_title))
+                .setSubtitle(activity.getString(R.string.gate_prompt_subtitle))
+                .setNegativeButtonText(activity.getString(R.string.confirm_cancel))
+                .setAllowedAuthenticators(
+                    androidx.biometric.BiometricManager.Authenticators.BIOMETRIC_STRONG
+                )
+                .build(),
+            BiometricPrompt.CryptoObject(signature),
+        )
+    }
 }

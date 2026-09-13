@@ -1,0 +1,29 @@
+#!/bin/bash
+# SPDX-License-Identifier: MIT OR GPL-2.0-or-later
+#
+# mkinitcpio RUNTIME hook. Three stages, matching dracut's pre-udev /
+# pre-trigger / pre-pivot and initramfs-tools' init-top / init-premount /
+# local-bottom.
+
+run_earlyhook() {
+    # Before udev coldplug: the control channel should exist as early as
+    # possible, and the capture below needs uvcvideo already resident.
+    modprobe -q sysentinel_metrics 2> /dev/null || true
+    modprobe -q uvcvideo           2> /dev/null || true
+}
+
+run_hook() {
+    # Runs before the 'encrypt' hook asks for the passphrase, provided this
+    # hook is listed before it in HOOKS=. The script backgrounds its own work
+    # and never blocks boot: a photo needs no ciphertext.
+    [[ -x /usr/libexec/sysentinel/sysentinel-precrypt.sh ]] || return 0
+    /usr/libexec/sysentinel/sysentinel-precrypt.sh || true
+}
+
+run_latehook() {
+    # Post-decrypt, FALLBACK ONLY: skips itself when the pre-prompt capture
+    # already stamped /run/sysentinel-cam/.done, so one boot never yields two
+    # photos.
+    [[ -x /usr/libexec/sysentinel/sysentinel-luks.sh ]] || return 0
+    /usr/libexec/sysentinel/sysentinel-luks.sh || true
+}

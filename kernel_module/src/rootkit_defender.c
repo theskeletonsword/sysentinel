@@ -13,7 +13,7 @@
 // ┌──────────────────────┬──────────────┬──────────────────────────────────────┐
 // │ Surface              │ Scan         │ Clean                               │
 // ├──────────────────────┼──────────────┼──────────────────────────────────────┤
-// │ MSR_LSTAR (syscall   │ compare vs   │ wrmsrl back to the module-load      │
+// │ MSR_LSTAR (syscall   │ compare vs   │ wrmsrq back to the module-load      │
 // │ entry point)         │ load-time    │ baseline (the classic "syscall       │
 // │                      │ baseline     │ hook" unhook)                       │
 // │ IDT (interrupt       │ compare vs   │ write the 16-byte baseline gate     │
@@ -66,7 +66,7 @@
 #include <linux/uidgid.h>
 
 #include <asm/desc.h>		/* store_idt(), struct desc_ptr		  */
-#include <asm/msr.h>		/* rdmsrl() / wrmsrl()		   	  */
+#include <asm/msr.h>		/* rdmsrq() / wrmsrq()		   	  */
 #include <asm/processor.h>
 
 // ── MSR_LSTAR ────────────────────────────────────────────────────────────────
@@ -225,7 +225,7 @@ long sysentinel_defense_scan(void)
 	defense_tampered = false;
 
 	store_idt(&idtr);
-	rdmsrl(MSR_LSTAR, lstar_now);
+	rdmsrq(MSR_LSTAR, lstar_now);
 	asm volatile("mov %%cr0, %0" : "=r"(cr0));
 
 	// MSR_LSTAR — the procto-capture syscall entry.
@@ -300,9 +300,9 @@ long sysentinel_defense_clean(void)
 
 	mutex_lock(&defense_lock);
 
-	rdmsrl(MSR_LSTAR, lstar_now);
+	rdmsrq(MSR_LSTAR, lstar_now);
 	if (lstar_now != lstar_baseline) {
-		wrmsrl(MSR_LSTAR, lstar_baseline);
+		wrmsrq(MSR_LSTAR, lstar_baseline);
 		pr_warn("sysentinel_defense: restored MSR_LSTAR %#llx -> "
 			"%#llx\n", lstar_now, lstar_baseline);
 	}
@@ -372,7 +372,7 @@ long sysentinel_defense_lstar_status(void)
 
 	if (!idt_baseline)
 		return -EINVAL;
-	rdmsrl(MSR_LSTAR, now);
+	rdmsrq(MSR_LSTAR, now);
 	return now == lstar_baseline ? 0 : 1;
 }
 
@@ -425,7 +425,7 @@ long sysentinel_defense_init(void)
 	// possible — the snapshot IS the trusted good state. If a rootkit is
 	// already resident before loading, its hooks become the "baseline";
 	// scan will only ever see deviations *from* that point.
-	rdmsrl(MSR_LSTAR, lstar_baseline);
+	rdmsrq(MSR_LSTAR, lstar_baseline);
 
 	idt_baseline = kzalloc(IDT_VECTORS * 16, GFP_KERNEL);
 	if (!idt_baseline)

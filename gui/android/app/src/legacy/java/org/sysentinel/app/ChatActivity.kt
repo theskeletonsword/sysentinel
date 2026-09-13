@@ -30,6 +30,11 @@ import java.util.Locale
  */
 class ChatActivity : AppCompatActivity() {
 
+    // Force the chosen UI language (English by default), not the phone's locale.
+    override fun attachBaseContext(newBase: android.content.Context) {
+        super.attachBaseContext(LocaleManager.wrap(newBase))
+    }
+
     private val messages = ArrayList<Message>()
     private lateinit var adapter: BubbleAdapter
     private lateinit var engine: ChatEngine

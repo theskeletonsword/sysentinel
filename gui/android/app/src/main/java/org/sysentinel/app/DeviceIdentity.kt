@@ -11,6 +11,7 @@ import java.security.KeyPairGenerator
 import java.security.PrivateKey
 import java.security.Signature
 import java.security.spec.ECGenParameterSpec
+import java.security.cert.Certificate
 import javax.crypto.KeyGenerator
 
 /**
@@ -254,6 +255,29 @@ object DeviceIdentity {
     fun devicePublicKey(): ByteArray? {
         val ks = KeyStore.getInstance(KEYSTORE).apply { load(null) }
         return ks.getCertificate(SIGN_ALIAS)?.publicKey?.encoded
+    }
+
+    /**
+     * The device key's attestation chain, leaf first.
+     *
+     * The key was created with `setAttestationChallenge`, so its certificate
+     * is a real Android Key Attestation rather than a self-assured one: the
+     * leaf's Key Description names where the key actually lives (StrongBox /
+     * TEE / software), and the chain back to the device's root certifies that
+     * name. This is what lets the daemon believe "my key is in TrustZone"
+     * instead of merely hearing the phone say so.
+     *
+     * Empty only when the key does not exist — i.e. on a handset where nothing
+     * could be signed with it either, so there is nothing to attest to.
+     */
+    fun deviceAttestationChain(): List<ByteArray> {
+        val ks = KeyStore.getInstance(KEYSTORE).apply { load(null) }
+        return try {
+            (ks.getCertificateChain(SIGN_ALIAS) ?: emptyArray<Certificate>()).map { it.encoded }
+        } catch (e: Exception) {
+            Log.e(TAG, "cannot read the device key's attestation chain: ${e.message}")
+            emptyList()
+        }
     }
 
     /**

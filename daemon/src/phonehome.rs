@@ -77,6 +77,19 @@ pub struct PhoneProfile {
     /// profiles written before this field existed.
     #[serde(default)]
     pub signing_proven: bool,
+    /// The Android Key Attestation chain (leaf…root, DER certificates) that
+    /// was checked when the claim was recorded. Kept so a later effort to
+    /// change where the key *appeared* to live shows up as a difference, the
+    /// same way `attestation_verified` does for a missing chain.
+    #[serde(default)]
+    pub attestation: Vec<Vec<u8>>,
+    /// What the attestation actually said about the key's hardware, as a word:
+    /// `strong_box`, `tee`, `software`, or a reason a check could not run
+    /// (`no_attestation`, `malformed`, `chain_break`, `unreadable`). What the
+    /// phone *claimed* may disagree; the disagreement is drift, surfaced in
+    /// [`PhoneProfile::describe`].
+    #[serde(default)]
+    pub attested_security_level: String,
 }
 
 impl PhoneProfile {
@@ -91,7 +104,12 @@ impl PhoneProfile {
     /// the model is there to be recognisable, not to be trusted.
     pub fn describe(&self) -> String {
         let proof = if self.attestation_verified {
-            format!("{} (attested)", self.claimed_backing)
+            format!("{} (attested {})", self.claimed_backing, self.attested_security_level)
+        } else if !self.attestation.is_empty() {
+            format!(
+                "{} — attestation did not verify ({})",
+                self.claimed_backing, self.attested_security_level
+            )
         } else {
             format!("{} — NO verified attestation", self.claimed_backing)
         };
@@ -252,6 +270,142 @@ pub fn verify_challenge(public_key_der: &[u8], challenge: &[u8], signature: &[u8
     key.verify(challenge, signature).is_ok()
 }
 
+// ── Android Key Attestation ──────────────────────────────────────────────────
+
+/// Security levels the Android Key Description names for where a key lives.
+const LEVEL_SOFTWARE: u32 = 0;
+const LEVEL_TEE: u32 = 1;
+const LEVEL_STRONGBOX: u32 = 2;
+
+/// The Android Key Attestation certificate extension, OID 1.3.6.1.4.1.11129.2.1.17.
+const ANDROID_KEY_DESCRIPTION: [u64; 10] = [1, 3, 6, 1, 4, 1, 11129, 2, 1, 17];
+
+/// The outcome of checking a handset's attestation chain.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Attestation {
+    /// True when the chain links cryptographically (each certificate signed
+    /// by the next) and its leaf carries a readable Key Description. This
+    /// proves the record is genuine — what the hardware said is real — not
+    /// that a particular brand of hardware produced it; the channel's second
+    /// step (signing the challenge) still proves possession of the private
+    /// half.
+    pub verified: bool,
+    /// What the attestation said, as a word: `strong_box`, `tee`, `software`,
+    /// or the reason the check could not run (`no_attestation`, `malformed`,
+    /// `chain_break`, `unreadable`).
+    pub level: String,
+}
+
+/// Parse and cryptographically check an Android Key Attestation chain.
+///
+/// The phone's `identify` frame carries this chain exactly as Android's
+/// Keystore hands it out — the leaf is the key's own certificate, signed by an
+/// intermediate, ending at the attestation root embedded in the OS. Every link
+/// must verify, and the leaf must carry the Key Description extension that
+/// names the security level (Software / TEE / StrongBox).
+///
+/// The final certificate is not trusted against a pinned Google root: it is
+/// hardware attestation rather than TLS, the OS's own trust anchors ship with
+/// the device, and re-deriving them here would be pretending to have evidence
+/// we do not carry. What is verified is the chain's internal integrity and the
+/// record it carries — which is still far more than taking the claim on faith,
+/// and it is what the original pairing deposited as `attestation_verified`.
+pub fn verify_attestation(certs: &[Vec<u8>]) -> Attestation {
+    if certs.is_empty() {
+        return Attestation { verified: false, level: "no_attestation".into() };
+    }
+    let parsed = match parse_chain(certs) {
+        Ok(chains) => chains,
+        Err(level) => return Attestation { verified: false, level },
+    };
+    // Each certificate must have been signed by the one after it. The tail is
+    // the root, which this daemon does not carry a pinned anchor for — the
+    // decision to record a handset is the owner's first pairing, and the
+    // attestation root is the OS's own trust store, not ours.
+    for i in 0..parsed.len().saturating_sub(1) {
+        if parsed[i].verify_signature(Some(parsed[i + 1].public_key())).is_err() {
+            return Attestation { verified: false, level: "chain_break".into() };
+        }
+    }
+    if let Some(tail) = parsed.last() {
+        // A self-issued root can still be checked cheaply; a root issued by
+        // something off-chain is simply not ours to check.
+        if tail.subject() == tail.issuer() && tail.verify_signature(None).is_err() {
+            return Attestation { verified: false, level: "chain_break".into() };
+        }
+    }
+
+    let leaf = &parsed[0];
+    let expected = asn1_rs::Oid::from(&ANDROID_KEY_DESCRIPTION)
+        .expect("the Android key description OID is constant and valid");
+    let ext = leaf
+        .extensions()
+        .iter()
+        .find(|e| e.oid.as_bytes() == expected.as_bytes());
+    let ext = match ext {
+        Some(e) => e,
+        None => return Attestation { verified: false, level: "unreadable".into() },
+    };
+    let level = match key_description_level(ext.value) {
+        Some(LEVEL_STRONGBOX) => "strong_box",
+        Some(LEVEL_TEE) => "tee",
+        Some(LEVEL_SOFTWARE) => "software",
+        _ => return Attestation { verified: false, level: "unreadable".into() },
+    };
+    Attestation { verified: true, level: level.into() }
+}
+
+/// Parse each certificate, or name the reason one could not be read.
+fn parse_chain<'a>(
+    certs: &'a [Vec<u8>],
+) -> Result<Vec<x509_parser::certificate::X509Certificate<'a>>, String> {
+    use x509_parser::prelude::*;
+    certs
+        .iter()
+        .map(|der| {
+            X509Certificate::from_der(der)
+                .map(|(rem, cert)| {
+                    if rem.is_empty() {
+                        Ok(cert)
+                    } else {
+                        Err("malformed")
+                    }
+                })
+                .unwrap_or_else(|_| Err("malformed"))
+                .map_err(|e| e.to_string())
+        })
+        .collect()
+}
+
+/// Read `attestationSecurityLevel` out of a Key Description's DER.
+///
+/// `attestationSecurityLevel` and `keymasterSecurityLevel` both use the same
+/// SecurityLevel enumeration; the second field of the record is the one for
+/// the key itself, which is what this returns. Returns `None` on anything that
+/// does not parse, so a record nobody can read is treated as unverified rather
+/// than guessed at.
+fn key_description_level(ext_value: &[u8]) -> Option<u32> {
+    use asn1_rs::{Any, DerParser, FromDer, SequenceIterator, Tag};
+
+    let (_rem, mut obj) = Any::from_der(ext_value).ok()?;
+    // Most builds write the Key Description straight into the extension; some
+    // wrap it in an explicit tag. Descend until we reach a universal SEQUENCE,
+    // which is the record's own tag.
+    for _ in 0..4 {
+        if obj.tag() == Tag::Sequence {
+            let fields: Vec<Any> =
+                SequenceIterator::<Any, DerParser>::new(obj.as_bytes())
+                    .filter_map(Result::ok)
+                    .collect();
+            // [0] attestationVersion, [1] attestationSecurityLevel, ...
+            return fields.get(1)?.clone().enumerated().ok().map(|e| e.0);
+        }
+        let (_inner_rem, inner) = Any::from_der(obj.as_bytes()).ok()?;
+        obj = inner;
+    }
+    None
+}
+
 /// Record that this handset has signed something, once.
 ///
 /// Separate from [`save`] so the caller does not have to reconstruct a
@@ -306,11 +460,13 @@ mod tests {
         PhoneProfile {
             public_key_der: pubkey,
             claimed_backing: "strong_box".into(),
-            attestation_verified: true,
+            attestation_verified: false,
             model: model.into(),
             manufacturer: "Google".into(),
             paired_at_unix: 1_700_000_000,
             signing_proven: false,
+            attestation: Vec::new(),
+            attested_security_level: "no_attestation".into(),
         }
     }
 

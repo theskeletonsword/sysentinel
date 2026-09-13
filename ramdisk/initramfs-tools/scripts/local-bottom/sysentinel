@@ -1,0 +1,21 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT OR GPL-2.0-or-later
+#
+# initramfs-tools RUNTIME hook, local-bottom: post-decrypt capture, FALLBACK
+# ONLY. Equivalent of dracut's pre-pivot hook.
+#
+# local-bottom runs after the root filesystem is unlocked and mounted, which is
+# the last moment the initramfs still owns the machine. The script skips itself
+# when the pre-prompt capture already stamped /run/sysentinel-cam/.done, so a
+# machine with a working camera never takes two photos for one boot.
+
+PREREQ=""
+prereqs() { echo "$PREREQ"; }
+case "$1" in
+    prereqs) prereqs; exit 0 ;;
+esac
+
+[ -x /usr/libexec/sysentinel/sysentinel-luks.sh ] || exit 0
+/usr/libexec/sysentinel/sysentinel-luks.sh || true
+
+exit 0

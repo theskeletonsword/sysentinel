@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+<resources>
+    <!--
+      Deep slate, not pure black: on an OLED home screen a #000 icon loses its
+      own silhouette against the wallpaper's dark areas, and the launcher's
+      mask stops reading as a shape at all.
+    -->
+    <color name="ic_launcher_background">#0E141B</color>
+</resources>

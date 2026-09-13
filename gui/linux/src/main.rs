@@ -264,9 +264,17 @@ fn build_ui(app: &adw::Application) {
     toolbar.add_top_bar(&bar);
     toolbar.set_content(Some(&split));
 
+    // The icon is looked up in the hicolor theme by name, and the name has to
+    // be the application id — that is the string the shell, the task switcher
+    // and the .desktop entry all agree to match on. Ship assets/org.sysentinel.Gui.svg
+    // into $PREFIX/share/icons/hicolor/scalable/apps/ and this resolves; without
+    // it the window falls back to the generic placeholder.
+    gtk4::Window::set_default_icon_name(APP_ID);
+
     let window = adw::ApplicationWindow::builder()
         .application(app)
         .title("sysentinel")
+        .icon_name(APP_ID)
         .default_width(1080)
         .default_height(720)
         .content(&toolbar)

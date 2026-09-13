@@ -38,3 +38,14 @@ modules.order
 .*.kate-swp
 *.swp
 *~
+
+# Face model weights (downloaded separately, not committed)
+ramdisk/face/models/mobilefacenet_scripted/
+markitdown-rs/target/
+assets/
+
+# Third-party tools (cloned separately, not shipped)
+envytools/
+
+# Kernel kbuild temp directories
+kernel_module/.tmp_*/

@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  SPDX-License-Identifier: Apache-2.0
+
+  Themed-icon (Android 13+) layer. The launcher throws away these colours and
+  tints the silhouette with the user's wallpaper palette, so there is exactly
+  one shape here and every distinction has to be made with holes, not colour.
+
+  Hence fillType="evenOdd": the eye is a genuine cut-out in the shield rather
+  than a lighter fill painted on top, which under a single tint would have
+  disappeared into the shield entirely.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Shield with the eye punched out of it -->
+    <path
+        android:fillColor="#000000"
+        android:fillType="evenOdd"
+        android:pathData="M54,27 L75,34.5 L75,53.5 C75,66.5 66,76 54,81.5 C42,76 33,66.5 33,53.5 L33,34.5 Z M41.5,53.5 C45,46.5 49.5,43.5 54,43.5 C58.5,43.5 63,46.5 66.5,53.5 C63,60.5 58.5,63.5 54,63.5 C49.5,63.5 45,60.5 41.5,53.5 Z" />
+
+    <!-- Iris, put back inside the hole so the eye reads as an eye -->
+    <path
+        android:fillColor="#000000"
+        android:pathData="M54,53.5 m-6,0 a6,6 0 1,0 12,0 a6,6 0 1,0 -12,0" />
+</vector>

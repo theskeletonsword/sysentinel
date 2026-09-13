@@ -46,7 +46,7 @@ class ChatEngine(
         }
         io.execute {
             try {
-                val l = pairing.link() ?: throw PhoneLinkException("emparejamiento incompleto")
+                val l = pairing.link() ?: throw PhoneLinkException(ctx.getString(R.string.pairing_incomplete))
                 val welcome = l.connect(appVersion)
                 link = l
 
@@ -69,7 +69,7 @@ class ChatEngine(
                 }
                 drain(listener, l)
             } catch (e: Exception) {
-                post(listener) { it.onStatus(e.message ?: "no pude conectar", false) }
+                post(listener) { it.onStatus(e.message ?: ctx.getString(R.string.state_could_not_connect), false) }
             }
         }
     }
@@ -112,13 +112,33 @@ class ChatEngine(
         io.execute {
             try {
                 l.sendPhoto(jpeg)
-                post(listener) { it.onStatus("foto enviada", true) }
+                post(listener) { it.onStatus(ctx.getString(R.string.state_photo_sent), true) }
                 drain(listener, l)
             } catch (e: Exception) {
                 post(listener) { it.onStatus(e.message ?: ctx.getString(R.string.state_photo_failed), false) }
             }
         }
     }
+
+    /** Send an attachment (image/PDF/doc), optionally converted with MarkItDown. */
+    fun sendDocument(filename: String, bytes: ByteArray, markitdown: Boolean, listener: Listener) {
+        val l = link ?: run {
+            listener.onStatus(ctx.getString(R.string.state_offline_send), false)
+            return
+        }
+        io.execute {
+            try {
+                l.sendDocument(filename, bytes, markitdown)
+                post(listener) { it.onStatus(ctx.getString(R.string.attach_sent), true) }
+                drain(listener, l)
+            } catch (e: Exception) {
+                post(listener) { it.onStatus(e.message ?: ctx.getString(R.string.state_send_failed), false) }
+            }
+        }
+    }
+
+    /** Send a photo for face enrolment (the daemon must have `/face register` armed). */
+    fun enrollFace(jpeg: ByteArray, listener: Listener) = sendPhoto(jpeg, listener)
 
     /** Send a signed confirmation for an armed order. */
     fun confirm(nonce: String, signature: ByteArray, onResult: (String) -> Unit) {
@@ -155,9 +175,49 @@ class ChatEngine(
                 backing = DeviceIdentity.deviceKeyBacking(),
                 model = android.os.Build.MODEL,
                 manufacturer = android.os.Build.MANUFACTURER,
+                attestationChain = DeviceIdentity.deviceAttestationChain(),
             )
         } catch (e: Exception) {
             null
+        }
+    }
+
+    /**
+     * "Define this as my phone" — say it to the daemon now, from the
+     * finger-side, and get the daemon's honest verdict back.
+     *
+     * On first pairing this *is* the registration: the daemon saves the device
+     * key (recorded with its verified attestation) and from then on treats this
+     * exact handset as home. On a later run the daemon confirms the same handset
+     * — or reports that a *different* phone answered, which means the pairing
+     * secret has been copied. The verdict text is displayed verbatim, so what
+     * the daemon decided is exactly what the owner reads.
+     */
+    fun definePhone(listener: Listener, onResult: (String) -> Unit) {
+        io.execute {
+            val verdict = try {
+                if (!pairing.isPaired) {
+                    ctx.getString(R.string.state_unpaired)
+                } else {
+                    val l = pairing.link()
+                        ?: throw PhoneLinkException(ctx.getString(R.string.pairing_incomplete))
+                    val welcome = l.connect(appVersion)
+                    val id = proveIdentity(l, welcome.challenge)
+                    l.close()
+                    id?.verdict?.let { v ->
+                        when (v) {
+                            "paired" -> ctx.getString(R.string.own_definephone_paired, v)
+                            "same_device" -> ctx.getString(R.string.own_definephone_same, v)
+                            "different_device" -> ctx.getString(R.string.own_definephone_different, v)
+                            "rejected" -> ctx.getString(R.string.own_definephone_rejected, v)
+                            else -> ctx.getString(R.string.own_definephone_unknown, v)
+                        }
+                    } ?: ctx.getString(R.string.own_definephone_no_key)
+                }
+            } catch (e: Exception) {
+                e.message ?: ctx.getString(R.string.state_offline_confirm)
+            }
+            main.post { onResult(verdict) }
         }
     }
 

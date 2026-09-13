@@ -78,6 +78,17 @@ webpki-roots = "1.0.9"
 # three, and used precisely so that nothing here hand-writes X.509 DER.
 rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs"] }
 
+# ── Android Key Attestation ───────────────────────────────────────────────────
+# Parses and cryptographically checks the certificate chain the phone sends in
+# `identify`, so the daemon does not have to take the handset's word for where
+# its device key lives (TrustZone / StrongBox). `verify-aws` reuses the single
+# crypto implementation this crate already has; default is a pure parser.
+x509-parser = { version = "0.18", features = ["verify-aws"] }
+# The Key Description inside the attestation is plain DER; asn1-rs (already a
+# transitive dependency of x509-parser) is the decoder used to read its
+# SecurityLevel enumeration.
+asn1-rs = "0.7"
+
 [features]
 default   = []
 local-llm = ["dep:llama-cpp-2"]

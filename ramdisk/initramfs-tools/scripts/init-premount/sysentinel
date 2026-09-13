@@ -1,0 +1,25 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT OR GPL-2.0-or-later
+#
+# initramfs-tools RUNTIME hook, init-premount: photograph whoever is at the
+# keyboard BEFORE the LUKS passphrase prompt. Equivalent of dracut's
+# pre-trigger hook.
+#
+# Stage matters: cryptsetup runs from local-top, and init-premount is the last
+# stage that finishes before it. Putting this in local-top instead would race
+# the passphrase prompt, and a photo taken after the machine is unlocked
+# answers a different question.
+#
+# The work is backgrounded by the script itself and never blocks boot: a photo
+# needs no ciphertext, so nothing here is allowed to delay the prompt.
+
+PREREQ=""
+prereqs() { echo "$PREREQ"; }
+case "$1" in
+    prereqs) prereqs; exit 0 ;;
+esac
+
+[ -x /usr/libexec/sysentinel/sysentinel-precrypt.sh ] || exit 0
+/usr/libexec/sysentinel/sysentinel-precrypt.sh || true
+
+exit 0

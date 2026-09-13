@@ -81,6 +81,10 @@ pub fn classify(record: &KmsgRecord) -> Option<ClassifiedEvent> {
         || lower.contains("avc: denied")
         || lower.contains("selinux:")
         || lower.contains("selinux")
+        // AppArmor denials come through the same audit channel; catch them here
+        // too so a Debian/Ubuntu/SUSE box gets the same MAC-denial handling.
+        || lower.contains("apparmor=\"denied\"")
+        || lower.contains("apparmor=denied")
     {
         EventKind::Selinux
     } else {

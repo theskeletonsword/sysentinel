@@ -228,8 +228,10 @@ pub fn detect_hypervisor() -> HypervisorKind {
 
 // ── CPU vendor (ring −3 partner selection) ───────────────────────────────────
 
-/// Return the 12-byte CPU vendor string from CPUID leaf 0 (EBX, ECX, EDX,
-/// each little-endian). `[0; 12]` on architectures without CPUID.
+/// Return the 12-byte CPU vendor string from CPUID leaf 0 (EBX, EDX, ECX —
+/// leaf 0 is the one CPUID leaf that returns the string in this order, unlike
+/// the hypervisor leaf 0x40000000 above which is EBX, ECX, EDX), each
+/// little-endian. `[0; 12]` on architectures without CPUID.
 #[cfg(target_arch = "x86_64")]
 fn cpu_vendor() -> [u8; 12] {
     let (ebx, ecx, edx): (u32, u32, u32);
@@ -249,8 +251,8 @@ fn cpu_vendor() -> [u8; 12] {
 
     let mut vendor = [0u8; 12];
     vendor[0..4].copy_from_slice(&ebx.to_le_bytes());
-    vendor[4..8].copy_from_slice(&ecx.to_le_bytes());
-    vendor[8..12].copy_from_slice(&edx.to_le_bytes());
+    vendor[4..8].copy_from_slice(&edx.to_le_bytes());
+    vendor[8..12].copy_from_slice(&ecx.to_le_bytes());
     vendor
 }
 

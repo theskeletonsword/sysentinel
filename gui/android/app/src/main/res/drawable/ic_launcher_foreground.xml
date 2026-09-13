@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  SPDX-License-Identifier: Apache-2.0
+
+  Adaptive-icon foreground: a shield (this watches the machine) with an eye
+  cut into it (it watches by looking, and it only ever reports what it saw).
+
+  108x108 is the adaptive-icon viewport. Everything here stays inside the
+  central 66dp safe zone, because the launcher masks the outer ring to a
+  circle, a squircle or whatever the OEM decided — art outside that ring is
+  not "bleed", it is art the user will never see.
+
+  The eye is painted in the background colour rather than punched out with an
+  even-odd path: the background is a flat colour we control, so the cheap way
+  and the correct way look identical, and this one survives a theme engine
+  recolouring a single fill.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Shield body -->
+    <path
+        android:fillColor="#E9A23B"
+        android:pathData="M54,27 L75,34.5 L75,53.5 C75,66.5 66,76 54,81.5 C42,76 33,66.5 33,53.5 L33,34.5 Z" />
+
+    <!-- Eye: white of the eye, in the background colour -->
+    <path
+        android:fillColor="#0E141B"
+        android:pathData="M41.5,53.5 C45,46.5 49.5,43.5 54,43.5 C58.5,43.5 63,46.5 66.5,53.5 C63,60.5 58.5,63.5 54,63.5 C49.5,63.5 45,60.5 41.5,53.5 Z" />
+
+    <!-- Iris -->
+    <path
+        android:fillColor="#E9A23B"
+        android:pathData="M54,53.5 m-6,0 a6,6 0 1,0 12,0 a6,6 0 1,0 -12,0" />
+
+    <!-- Catchlight: the one highlight that keeps the iris from reading as a hole -->
+    <path
+        android:fillColor="#0E141B"
+        android:pathData="M56.4,51.1 m-1.9,0 a1.9,1.9 0 1,0 3.8,0 a1.9,1.9 0 1,0 -3.8,0" />
+</vector>

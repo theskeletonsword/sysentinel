@@ -281,18 +281,23 @@ pub fn live_status(now_uptime_ns: u64) -> LiveMei {
 /// This follows the layout spoken by Intel's own userspace tools
 /// (`mei-tools/src/mkhi.h`, `intelmetool`) and the ME firmware reference:
 /// ```text
-/// Bits [7:0]   = Group ID        (0 = GEN/general group)
-/// Bits [15:8]  = Command ID
-/// Bit  [16]    = Is Response     (ME stamps it in replies; zero in host requests)
-/// Bits [23:17] = Reserved
+/// Bits [7:0]   = Group ID        (0 = GEN/general group, 0xFF on this SKU)
+/// Bits [14:8]  = Command ID      (7 bits)
+/// Bit  [15]    = Is Response     (ME stamps it in replies; zero in host requests)
+/// Bits [23:16] = Reserved
 /// Bits [31:24] = Result / status (0 = success; non-zero on MKHI errors)
 /// ```
 ///
-/// > The previous revision of this file used a different bitfield layout
-/// > (7-bit command at [11:8], response bit at [12], 16-bit length at [31:16])
-/// > on group 0xFF. That does not match the GEN `GET_FW_VERSION` wire format,
-/// > which is why real ME replies were misparsed as "IS_RESPONSE not set".
-/// > Keep this header in sync with `mei-tools`; it is the field-proven shape.
+/// > The previous revision of this file treated the command as a full 8-bit
+/// > field ([15:8]) with a separate Is Response bit at [16]. Real ME replies
+/// > on this silicon come back as e.g. `cmd=0x82` for a `GET_FW_VERSION`
+/// > (`0x02`) response: the top bit of that byte *is* Is Response, i.e. the
+/// > command is 7 bits wide and the response flag lives at [15], not [16].
+/// > The old layout read command as the raw byte (0x82, never matching 0x02)
+/// > and Is Response as always zero, so every valid reply was misparsed as
+/// > invalid and the query burned all retries before giving up with EIO —
+/// > confirmed against captured MKHI replies; keep this header in sync with
+/// > those captures, not just `mei-tools`.
 #[repr(C, packed)]
 #[derive(Debug, Clone, Copy)]
 struct MkhiHeader {
@@ -303,7 +308,7 @@ impl MkhiHeader {
     /// Build a host request header: group + command, no response bit, no result.
     const fn request(group_id: u8, command: u8) -> Self {
         Self {
-            raw: (group_id as u32) | ((command as u32) << 8),
+            raw: (group_id as u32) | ((command as u32 & 0x7f) << 8),
         }
     }
 
@@ -312,11 +317,11 @@ impl MkhiHeader {
     }
 
     fn command(self) -> u8 {
-        ((self.raw >> 8) & 0xff) as u8
+        ((self.raw >> 8) & 0x7f) as u8
     }
 
     fn is_response(self) -> bool {
-        ((self.raw >> 16) & 1) == 1
+        ((self.raw >> 15) & 1) == 1
     }
 
     fn result(self) -> u8 {
@@ -514,7 +519,7 @@ unsafe fn try_query_once(cldev: *mut MeiClDevice) -> Result<MeFwVersion, QueryEr
 
     if !response_is_valid(&header) {
         pr_warn!(
-            "sysentinel: MKHI reply invalid (group={:#x} cmd={:#x} is_resp={}\
+            "sysentinel: MKHI reply invalid (group={:#x} cmd={:#x} is_resp={} \
              result={:#x}, {} bytes); will retry\n",
             header.group(),
             header.command(),
@@ -537,7 +542,7 @@ unsafe fn try_query_once(cldev: *mut MeiClDevice) -> Result<MeFwVersion, QueryEr
         // The ME often answers the first query with nothing or a stub during
         // early boot; that is precisely the transient case to retry.
         pr_warn!(
-            "sysentinel: MKHI response too short ({total} bytes, need {min_good});\
+            "sysentinel: MKHI response too short ({total} bytes, need {min_good}); \
              ME may still be settling — will retry\n"
         );
         return Err(QueryErr::Transient);
@@ -590,7 +595,7 @@ unsafe fn query_me_fw_version(cldev: *mut MeiClDevice) -> Result<MeFwVersion> {
                 // case it was momentarily busy, then stop and report.
                 if stable_status == Some(code) {
                     pr_err!(
-                        "sysentinel: MKHI GET_FW_VERSION persistently rejected with\
+                        "sysentinel: MKHI GET_FW_VERSION persistently rejected with \
                          status {code:#x}; ignoring ME firmware version\n"
                     );
                     return Err(EIO);
@@ -605,7 +610,7 @@ unsafe fn query_me_fw_version(cldev: *mut MeiClDevice) -> Result<MeFwVersion> {
         }
     }
     pr_err!(
-        "sysentinel: MKHI GET_FW_VERSION failed after {MAX_ATTEMPTS} attempts;\
+        "sysentinel: MKHI GET_FW_VERSION failed after {MAX_ATTEMPTS} attempts; \
          ignoring ME firmware version\n"
     );
     Err(EIO)

@@ -1,0 +1,80 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT OR GPL-2.0-or-later
+#
+# initramfs-tools BUILD hook (Debian, Ubuntu and derivatives).
+#
+# This is the counterpart of dracut's module-setup.sh: it decides what goes
+# INTO the image. The runtime counterparts live in ../scripts/.
+#
+# Installed to /etc/initramfs-tools/hooks/sysentinel by
+# scripts/install-initramfs.sh, and run by update-initramfs.
+
+set -e
+
+PREREQ=""
+prereqs() { echo "$PREREQ"; }
+case "$1" in
+    prereqs) prereqs; exit 0 ;;
+esac
+
+. /usr/share/initramfs-tools/hook-functions
+
+# ── The capture tool ─────────────────────────────────────────────────────────
+#
+# copy_exec, not cp: it resolves and pulls in the shared libraries too. Ours is
+# a static musl binary that needs none, but saying so by using the wrong tool
+# would break the moment somebody builds it against glibc.
+if [ -x /usr/libexec/sysentinel-cam ]; then
+    copy_exec /usr/libexec/sysentinel-cam /usr/libexec
+else
+    echo "sysentinel: /usr/libexec/sysentinel-cam missing — no early capture" >&2
+fi
+
+# Optional neural face tool; only present when its models were fetched.
+if [ -x /usr/libexec/sysentinel-face ]; then
+    copy_exec /usr/libexec/sysentinel-face /usr/libexec
+fi
+
+# blkid, to find the vfat ESP the evidence is written to. Debian's initramfs
+# usually has it already; asking twice costs nothing.
+copy_exec /sbin/blkid /sbin 2>/dev/null || true
+
+# ── The runtime scripts ──────────────────────────────────────────────────────
+#
+# Shared verbatim with the dracut module rather than reimplemented: the capture
+# logic is plain POSIX sh with no generator-specific helpers, and two copies of
+# it would drift.
+mkdir -p "${DESTDIR}/usr/libexec/sysentinel"
+for s in sysentinel-precrypt.sh sysentinel-luks.sh; do
+    if [ -f "/usr/libexec/sysentinel/$s" ]; then
+        cp -a "/usr/libexec/sysentinel/$s" "${DESTDIR}/usr/libexec/sysentinel/$s"
+        chmod 0755 "${DESTDIR}/usr/libexec/sysentinel/$s"
+    fi
+done
+
+# ── Kernel modules ───────────────────────────────────────────────────────────
+#
+# Each is asked for only when the running kernel actually has it: the v4l2
+# stack is not a stable set of module names across versions, and
+# manual_add_modules on a name that does not resolve is a build-time error that
+# would take the whole initramfs down over an optional webcam helper.
+add_if_present() {
+    if modinfo "$1" > /dev/null 2>&1; then
+        manual_add_modules "$1"
+    fi
+}
+
+# The control channel. Without it there is no /proc/sysentinel_metrics in the
+# initramfs, which is the one thing this hook exists for.
+if modinfo sysentinel_metrics > /dev/null 2>&1; then
+    manual_add_modules sysentinel_metrics
+else
+    echo "sysentinel: no sysentinel_metrics for $version — early control channel absent" >&2
+fi
+
+for m in uvcvideo videodev videobuf2-core videobuf2-v4l2 \
+         videobuf2-memops videobuf2-vmalloc v4l2_common; do
+    add_if_present "$m"
+done
+
+exit 0

@@ -1,24 +1,47 @@
 // SPDX-License-Identifier: Apache-2.0
 //!
-//! SELinux AVC denial handling — the "what is this / do I allow it or not"
-//! workflow.
+//! Mandatory-access-control denial handling — the "what is this / do I allow it
+//! or not" workflow, for BOTH SELinux and AppArmor.
 //!
-//! When the kmsg watcher sees an `avc: denied` line it stores it here; the
-//! bot can then explain the denial (via `audit2allow`-generated rules),
-//! *allow* it (build + load a policy module), or mark it ignored (default
-//! SELinux posture is already "deny", so ignoring is just suppressing the
-//! noise). Everything is driven by the user with `/selinux`.
+//! The two are the same shape of problem: the kernel blocked an access the
+//! policy did not permit, and the owner has to decide whether to lift it. Which
+//! one a machine runs is a distro choice (SELinux on Fedora/RHEL, AppArmor on
+//! Debian/Ubuntu/SUSE), never both at once, so the watcher accepts either and
+//! this module carries a [`Mac`] tag to remember which produced a given denial.
 //!
-//! Permission model: `auc/d` tool paths are executed only when the user asks
-//! for it through `/selinux allow`. If the daemon runs unprivileged the apply
-//! step prints the exact `sudo` commands instead of failing silently.
+//! When the kmsg watcher sees an `avc: denied` (SELinux) or `apparmor="DENIED"`
+//! (AppArmor) line it stores it here; the bot can then explain it, *allow* it,
+//! or mark it ignored. The mechanics differ by system:
+//!   - SELinux: `audit2allow` builds and `semodule` loads a policy module.
+//!   - AppArmor: `aa-complain` moves the profile out of enforce mode (and
+//!     `aa-enforce` puts it back), which is the reversible knob AppArmor offers
+//!     without hand-editing a profile.
+//! Everything is driven by the user with `/selinux`.
+//!
+//! Permission model: tool paths are executed only when the user asks for it
+//! through `/selinux allow`. If the daemon runs unprivileged the apply step
+//! prints the exact `sudo` commands instead of failing silently.
 
 use anyhow::{Context, Result};
 
+/// Which mandatory-access-control system produced a denial.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Mac {
+    #[default]
+    Selinux,
+    AppArmor,
+}
+
 /// A denial that has been flagged but not yet acted upon.
+///
+/// The field names are SELinux's, and AppArmor reuses them by analogy so the
+/// rest of the flow does not have to branch: for an AppArmor denial `scontext`
+/// holds the confined *profile*, `tcontext` the *name* it was denied on,
+/// `tclass` the *operation*, and `permissions` the denied access mask.
 #[derive(Debug, Clone)]
 pub struct AvcDenial {
     pub id: u32,
+    pub mac: Mac,
     pub raw: String,
     pub comm: Option<String>,
     pub permissions: String,
@@ -30,7 +53,8 @@ pub struct AvcDenial {
 /// Stable fingerprint used to suppress repeated identical denials.
 pub fn fingerprint(avc: &AvcDenial) -> String {
     format!(
-        "{}|{}|{}|{}",
+        "{:?}|{}|{}|{}|{}",
+        avc.mac,
         avc.comm.as_deref().unwrap_or(""),
         avc.permissions,
         avc.scontext,
@@ -79,27 +103,105 @@ pub fn parse_avc(id: u32, raw: &str) -> AvcDenial {
         }
     }
 
-    AvcDenial { id, raw: raw.to_string(), comm, permissions, scontext, tcontext, tclass }
+    AvcDenial { id, mac: Mac::Selinux, raw: raw.to_string(), comm, permissions, scontext, tcontext, tclass }
 }
 
-/// Render an AVC denial for chat display (id, comm, permission, contexts).
-pub fn render(avc: &AvcDenial) -> String {
-    format!(
-        "`#{id}` — {comm} denied {{ {perms} }}\n   scontext: `{sctx}`\n   tcontext: `{tctx}`\n   class: `{class}`",
-        id = avc.id,
-        comm = avc.comm.as_deref().unwrap_or("?"),
-        perms = avc.permissions,
-        sctx = avc.scontext,
-        tctx = avc.tcontext,
-        class = avc.tclass,
-    )
+/// Dispatch to the right parser by the shape of the line: AppArmor stamps
+/// `apparmor="DENIED"`, SELinux writes `avc: denied`.
+pub fn parse(id: u32, raw: &str) -> AvcDenial {
+    if raw.to_lowercase().contains("apparmor=") {
+        parse_apparmor(id, raw)
+    } else {
+        parse_avc(id, raw)
+    }
 }
 
-/// Feed a single AVC line to `audit2allow` and return its `.te` output.
+/// Best-effort parse of an AppArmor `apparmor="DENIED"` audit line, mapped onto
+/// the same [`AvcDenial`] shape. Example line:
 ///
-/// This is the *explanation* half of the flow: it shows exactly which allow
-/// rule would lift the denial, so the user can decide before loading it.
+/// ```text
+/// audit: type=1400 ... apparmor="DENIED" operation="open" profile="/usr/bin/man"
+///   name="/etc/shadow" pid=123 comm="man" requested_mask="r" denied_mask="r"
+/// ```
+pub fn parse_apparmor(id: u32, raw: &str) -> AvcDenial {
+    let lower = raw.to_lowercase();
+    // All AppArmor fields are quoted `key="value"`.
+    let field = |key: &str| -> Option<String> {
+        let pos = lower.find(key)?;
+        let rest = &raw[pos + key.len()..];
+        let rest = rest.trim_start_matches('"');
+        let end = rest.find('"').unwrap_or(rest.len());
+        Some(rest[..end].to_string())
+    };
+    // denied_mask is the access actually blocked; fall back to requested_mask.
+    let permissions = field("denied_mask=")
+        .filter(|s| !s.is_empty())
+        .or_else(|| field("requested_mask="))
+        .unwrap_or_default();
+    let profile = field("profile=").unwrap_or_default();
+    let name = field("name=").unwrap_or_default();
+    let operation = field("operation=").unwrap_or_default();
+    let comm = field("comm=").filter(|s| !s.is_empty());
+
+    AvcDenial {
+        id,
+        mac: Mac::AppArmor,
+        raw: raw.to_string(),
+        comm,
+        permissions,
+        scontext: profile,
+        tcontext: name,
+        tclass: operation,
+    }
+}
+
+/// Render a denial for chat display, labelled by which MAC system it came from
+/// and using that system's own vocabulary.
+pub fn render(avc: &AvcDenial) -> String {
+    match avc.mac {
+        Mac::Selinux => format!(
+            "`#{id}` *SELinux* — {comm} denied {{ {perms} }}\n   scontext: `{sctx}`\n   tcontext: `{tctx}`\n   class: `{class}`",
+            id = avc.id,
+            comm = avc.comm.as_deref().unwrap_or("?"),
+            perms = avc.permissions,
+            sctx = avc.scontext,
+            tctx = avc.tcontext,
+            class = avc.tclass,
+        ),
+        Mac::AppArmor => format!(
+            "`#{id}` *AppArmor* — {comm} denied {{ {perms} }} on `{name}`\n   profile: `{prof}`\n   operation: `{op}`",
+            id = avc.id,
+            comm = avc.comm.as_deref().unwrap_or("?"),
+            perms = avc.permissions,
+            name = avc.tcontext,
+            prof = avc.scontext,
+            op = avc.tclass,
+        ),
+    }
+}
+
+/// Show which change would lift the denial, without applying it.
+///
+/// SELinux: the `audit2allow` rule. AppArmor: there is no rule generator; the
+/// honest answer is which profile is blocking and that lifting it means either
+/// putting that profile in complain mode or adding the access to it by hand.
 pub fn explain_rule(avc: &AvcDenial) -> Result<String> {
+    if avc.mac == Mac::AppArmor {
+        return Ok(format!(
+            "AppArmor profile `{prof}` denied `{perms}` on `{name}` (operation `{op}`).\n\n\
+             AppArmor has no `audit2allow`. To lift it you can either:\n\
+             • put the profile in complain mode (logs instead of blocks):\n  \
+             `sudo aa-complain {prof}`  — reversible with `sudo aa-enforce {prof}`\n\
+             • or add the access to the profile and reload it:\n  \
+             add `{name} {perms},` under the profile and `sudo apparmor_parser -r <profile-file>`.\n\n\
+             `/selinux allow #{id}` will run the complain-mode step for you.",
+            prof = avc.scontext,
+            perms = avc.permissions,
+            name = avc.tcontext,
+            op = avc.tclass,
+            id = avc.id,
+        ));
+    }
     let mut child = std::process::Command::new("audit2allow")
         .args(["-i", "-"])
         .stdin(std::process::Stdio::piped())
@@ -129,6 +231,40 @@ pub fn explain_rule(avc: &AvcDenial) -> Result<String> {
 /// runs unprivileged the returned `Result` carries the exact `sudo` commands
 /// the user needs to run — the bot can just forward them.
 pub fn apply_allow(avc: &AvcDenial, module_name: &str) -> Result<String> {
+    // AppArmor has no policy-module path. The reversible action is to move the
+    // blocking profile into complain mode, which is what an operator does while
+    // deciding what to add to the profile permanently.
+    if avc.mac == Mac::AppArmor {
+        let profile = avc.scontext.clone();
+        anyhow::ensure!(
+            !profile.is_empty(),
+            "apparmor: the denial carried no profile name; nothing to set to complain mode"
+        );
+        let out = std::process::Command::new("aa-complain")
+            .arg(&profile)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .output();
+        return match out {
+            Ok(o) if o.status.success() => Ok(format!(
+                "✅ AppArmor profile `{profile}` set to *complain* mode: the access is logged, not blocked.\n\
+                 Put it back with: `sudo aa-enforce {profile}`"
+            )),
+            Ok(o) => {
+                let stderr = String::from_utf8_lossy(&o.stderr).trim().to_string();
+                Ok(format!(
+                    "AppArmor needs root to change the profile:\n\
+                     `aa-complain {profile}` failed: {stderr}\n\n\
+                     Run this to apply it:\n```\nsudo aa-complain {profile}\n```\n\
+                     (reverse with `sudo aa-enforce {profile}`)"
+                ))
+            }
+            Err(e) => Ok(format!(
+                "AppArmor tool not available ({e}). Install it (`apparmor-utils`) or run by hand:\n\
+                 ```\nsudo aa-complain {profile}\n```"
+            )),
+        };
+    }
     // The name reaches the filesystem and the policy store, so it is checked
     // rather than trusted. Callers pass `allow<id>` today; a later one passing
     // something with a `/` or a `..` in it must not become a path.
@@ -238,5 +374,33 @@ mod tests {
         let a = parse_avc(9, "avc: denied { exec } for name=\"x\"");
         assert_eq!(a.permissions, "exec");
         assert_eq!(a.comm, None);
+    }
+
+    const AA: &str = "audit: type=1400 audit(1715000000.1:7): apparmor=\"DENIED\" \
+     operation=\"open\" profile=\"/usr/bin/man\" name=\"/etc/shadow\" pid=123 \
+     comm=\"man\" requested_mask=\"r\" denied_mask=\"r\" fsuid=0 ouid=0";
+
+    #[test]
+    fn parses_apparmor_denial() {
+        let a = parse(1, AA);
+        assert_eq!(a.mac, Mac::AppArmor);
+        assert_eq!(a.permissions, "r");
+        assert_eq!(a.comm.as_deref(), Some("man"));
+        assert_eq!(a.scontext, "/usr/bin/man"); // profile
+        assert_eq!(a.tcontext, "/etc/shadow");  // name
+        assert_eq!(a.tclass, "open");           // operation
+    }
+
+    #[test]
+    fn dispatch_picks_selinux_for_avc() {
+        assert_eq!(parse(1, AVC).mac, Mac::Selinux);
+        assert_eq!(parse(2, AA).mac, Mac::AppArmor);
+    }
+
+    #[test]
+    fn apparmor_and_selinux_fingerprints_differ() {
+        // A profile path and a context string could in principle collide; the
+        // MAC tag keeps the two systems' denials from being deduped together.
+        assert_ne!(fingerprint(&parse(1, AVC)), fingerprint(&parse(2, AA)));
     }
 }

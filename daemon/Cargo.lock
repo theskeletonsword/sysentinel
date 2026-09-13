@@ -1377,6 +1377,7 @@ version = "0.2.0"
 dependencies = [
  "anyhow",
  "argon2",
+ "asn1-rs",
  "aws-lc-rs",
  "chrono",
  "clap",
@@ -1395,6 +1396,7 @@ dependencies = [
  "toml",
  "ureq",
  "webpki-roots 1.0.9",
+ "x509-parser",
 ]
 
 [[package]]

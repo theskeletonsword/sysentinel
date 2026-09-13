@@ -178,6 +178,7 @@ class PhoneLink(
         backing: String,
         model: String,
         manufacturer: String,
+        attestationChain: List<ByteArray>,
     ): Identity {
         val req = JSONObject()
             .put("op", "identify")
@@ -186,6 +187,11 @@ class PhoneLink(
             .put("backing", backing)
             .put("model", model)
             .put("manufacturer", manufacturer)
+            // Base64, matching the photo payload: these X.509 blobs are several
+            // kilobytes and the channel already moves base64 pictures.
+            .put("attestation", JSONArray().apply {
+                attestationChain.forEach { put(android.util.Base64.encodeToString(it, android.util.Base64.NO_WRAP)) }
+            })
         val reply = exchange(req)
         if (reply.optString("op") == "error") {
             throw PhoneLinkException(
@@ -239,7 +245,7 @@ class PhoneLink(
                 reply.optString("message", ctx.getString(R.string.err_confirm_refused))
             )
         }
-        return reply.optString("detail", "confirmado")
+        return reply.optString("detail", ctx.getString(R.string.confirmed))
     }
 
     /**
@@ -260,6 +266,28 @@ class PhoneLink(
             throw PhoneLinkException(
                 reply.optString("message", ctx.getString(R.string.err_photo_refused))
             )
+        }
+    }
+
+    /**
+     * Send an attachment (PDF, image, Word, …) from the `+` menu.
+     *
+     * `markitdown` asks the machine to convert it to text locally before the AI
+     * reads it — far cheaper than shipping the raw pages to a vision model. The
+     * machine replies with an error string when the toggle is off or the tool
+     * is not installed, which the caller surfaces.
+     */
+    fun sendDocument(filename: String, bytes: ByteArray, markitdown: Boolean) {
+        val encoded = android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
+        val reply = exchange(
+            JSONObject()
+                .put("op", "document")
+                .put("filename", filename)
+                .put("markitdown", markitdown)
+                .put("data_base64", encoded)
+        )
+        if (reply.optString("op") == "error") {
+            throw PhoneLinkException(reply.optString("message", ctx.getString(R.string.err_daemon)))
         }
     }
 
@@ -284,6 +312,12 @@ class PhoneLink(
         val inp = input ?: throw PhoneLinkException(ctx.getString(R.string.err_no_connection))
 
         val sealed = seal(request.toString().toByteArray(Charsets.UTF_8))
+        // The daemon refuses frames over 1 MB and drops the connection, which
+        // surfaces on this side as a raw "broken pipe" while still writing.
+        // Say it plainly instead: the machine never accepts a frame this big.
+        if (sealed.size > MAX_FRAME) {
+            throw PhoneLinkException(ctx.getString(R.string.err_frame_too_big, sealed.size))
+        }
         out.writeInt(sealed.size)
         out.write(sealed)
         out.flush()
@@ -312,7 +346,7 @@ class PhoneLink(
      * suite is indistinguishable from a wrong key and neither reveals anything.
      */
     private fun open(frame: ByteArray): ByteArray {
-        if (frame.size <= NONCE_LEN) throw PhoneLinkException("frame demasiado corto")
+        if (frame.size <= NONCE_LEN) throw PhoneLinkException(ctx.getString(R.string.err_frame_short))
         val nonce = frame.copyOfRange(0, NONCE_LEN)
         val body = frame.copyOfRange(NONCE_LEN, frame.size)
 
