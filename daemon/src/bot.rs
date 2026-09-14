@@ -2774,9 +2774,20 @@ PMU).";
         let Some(phone) = crate::phonehome::load(&profile)? else {
             anyhow::bail!("no phone is paired: nothing can confirm anything");
         };
-        if !crate::phonehome::verify_challenge(&phone.public_key_der, nonce.as_bytes(), signature) {
+        // The confirmation key is biometric-bound and separate from the device
+        // identity key. Use it when present (i.e. when the app has registered
+        // it via identify). Fall back to the device key only for old profiles
+        // written before the confirm key was introduced.
+        let verify_key = phone.confirm_public_key_der.as_deref()
+            .unwrap_or(&phone.public_key_der);
+        if !crate::phonehome::verify_challenge(verify_key, nonce.as_bytes(), signature) {
+            let key_type = if phone.confirm_public_key_der.is_some() {
+                "biometric confirm key"
+            } else {
+                "device key (confirm key not yet registered — re-open the app)"
+            };
             anyhow::bail!(
-                "the signature does not verify against the paired phone's key"
+                "the signature does not verify against the paired phone's {key_type}"
             );
         }
 

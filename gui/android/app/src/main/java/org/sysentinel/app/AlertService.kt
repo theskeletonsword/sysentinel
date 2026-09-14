@@ -104,6 +104,7 @@ class AlertService : Service() {
                                 model        = android.os.Build.MODEL,
                                 manufacturer = android.os.Build.MANUFACTURER,
                                 attestationChain = DeviceIdentity.deviceAttestationChain(),
+                                confirmPublicKey = DeviceIdentity.confirmPublicKey(),
                             )
                         } catch (_: Exception) { /* daemon logged it */ }
                     }

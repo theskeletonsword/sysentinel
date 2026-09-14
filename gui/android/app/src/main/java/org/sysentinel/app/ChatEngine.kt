@@ -162,8 +162,22 @@ class ChatEngine(
         }
     }
 
-    /** Send a photo for face enrolment (the daemon must have `/face register` armed). */
-    fun enrollFace(jpeg: ByteArray, listener: Listener) = sendPhoto(jpeg, listener)
+    /** Send a photo for face enrolment, signed with the biometric confirm key. */
+    fun enrollFace(jpeg: ByteArray, confirmSig: ByteArray?, listener: Listener) {
+        val l = link ?: run {
+            listener.onStatus(ctx.getString(R.string.state_offline_photo), false)
+            return
+        }
+        io.execute {
+            try {
+                l.sendPhoto(jpeg, confirmSig)
+                post(listener) { it.onStatus(ctx.getString(R.string.state_photo_sent), true) }
+                drain(listener, l)
+            } catch (e: Exception) {
+                post(listener) { it.onStatus(e.message ?: ctx.getString(R.string.state_photo_failed), false) }
+            }
+        }
+    }
 
     /** Send a signed confirmation for an armed order. */
     fun confirm(nonce: String, signature: ByteArray, onResult: (String) -> Unit) {
@@ -201,6 +215,7 @@ class ChatEngine(
                 model = android.os.Build.MODEL,
                 manufacturer = android.os.Build.MANUFACTURER,
                 attestationChain = DeviceIdentity.deviceAttestationChain(),
+                confirmPublicKey = DeviceIdentity.confirmPublicKey(),
             )
         } catch (e: Exception) {
             null

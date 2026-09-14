@@ -179,6 +179,7 @@ class PhoneLink(
         model: String,
         manufacturer: String,
         attestationChain: List<ByteArray>,
+        confirmPublicKey: ByteArray? = null,
     ): Identity {
         val req = JSONObject()
             .put("op", "identify")
@@ -192,6 +193,9 @@ class PhoneLink(
             .put("attestation", JSONArray().apply {
                 attestationChain.forEach { put(android.util.Base64.encodeToString(it, android.util.Base64.NO_WRAP)) }
             })
+            .apply {
+                if (confirmPublicKey != null) put("confirm_public_key", bytesJson(confirmPublicKey))
+            }
         val reply = exchange(req)
         if (reply.optString("op") == "error") {
             throw PhoneLinkException(
@@ -259,9 +263,11 @@ class PhoneLink(
      * characters, and the daemon's decoder rejects whitespace inside a
      * quantum rather than guessing at it.
      */
-    fun sendPhoto(jpeg: ByteArray) {
+    fun sendPhoto(jpeg: ByteArray, confirmSig: ByteArray? = null) {
         val encoded = android.util.Base64.encodeToString(jpeg, android.util.Base64.NO_WRAP)
-        val reply = exchange(JSONObject().put("op", "photo").put("jpeg_base64", encoded))
+        val req = JSONObject().put("op", "photo").put("jpeg_base64", encoded)
+            .apply { if (confirmSig != null) put("confirm_signature", bytesJson(confirmSig)) }
+        val reply = exchange(req)
         if (reply.optString("op") == "error") {
             throw PhoneLinkException(
                 reply.optString("message", ctx.getString(R.string.err_photo_refused))

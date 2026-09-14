@@ -179,14 +179,34 @@ object Confirmation {
         )
     }
 
+    /**
+     * Biometric gate that signs [payload] with the confirm key.
+     *
+     * The signature is handed to [onSuccess] so the caller can attach it to
+     * whatever it is about to send (face photo, etc.). This makes the
+     * biometric proof cryptographically bound to that specific payload rather
+     * than just a "was present" check.
+     *
+     * Falls back to [enrollGate] (no CryptoObject) when the confirm key is
+     * unavailable, so it never deadlocks.
+     */
     fun gate(
         activity: FragmentActivity,
-        onSuccess: () -> Unit,
+        payload: ByteArray,
+        onSuccess: (signature: ByteArray?) -> Unit,
         onDone: (message: String) -> Unit,
     ) {
-        val signature = DeviceIdentity.confirmSignature()
-        if (signature == null) {
-            onDone(activity.getString(R.string.confirm_unavailable))
+        val sigObj = DeviceIdentity.confirmSignature()
+        if (sigObj == null) {
+            // No biometric-bound key available — use a presence-only gate and
+            // pass null so the caller sends the photo without a signature.
+            enrollGate(
+                activity = activity,
+                title = activity.getString(R.string.gate_prompt_title),
+                subtitle = activity.getString(R.string.gate_prompt_subtitle),
+                onSuccess = { onSuccess(null) },
+                onDone = onDone,
+            )
             return
         }
         val executor: Executor = androidx.core.content.ContextCompat.getMainExecutor(activity)
@@ -201,13 +221,10 @@ object Confirmation {
                         return
                     }
                     try {
-                        // No payload here: the gate is the fingerprint itself.
-                        // The signature object is still consumed, so this auth
-                        // cannot authorise anything else.
-                        sig.sign()
-                        onSuccess()
+                        sig.update(payload)
+                        onSuccess(sig.sign())
                     } catch (e: Exception) {
-                        Log.e(TAG, "consuming the gate signature failed: ${e.message}")
+                        Log.e(TAG, "signing the face photo failed: ${e.message}")
                         onDone(activity.getString(R.string.confirm_sign_failed, e.message ?: ""))
                     }
                 }
@@ -223,6 +240,8 @@ object Confirmation {
                         }
                     )
                 }
+
+                override fun onAuthenticationFailed() {}
             },
         )
         prompt.authenticate(
@@ -234,7 +253,7 @@ object Confirmation {
                     androidx.biometric.BiometricManager.Authenticators.BIOMETRIC_STRONG
                 )
                 .build(),
-            BiometricPrompt.CryptoObject(signature),
+            BiometricPrompt.CryptoObject(sigObj),
         )
     }
 }

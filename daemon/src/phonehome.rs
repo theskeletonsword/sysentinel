@@ -90,6 +90,18 @@ pub struct PhoneProfile {
     /// [`PhoneProfile::describe`].
     #[serde(default)]
     pub attested_security_level: String,
+    /// SubjectPublicKeyInfo DER of the biometric-bound confirmation key.
+    ///
+    /// A separate key from the device identity key above: that one proves
+    /// *which* handset is present; this one proves the *owner's finger* was
+    /// on it at the moment a dangerous command was confirmed (or a face photo
+    /// was enrolled). Stored here so the daemon can verify both kinds of
+    /// signature without confusing one for the other.
+    ///
+    /// `None` for profiles written before this field existed — old handsets
+    /// fall back to the typed-nonce path for command confirmations.
+    #[serde(default)]
+    pub confirm_public_key_der: Option<Vec<u8>>,
 }
 
 impl PhoneProfile {
@@ -467,6 +479,7 @@ mod tests {
             signing_proven: false,
             attestation: Vec::new(),
             attested_security_level: "no_attestation".into(),
+            confirm_public_key_der: None,
         }
     }
 

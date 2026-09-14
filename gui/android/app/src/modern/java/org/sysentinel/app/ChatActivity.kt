@@ -1184,6 +1184,8 @@ private fun OwnershipScreen(
     }
 
     // The fingerprint gate: only after it passes do we arm and send.
+    // The gate signs the photo bytes themselves, so the daemon can verify
+    // the owner's biometric was present for THIS specific enrollment photo.
     pendingFace?.let { original ->
         LaunchedEffect(original) {
             val act = activity
@@ -1192,24 +1194,24 @@ private fun OwnershipScreen(
                 localNote = ctx.getString(R.string.own_enroll_no_window)
                 return@LaunchedEffect
             }
+            // Scale down first (the channel refuses frames over 1 MB), then
+            // sign the scaled bytes so the signature matches what is sent.
+            val jpeg = FacePhoto.forEnrolment(original)
+            if (jpeg == null) {
+                pendingFace = null
+                localNote = ctx.getString(R.string.own_enroll_unreadable)
+                return@LaunchedEffect
+            }
             Confirmation.gate(
                 activity = act,
-                onSuccess = {
+                payload = jpeg,
+                onSuccess = { confirmSig ->
                     pendingFace = null
-                    // A camera JPEG is megabytes and the channel refuses frames
-                    // over 1 MB — the machine would close the connection mid-write
-                    // and the phone would die of "broken pipe". A face template
-                    // needs no such resolution: scale down, then arm and send.
-                    val jpeg = FacePhoto.forEnrolment(original)
-                    if (jpeg == null) {
-                        localNote = ctx.getString(R.string.own_enroll_unreadable)
-                    } else {
-                        onCommand("/face register")
-                        engine.enrollFace(jpeg, listener)
-                        if (saveLocal) {
-                            saveFaceLocally(ctx, original)
-                            localNote = ctx.getString(R.string.own_saved_local)
-                        }
+                    onCommand("/face register")
+                    engine.enrollFace(jpeg, confirmSig, listener)
+                    if (saveLocal) {
+                        saveFaceLocally(ctx, original)
+                        localNote = ctx.getString(R.string.own_saved_local)
                     }
                 },
                 onDone = { message ->

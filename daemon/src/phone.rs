@@ -311,6 +311,14 @@ pub enum FromPhone {
         /// see `phonehome::verify_attestation`.
         #[serde(default)]
         attestation: Vec<String>,
+        /// SubjectPublicKeyInfo DER of the biometric-bound confirmation key.
+        ///
+        /// A separate key: the device key proves *which* handset is present;
+        /// this proves the *owner's finger* was on it when a dangerous command
+        /// was confirmed, or when a face photo was enrolled. Absent on older
+        /// app versions that have not yet generated the key.
+        #[serde(default)]
+        confirm_public_key: Option<Vec<u8>>,
     },
     /// Give me everything still waiting.
     Fetch,
@@ -331,7 +339,17 @@ pub enum FromPhone {
     /// Base64 rather than a byte array: a JPEG through a JSON array of integers
     /// is roughly six bytes on the wire per byte of image, which turns a 2 MB
     /// photo into 12 MB and straight past the frame cap.
-    Photo { jpeg_base64: String },
+    ///
+    /// `confirm_signature` is an ECDSA P-256/SHA-256 signature over the raw
+    /// JPEG bytes, produced by the biometric-bound confirmation key immediately
+    /// after the owner's fingerprint was accepted. When present the daemon
+    /// verifies it before enrolling; when absent (older app) it is accepted on
+    /// the channel-level authentication alone.
+    Photo {
+        jpeg_base64: String,
+        #[serde(default)]
+        confirm_signature: Option<Vec<u8>>,
+    },
     /// A document (PDF, image, Word, …) the owner attached from the `+` menu.
     ///
     /// `markitdown` asks the daemon to convert it to Markdown text locally
@@ -1108,6 +1126,7 @@ fn serve<S: Read + Write>(
                 model,
                 manufacturer,
                 attestation,
+                confirm_public_key,
             } => {
                 // Base64 rather than byte arrays: attestation chains are several
                 // kilobytes of X.509, and the channel already carries photos the
@@ -1131,6 +1150,7 @@ fn serve<S: Read + Write>(
                     &model,
                     &manufacturer,
                     &chain,
+                    confirm_public_key.as_deref(),
                 );
                 // Only "this is the handset I know" — or a first pairing —
                 // opens the door. A different device is refused outright rather
@@ -1157,8 +1177,28 @@ fn serve<S: Read + Write>(
                     Err(e) => ToPhone::Error { message: format!("{e:#}") },
                 }
             }
-            FromPhone::Photo { jpeg_base64 } => match decode_base64(&jpeg_base64) {
+            FromPhone::Photo { jpeg_base64, confirm_signature } => match decode_base64(&jpeg_base64) {
                 Some(bytes) => {
+                    // If the app sent a confirm signature, verify it before
+                    // enrolling — a biometric-signed photo proves the owner's
+                    // finger was present at enrollment, not just the pairing key.
+                    if let Some(sig) = confirm_signature {
+                        let profile = crate::phonehome::load(profile_path);
+                        let confirm_key = profile.ok().flatten()
+                            .and_then(|p| p.confirm_public_key_der);
+                        if let Some(pub_key) = confirm_key {
+                            if !crate::phonehome::verify_challenge(&pub_key, &bytes, &sig) {
+                                log::warn!("phone: face photo arrived with an invalid confirm signature — rejected");
+                                return Ok(respond(&mut stream, &key, &ToPhone::Error {
+                                    message: "the photo's confirmation signature does not verify: \
+                                              re-open the app so it can update the confirm key, \
+                                              then try again".to_string(),
+                                })?);
+                            }
+                        }
+                        // If the profile has no confirm key yet, accept the photo
+                        // (the key will be stored on the next identify).
+                    }
                     on_photo(&bytes);
                     ToPhone::Ok
                 }
@@ -1252,6 +1292,7 @@ fn unreadable_profile_placeholder() -> crate::phonehome::PhoneProfile {
         signing_proven: false,
         attestation: Vec::new(),
         attested_security_level: "no_attestation".to_string(),
+        confirm_public_key_der: None,
     }
 }
 
@@ -1278,6 +1319,7 @@ fn identify_handset(
     model: &str,
     manufacturer: &str,
     attestation: &[Vec<u8>],
+    confirm_public_key: Option<&[u8]>,
 ) -> ToPhone {
     use crate::phonehome::{self, PhoneVerdict};
 
@@ -1315,16 +1357,28 @@ fn identify_handset(
             // previously *verified* claim, so it cannot mask drift.
             let wants_attestation = !attestation.is_empty()
                 && saved.as_ref().map(|p| p.attestation.is_empty()).unwrap_or(false);
-            if wants_attestation {
-                let attested = phonehome::verify_attestation(attestation);
-                log::info!(
-                    "phone: pairing upgraded with attestation — key attested as living in {}",
-                    attested.level
-                );
-                if let Some(ref mut p) = saved {
-                    p.attestation_verified = attested.verified;
-                    p.attested_security_level = attested.level;
-                    p.attestation = attestation.to_vec();
+            let wants_confirm_key = confirm_public_key.is_some()
+                && saved.as_ref().map(|p| p.confirm_public_key_der.is_none()).unwrap_or(false);
+            if wants_attestation || wants_confirm_key {
+                if wants_attestation {
+                    let attested = phonehome::verify_attestation(attestation);
+                    log::info!(
+                        "phone: pairing upgraded with attestation — key attested as living in {}",
+                        attested.level
+                    );
+                    if let Some(ref mut p) = saved {
+                        p.attestation_verified = attested.verified;
+                        p.attested_security_level = attested.level;
+                        p.attestation = attestation.to_vec();
+                    }
+                }
+                if wants_confirm_key {
+                    log::info!("phone: confirm key registered for this handset");
+                    if let Some(ref mut p) = saved {
+                        p.confirm_public_key_der = confirm_public_key.map(|k| k.to_vec());
+                    }
+                }
+                if let Some(ref p) = saved {
                     if let Err(e) = phonehome::save(profile_path, p) {
                         log::error!("phone: cannot persist the upgraded pairing: {e:#}");
                     }
@@ -1378,6 +1432,7 @@ fn identify_handset(
                 // is visible as a difference rather than a silent update.
                 attestation: attestation.to_vec(),
                 attested_security_level: attested.level,
+                confirm_public_key_der: confirm_public_key.map(|k| k.to_vec()),
             };
             let detail = profile.describe();
             match phonehome::save(profile_path, &profile) {
@@ -1413,6 +1468,7 @@ fn identify_handset(
                 signing_proven: false,
                 attestation: attestation.to_vec(),
                 attested_security_level: attested.level,
+                confirm_public_key_der: confirm_public_key.map(|k| k.to_vec()),
             };
             let detail = profile.describe();
             match phonehome::save(profile_path, &profile) {
@@ -1988,7 +2044,7 @@ mod tests {
 
     #[test]
     fn a_photo_frame_round_trips_through_the_protocol() {
-        let msg = FromPhone::Photo { jpeg_base64: "aGVsbG8=".into() };
+        let msg = FromPhone::Photo { jpeg_base64: "aGVsbG8=".into(), confirm_signature: None };
         let json = serde_json::to_string(&msg).unwrap();
         assert_eq!(json, r#"{"op":"photo","jpeg_base64":"aGVsbG8="}"#);
         assert_eq!(serde_json::from_str::<FromPhone>(&json).unwrap(), msg);
