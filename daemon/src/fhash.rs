@@ -354,6 +354,73 @@ pub fn open_bounded(path: &Path) -> anyhow::Result<image::DynamicImage> {
         .map_err(|e| anyhow::anyhow!("no pude decodificar {}: {e}", path.display()))
 }
 
+// ── Recompressing evidence photos for the phone-link wire ────────────────────
+//
+// Neither the webcam (`sysentinel-cam`, any resolution the config asks for)
+// nor the initramfs LUKS hook (whatever the pre-boot environment's camera
+// gives it) bounds the JPEG it writes to disk. The phone-link frame is capped
+// at 1 MiB (`phone::MAX_FRAME`) and a raw photo can run several MB, so a
+// full-size evidence photo sent as-is overruns the cap and the connection
+// dies with a broken pipe instead of delivering anything. Recompress down to
+// a byte budget before it ever reaches `phone.rs`.
+
+/// Target size for a recompressed wire photo. Left well under the 1 MiB frame
+/// cap: base64 adds ~33%, and the frame also carries the JSON envelope and
+/// possibly other queued alerts in the same batch.
+pub const WIRE_PHOTO_TARGET_BYTES: usize = 900_000;
+/// JPEG quality used at every attempt — chosen once and held fixed; only the
+/// dimensions shrink, so recompression artifacts stay consistent.
+pub const WIRE_PHOTO_QUALITY: u8 = 85;
+/// Never scale a photo smaller than this on its short side — evidence that
+/// has shrunk to a postage stamp stops being useful evidence.
+const WIRE_PHOTO_MIN_DIMENSION: u32 = 320;
+/// Hard cap on resize/re-encode rounds, so a pathological image cannot spin
+/// this forever; each round scales by the sqrt of the overshoot ratio, which
+/// converges in 2-3 rounds for any real photo.
+const WIRE_PHOTO_MAX_ITERS: u32 = 8;
+
+fn encode_jpeg(img: &image::RgbImage, quality: u8) -> anyhow::Result<Vec<u8>> {
+    let mut buf = Vec::new();
+    let mut enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, quality);
+    enc.encode(img, img.width(), img.height(), image::ExtendedColorType::Rgb8)
+        .map_err(|e| anyhow::anyhow!("no pude codificar el JPEG: {e}"))?;
+    Ok(buf)
+}
+
+/// Recompress a decoded image for the wire: fixed quality, shrinking
+/// dimensions until it fits `target_bytes` (or the minimum dimension floor
+/// is hit, whichever comes first — the caller enforces the actual frame cap,
+/// this just gets as close as a sane photo allows).
+fn compress_rgb_for_wire(
+    mut img: image::RgbImage,
+    target_bytes: usize,
+    quality: u8,
+) -> anyhow::Result<Vec<u8>> {
+    for _ in 0..WIRE_PHOTO_MAX_ITERS {
+        let buf = encode_jpeg(&img, quality)?;
+        if buf.len() <= target_bytes {
+            return Ok(buf);
+        }
+        let (w, h) = (img.width(), img.height());
+        if w.min(h) <= WIRE_PHOTO_MIN_DIMENSION {
+            return Ok(buf);
+        }
+        let ratio = (target_bytes as f64 / buf.len() as f64).sqrt().clamp(0.5, 0.9);
+        let new_w = ((w as f64 * ratio).round() as u32).clamp(WIRE_PHOTO_MIN_DIMENSION, w);
+        let new_h = ((h as f64 * ratio).round() as u32).clamp(WIRE_PHOTO_MIN_DIMENSION, h);
+        img = image::imageops::resize(&img, new_w, new_h, imageops::FilterType::Triangle);
+    }
+    encode_jpeg(&img, quality)
+}
+
+/// Open and recompress a photo file for the phone-link wire. This is the one
+/// entry point `phone.rs` calls — the webcam path, the LUKS evidence path,
+/// anything attached to an alert goes through here first.
+pub fn compress_for_wire(path: &Path) -> anyhow::Result<Vec<u8>> {
+    let img = open_bounded(path)?.to_rgb8();
+    compress_rgb_for_wire(img, WIRE_PHOTO_TARGET_BYTES, WIRE_PHOTO_QUALITY)
+}
+
 // ── The hashing itself ───────────────────────────────────────────────────────
 
 /// Distancia de Hamming entre dos hashes de 64 bits.

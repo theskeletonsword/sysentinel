@@ -398,14 +398,17 @@ class PhoneLink(
         return (0 until arr.length()).map { i ->
             val o = arr.getJSONObject(i)
             val text = o.optString("text")
-            Message(
+            val m = Message(
                 text = text,
                 fromMe = false,
                 timestamp = o.optLong("unix_time") * 1000L,
                 serverId = o.optLong("id"),
                 photoPath = o.optString("photo").takeIf { it.isNotEmpty() && it != "null" },
+                photoBase64 = o.optString("photo_base64").takeIf { it.isNotEmpty() && it != "null" },
                 confirmNonce = confirmNonceIn(text),
             )
+            // Decode the daemon's recompressed evidence into a local file.
+            materializePhoto(ctx, m)
         }
     }
 }

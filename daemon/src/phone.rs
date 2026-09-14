@@ -93,8 +93,15 @@ pub struct QueuedAlert {
     pub id: u64,
     pub unix_time: i64,
     pub text: String,
-    /// Photo path, when there is evidence attached.
+    /// Photo path, when there is evidence attached. Local to this machine —
+    /// informational only, the phone cannot fetch a path.
     pub photo: Option<String>,
+    /// The same photo, recompressed (see `fhash::compress_for_wire`) and
+    /// base64-encoded so the phone can actually render it. `None` when there
+    /// was no photo, the recompression failed, or [`trim_photos_to_budget`]
+    /// dropped it to keep a batched `Alerts` frame under the wire cap.
+    #[serde(default)]
+    pub photo_base64: Option<String>,
 }
 
 /// Alerts that have not yet been acknowledged, persisted so a restart — or a
@@ -137,6 +144,7 @@ impl AlertQueue {
             unix_time: now_unix(),
             text: text.to_string(),
             photo: photo.map(|p| p.display().to_string()),
+            photo_base64: photo.and_then(photo_base64_for_wire),
         });
         // Drop the oldest rather than the newest: recent events are the ones
         // that still matter, and an unbounded queue is a disk-filling bug.
@@ -150,6 +158,15 @@ impl AlertQueue {
     /// Everything still waiting, oldest first.
     pub fn pending(&self) -> Vec<QueuedAlert> {
         self.items.iter().cloned().collect()
+    }
+
+    /// Everything still waiting, ready to hand to the phone: same as
+    /// [`Self::pending`], with photo attachments trimmed to fit one
+    /// `Alerts` frame (see [`trim_photos_to_budget`]).
+    pub fn pending_for_wire(&self) -> Vec<QueuedAlert> {
+        let mut alerts = self.pending();
+        trim_photos_to_budget(&mut alerts);
+        alerts
     }
 
     /// Drop everything up to and including `id`. Called only when the phone
@@ -191,6 +208,59 @@ fn now_unix() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
+}
+
+/// Recompress `path` for the wire and base64-encode it, or `None` if either
+/// step fails — a photo that will not shrink loses its attachment rather than
+/// taking the whole alert down with it; the caption still goes out.
+fn photo_base64_for_wire(path: &Path) -> Option<String> {
+    use base64::Engine as _;
+    match crate::fhash::compress_for_wire(path) {
+        Ok(bytes) => Some(base64::engine::general_purpose::STANDARD.encode(bytes)),
+        Err(e) => {
+            log::warn!("phone: could not prepare {path:?} for the phone — sending the caption alone: {e:#}");
+            None
+        }
+    }
+}
+
+/// Keep a batched `Alerts` frame under [`MAX_FRAME`].
+///
+/// Each photo is already recompressed to [`crate::fhash::WIRE_PHOTO_TARGET_BYTES`]
+/// at push time, but that budget is per-photo: several evidence alerts queued
+/// up while the phone was unreachable can still add up past the frame cap
+/// once base64 and the JSON envelope are on top. Drop the largest remaining
+/// attachment first — it buys back the most room per alert given up — until
+/// the serialised frame fits. The caption always survives; only the image
+/// does not, and the phone can pick it up on the next `Fetch` once earlier
+/// alerts are acknowledged and it no longer has to share the frame.
+fn trim_photos_to_budget(alerts: &mut [QueuedAlert]) {
+    // Headroom for the 4-byte length prefix and the AEAD seal, both tiny next
+    // to a megabyte, plus whatever the rest of the JSON envelope costs.
+    const BUDGET: usize = MAX_FRAME - 8 * 1024;
+    loop {
+        let size = serde_json::to_vec(&ToPhone::Alerts { alerts: alerts.to_vec() })
+            .map(|v| v.len())
+            .unwrap_or(usize::MAX);
+        if size <= BUDGET {
+            return;
+        }
+        let Some(idx) = alerts
+            .iter()
+            .enumerate()
+            .filter_map(|(i, a)| a.photo_base64.as_ref().map(|b| (i, b.len())))
+            .max_by_key(|&(_, len)| len)
+            .map(|(i, _)| i)
+        else {
+            // No photos left to drop; nothing more this function can do.
+            return;
+        };
+        log::warn!(
+            "phone: dropping the photo from alert {} to keep a batched Alerts frame under the wire cap",
+            alerts[idx].id
+        );
+        alerts[idx].photo_base64 = None;
+    }
 }
 
 // ── Framing ───────────────────────────────────────────────────────────────────
@@ -347,7 +417,7 @@ pub enum FromPhone {
     /// the channel-level authentication alone.
     Photo {
         jpeg_base64: String,
-        #[serde(default)]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         confirm_signature: Option<Vec<u8>>,
     },
     /// A document (PDF, image, Word, …) the owner attached from the `+` menu.
@@ -1103,7 +1173,7 @@ fn serve<S: Read + Write>(
 
         let reply = match msg {
             FromPhone::Fetch => {
-                let alerts = queue.lock().expect("phone queue").pending();
+                let alerts = queue.lock().expect("phone queue").pending_for_wire();
                 ToPhone::Alerts { alerts }
             }
             FromPhone::Ack { id } => {

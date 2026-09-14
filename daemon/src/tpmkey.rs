@@ -445,14 +445,25 @@ fn choose_alg() -> LlavecitaAlg {
     }
 }
 
-/// Does this CPU have hardware AES? x86_64 exposes it as the `aes` (AES-NI) /
-/// `vaes` flags in /proc/cpuinfo; aarch64 as the `aes` feature bit. A missing
+/// Does this CPU have hardware-accelerated AES-GCM? AES-NI (or its wider
+/// sibling VAES) only speeds up the cipher rounds — GCM's authentication tag
+/// comes from GHASH, a carry-less multiply that is just as much of the cost
+/// and needs PCLMULQDQ (or VPCLMULQDQ) to be fast. A CPU with one but not the
+/// other still falls back to a software GHASH or a software AES on every
+/// block, at which point ChaCha20-Poly1305 (no lookup-table side channel
+/// either) is the better default, not a worse one.
+///
+/// x86_64 exposes these as the `aes`/`vaes` and `pclmulqdq`/`vpclmulqdq`
+/// flags in /proc/cpuinfo; aarch64 bundles both into a single `aes` (paired
+/// with `pmull` for GHASH) reported here as `asimdaes`. A missing
 /// /proc/cpuinfo (or a weird arch) conservatively reports "no".
 pub(crate) fn aes_accelerated() -> bool {
     let content = match std::fs::read_to_string("/proc/cpuinfo") {
         Ok(c) => c,
         Err(_) => return false,
     };
+    let (mut aesni, mut pclmulqdq, mut vaes, mut vpclmulqdq, mut asimdaes) =
+        (false, false, false, false, false);
     for line in content.lines() {
         let trimmed = line.trim_start();
         if trimmed.starts_with("flags") || trimmed.starts_with("Features") {
@@ -461,13 +472,21 @@ pub(crate) fn aes_accelerated() -> bool {
                 .map(|(_, v)| v.to_ascii_lowercase())
                 .unwrap_or_default();
             for flag in flags.split_whitespace() {
-                if flag == "aes" || flag == "vaes" || flag == "asimdaes" {
-                    return true;
+                match flag {
+                    "aes" => aesni = true,
+                    "pclmulqdq" => pclmulqdq = true,
+                    "vaes" => vaes = true,
+                    "vpclmulqdq" => vpclmulqdq = true,
+                    "asimdaes" => asimdaes = true,
+                    _ => {}
                 }
             }
         }
     }
-    false
+    // The AES-NI/PCLMULQDQ pair is the baseline; VAES/VPCLMULQDQ (dispatched
+    // automatically by AWS-LC when present) is strictly faster still, not a
+    // separate requirement.
+    (aesni && pclmulqdq) || (vaes && vpclmulqdq) || asimdaes
 }
 
 /// Fresh 12-byte nonce per message, from /dev/urandom. The caller guarantees
