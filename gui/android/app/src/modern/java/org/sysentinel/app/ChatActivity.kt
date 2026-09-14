@@ -33,6 +33,7 @@ import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -1175,7 +1176,7 @@ private fun OwnershipScreen(
     var pendingFace by remember { mutableStateOf<ByteArray?>(null) }
     // True once /face register has been sent this session so subsequent photos
     // don't reset the daemon's pending counter back to 3.
-    var faceRegArmed by remember { mutableStateOf(false) }
+    var faceRegArmed by rememberSaveable { mutableStateOf(false) }
 
     val facePicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if (uri != null) {
