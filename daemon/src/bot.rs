@@ -732,6 +732,7 @@ impl CommandBot {
             "/secureboot"     => self.cmd_secureboot(chat_id),
             "/battery"        => self.cmd_battery(chat_id),
             "/face"           => self.cmd_face(chat_id, text),
+            _ if text.trim().starts_with("/face ") => self.cmd_face(chat_id, text),
             "/evidence"       => self.cmd_evidence(chat_id, text),
             _ if text.trim().starts_with("/evidence ") => {
                 self.cmd_evidence(chat_id, text);
