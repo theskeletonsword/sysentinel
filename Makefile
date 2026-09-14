@@ -11,7 +11,7 @@ daemon:
 	cd daemon && cargo build --release
 
 kernel-module:
-	$(MAKE) -C kernel_module
+	$(MAKE) -C kernel/linux
 
 # V4L2 photo tool used by both the initramfs (LUKS evidence) and the daemon
 # (login-watch intrusions). Pure-Rust, no external deps.
@@ -72,7 +72,7 @@ clean:
 	cd daemon && cargo clean
 	cargo clean --manifest-path gui/linux/Cargo.toml
 	cd ramdisk && cargo clean
-	$(MAKE) -C kernel_module clean
+	$(MAKE) -C kernel/linux clean
 
 # Everything, in order: models, daemon, kernel module, initramfs tools, dracut
 # hooks and the desktop GUI. Builds unprivileged and sudoes only to install.

@@ -9,7 +9,7 @@ LICENCE IS PER-DIRECTORY. The SPDX-License-Identifier header on each file is
 authoritative for that file; the map below is the summary.
 
     daemon/                  Apache-2.0                 daemon/LICENSE
-    kernel_module/           MIT OR GPL-2.0-or-later    kernel_module/LICENSE-{MIT,GPL}
+    kernel/linux/           MIT OR GPL-2.0-or-later    kernel/linux/LICENSE-{MIT,GPL}
     ramdisk/                 MIT OR GPL-2.0-or-later    ramdisk/LICENSE-{MIT,GPL}
     scripts/                 MIT OR GPL-2.0-or-later    ramdisk/LICENSE-{MIT,GPL}
     gui/                     Apache-2.0                 LICENSE
@@ -19,7 +19,7 @@ authoritative for that file; the map below is the summary.
 Additional grants and notices:
 
 - daemon/ is Apache-2.0 (daemon/LICENSE).
-- kernel_module/ is dual-licensed MIT OR GPL-2.0-or-later. Both halves of that
+- kernel/linux/ is dual-licensed MIT OR GPL-2.0-or-later. Both halves of that
   dual licence are load-bearing, and neither is optional:
 
     * the GPL-2.0-or-later half is what lets the module bind kernel symbols

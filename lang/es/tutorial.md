@@ -163,7 +163,7 @@ En Fedora 44 eso NO es problema: el compilador exacto ya viene instalado como
 esa ruta automáticamente. Solo compila (sin tocar el PATH):
 
 ```sh
-cd kernel_module
+cd kernel/linux
 make
 # => sysentinel: using rustc: /usr/bin/rustc
 ```
@@ -179,7 +179,7 @@ grep CONFIG_RUSTC_VERSION_TEXT /boot/config-$(uname -r)
 ### 4.3 Compilar y cargar
 
 ```sh
-cd kernel_module
+cd kernel/linux
 make            # MEI habilitado por defecto (usa el árbol de /lib/modules/$(uname -r)/build)
 sudo make modules_install
 sudo modprobe sysentinel_metrics
@@ -346,7 +346,7 @@ RUST_LOG=debug /usr/local/bin/sysentinel-daemon \
 
 | Síntoma | Causa / solución |
 |---|---|
-| `make[5]: *** No rule to make target 'sysentinel_metrics.o'` | El `.rs` raíz no está junto al `.o` (debe estar en la raíz de `kernel_module/`, regla `$(obj)/%.o: $(obj)/%.rs`). Este repo ya lo tiene así. |
+| `make[5]: *** No rule to make target 'sysentinel_metrics.o'` | El `.rs` raíz no está junto al `.o` (debe estar en la raíz de `kernel/linux/`, regla `$(obj)/%.o: $(obj)/%.rs`). Este repo ya lo tiene así. |
 | `E0514: found crate core compiled by an incompatible version of rustc` | `rustc` ≠ al del kernel (rustup vs `/usr/bin/rustc`). En Fedora el `Makefile` ya lo resuelve solo; en otras distros usa el build exacto del kernel. |
 | `error: no such file or directory: 'bindgen'` / `bindgen` no encontrado | Instala `bindgen` (Rust): `cargo install bindgen-cli` o `sudo dnf install bindgen rust-bindgen`. |
 | La app no conecta | `[phone] bind` apunta a una dirección que el teléfono no alcanza (o es `0.0.0.0`). Comprueba desde el móvil que llegas a ese `IP:puerto`. |

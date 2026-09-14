@@ -138,7 +138,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       # This repo is deliberately not uniformly licensed: daemon/ is Apache-2.0
-      # while kernel_module/, ramdisk/ and scripts/ are MIT OR GPL-2.0-or-later.
+      # while kernel/linux/, ramdisk/ and scripts/ are MIT OR GPL-2.0-or-later.
       # A new file with the wrong header quietly breaks that, so gate on it.
       - name: per-directory licence map
         run: ./scripts/licence-map-check.sh

@@ -29,7 +29,7 @@ while (( $# )); do
 done
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-MODSRC="$REPO/kernel_module"
+MODSRC="$REPO/kernel/linux"
 SPEC="$REPO/packaging/akmod/sysentinel_metrics-kmod.spec"
 
 say() { printf '==> %s\n' "$*"; }
@@ -68,7 +68,7 @@ say "$NAME $VER"
 
 # ── 1. source tarball ─────────────────────────────────────────────────────────
 #
-# Same exclusions as the DKMS copy, and for the same reason: kernel_module/ is
+# Same exclusions as the DKMS copy, and for the same reason: kernel/linux/ is
 # also a working build directory, and shipping one machine's *.o into a source
 # package makes every later rebuild start from stale objects.
 TOP="$(mktemp -d)"

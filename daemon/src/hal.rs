@@ -276,7 +276,7 @@ pub fn psp_description() -> Option<String> {
     .iter()
     .any(|p| Path::new(p).exists());
     Some(if ccp {
-        "AMD CCP/PSP present (version mailbox is ring-0-only; see kernel_module/)".to_string()
+        "AMD CCP/PSP present (version mailbox is ring-0-only; see kernel/linux/)".to_string()
     } else {
         "AMD PSP present (TPM served by PSP; raw version mailbox not exposed to ring 3)".to_string()
     })

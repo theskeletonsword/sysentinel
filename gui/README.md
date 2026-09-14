@@ -3,7 +3,7 @@
 > ## ⚠️ LICENCE: these follow the root, **not** the daemon ⚠️
 >
 > Everything under `gui/` is **Apache-2.0**, like `daemon/`. Neither front-end
-> links against the kernel or against `kernel_module/`, so nothing here inherits
+> links against the kernel or against `kernel/linux/`, so nothing here inherits
 > the GPL obligation that the built `.ko` carries. See the root
 > [`NOTICE`](../NOTICE) for the per-directory map.
 

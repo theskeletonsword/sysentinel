@@ -15,7 +15,7 @@ Report to **agustin.pereira.ro@gmail.com** or Signal **theskeletonsword.46**.
 | Component | What it is | In scope |
 |---|---|---|
 | `daemon/` | The userspace watchdog: the phone channel, the command layer, the LLM calls, the face pipeline, every watcher | ✅ |
-| `kernel_module/` | A ring-0 kernel module: procfs nodes, the MEI/HECI client, the rootkit defender, the hypercall watcher, the triple-fault path | ✅ |
+| `kernel/linux/` | A ring-0 kernel module: procfs nodes, the MEI/HECI client, the rootkit defender, the hypercall watcher, the triple-fault path | ✅ |
 | `ramdisk/` | `sysentinel-cam` and `sysentinel-face`, both running **as root inside the initramfs** before the disk is unlocked | ✅ |
 | `ramdisk/91sysentinel/` | The dracut hooks, also root, also pre-unlock | ✅ |
 | `gui/android/` | The phone app: pairing, the device key in the TEE, the biometric confirmation | ✅ |

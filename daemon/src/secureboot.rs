@@ -186,11 +186,11 @@ pub fn module_load_guidance() -> String {
                -outform DER -out MOK.der -nodes -days 36500 -subj \"/CN=sysentinel\"\n\
              # 2) sign the .ko\n\
              sudo /usr/src/linux-headers-$(uname -r)/scripts/sign-file \\\n\
-               sha256 MOK.key MOK.der kernel_module/sysentinel_metrics.ko\n\
+               sha256 MOK.key MOK.der kernel/linux/sysentinel_metrics.ko\n\
              # 3) enroll the key and reboot (the firmware asks to enroll)\n\
              sudo mokutil --import MOK.der && sudo reboot\n\
              # 4) after enrollment, it loads normally\n\
-             sudo insmod kernel_module/sysentinel_metrics.ko write_gid=...\n\
+             sudo insmod kernel/linux/sysentinel_metrics.ko write_gid=...\n\
              ```\n\
              Until then I use the ring-3 fallbacks (procfs, wtmp, tracefs, dmesg)."
                 .to_string()
@@ -198,7 +198,7 @@ pub fn module_load_guidance() -> String {
         SecureBoot::Disabled | SecureBoot::Unsupported => {
             "\n_Without Secure Boot, load the module directly:_\n\
              ```sh\n\
-             sudo insmod kernel_module/sysentinel_metrics.ko write_gid=1000\n\
+             sudo insmod kernel/linux/sysentinel_metrics.ko write_gid=1000\n\
              ```\n\
              No signature, no MOK, no reboot."
                 .to_string()

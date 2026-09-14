@@ -3,7 +3,7 @@
 #
 # Re-sync the DKMS copy of sysentinel_metrics from this repo, and rebuild.
 #
-# Run this after pulling changes that touch kernel_module/. It replaces the
+# Run this after pulling changes that touch kernel/linux/. It replaces the
 # source DKMS holds in /usr/src, rebuilds for the running kernel and reloads
 # the module.
 #
@@ -18,7 +18,7 @@
 #
 # WHAT IS NOT COPIED
 #
-# Build artefacts. The repo's kernel_module/ is also where `make` runs during
+# Build artefacts. The repo's kernel/linux/ is also where `make` runs during
 # development, so it accumulates *.o, .*.cmd, *.ko and friends. Shipping those
 # into /usr/src makes the DKMS tree lie about what it is: `dkms build` would
 # start from one machine's leftovers instead of from source.
@@ -40,7 +40,7 @@ while (( $# )); do
 done
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-MODSRC="$REPO/kernel_module"
+MODSRC="$REPO/kernel/linux"
 
 say() { printf '==> %s\n' "$*"; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }

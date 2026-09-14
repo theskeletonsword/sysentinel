@@ -48,4 +48,4 @@ assets/
 envytools/
 
 # Kernel kbuild temp directories
-kernel_module/.tmp_*/
+kernel/linux/.tmp_*/

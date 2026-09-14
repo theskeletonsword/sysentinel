@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT OR GPL-2.0-or-later
 #
 # akmod package for sysentinel_metrics — the Fedora-native counterpart to the
-# DKMS packaging in kernel_module/dkms.conf.
+# DKMS packaging in kernel/linux/dkms.conf.
 #
 # akmod and DKMS solve the same problem (rebuild this out-of-tree module when a
 # new kernel lands) and both are supported on purpose: Fedora ships akmods and

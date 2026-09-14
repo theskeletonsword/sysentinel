@@ -1,4 +1,4 @@
-# kernel_module/sysentinel_metrics
+# kernel/linux/sysentinel_metrics
 
 > ## ⚠️ THIS DIRECTORY IS **NOT** APACHE-2.0 ⚠️
 >

@@ -47,7 +47,7 @@ installkernel() {
     # Warn loudly and carry on: a missing control channel degrades this boot,
     # while a fatal instmods here would abort the whole initramfs build and
     # leave the new kernel without an image at all. Rebuild the module for the
-    # new kernel (see kernel_module/) to get it back.
+    # new kernel (see kernel/linux/) to get it back.
     if modinfo -k "$kernel" sysentinel_metrics > /dev/null 2>&1; then
         instmods sysentinel_metrics
     else

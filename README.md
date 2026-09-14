@@ -12,9 +12,9 @@
 > | `gui/` | **Apache-2.0** | ✅ fine |
 > | `scripts/` | **MIT OR GPL-2.0-or-later** | ✅ fine — take the MIT option |
 > | `ramdisk/` | **MIT OR GPL-2.0-or-later** | ✅ fine — take the MIT option |
-> | **`kernel_module/`** | **MIT OR GPL-2.0-or-later** | ⛔ **the built `.ko` is GPL — see below** |
+> | **`kernel/linux/`** | **MIT OR GPL-2.0-or-later** | ⛔ **the built `.ko` is GPL — see below** |
 >
-> **The trap is `kernel_module/`.** The *source* is dual-licensed, so you may
+> **The trap is `kernel/linux/`.** The *source* is dual-licensed, so you may
 > take the MIT option for the source alone. But the moment it is **built and
 > linked against the Linux kernel** — which is the only way it is useful — the
 > resulting `sysentinel_metrics.ko` is a work combined with GPL-2.0 code and
@@ -26,8 +26,8 @@
 > module Linux does not consider free is refused them outright); the **MIT**
 > half is what keeps the source permissively reusable.
 >
-> Licence texts live in the directories themselves: `kernel_module/LICENSE-GPL`
-> + `kernel_module/LICENSE-MIT`, `ramdisk/LICENSE-GPL` + `ramdisk/LICENSE-MIT`,
+> Licence texts live in the directories themselves: `kernel/linux/LICENSE-GPL`
+> + `kernel/linux/LICENSE-MIT`, `ramdisk/LICENSE-GPL` + `ramdisk/LICENSE-MIT`,
 > `daemon/LICENSE`. Every source file carries an `SPDX-License-Identifier`
 > header, which is authoritative for that file. Full detail in
 > [`NOTICE`](NOTICE) and in [Licence](#licence) below.
@@ -124,22 +124,10 @@ sysentinel/
 ├── NOTICE
 ├── Makefile                        Top-level: daemon + kernel module + ramdisk tools
 │
-├── kernel_module/                Ring 0 — Rust kernel module (MIT OR GPL-2.0-or-later)
-│   ├── Kbuild · Makefile · README.md · LICENSE-MIT · LICENSE-GPL
-│   ├── sysentinel_core.rs        Rust root: snapshot + rs_render_snapshot / rs_exec_command
-│   ├── hypercall.rs              vmcall / vmmcall / hvc + CPUID detection
-│   ├── ring3.rs                  Ring −3 HAL dispatcher: intel-me → MEI, amd-psp → PSP, none → neither
-│   ├── smm.rs                    Ring −2 SMM posture (ACPI-only): FADT smi_command + WSMT scan, hvm_lat, rodata watch
-│   ├── mei_driver.rs             Intel MEI mei_cl_driver (ring-0 ME access; live MKHI re-query)
-│   ├── psp.rs                    AMD PSP: vendor presence + live HSTI handshake
-│   └── src/                      C shims and watchers
-│       ├── proc_entry.c          procfs shim: /proc/sysentinel_metrics (no /dev node)
-│       ├── mei_shim.c            C glue for mei_cl_bus.h API
-│       ├── psp_shim.c            C glue for the ccp driver's platform-access API
-│       ├── smm_shim.c            Read-only ACPI table reader (acpi_gbl_FADT + WSMT) — zero port I/O
-│       ├── hypercall_watcher.c   Hypercall/VM-exit observation
-│       ├── rootkit_defender.c    Syscall-table / LSTAR integrity checks
-│       └── triplefault.c         Triple-fault trip-wire
+├── kernel/linux/               Ring 0 — Rust kernel module (MIT OR GPL-2.0-or-later)
+│   └── src/... + *.rs          (see below)
+├── kernel/windows/             Future Windows driver (placeholder)
+│   └── autosign/               Where EV/attestation-signing certs live
 │
 ├── daemon/                       Ring 3 — user-space daemon (Apache-2.0)
 │   ├── Cargo.toml · Cargo.lock · LICENSE · README.md
@@ -274,16 +262,16 @@ Requires a kernel built with `CONFIG_RUST=y` (rust-for-linux).
 
 ```sh
 # Default build (metrics device + hypervisor detection):
-make KDIR=/lib/modules/$(uname -r)/build -C kernel_module
+make KDIR=/lib/modules/$(uname -r)/build -C kernel/linux
 
 # With Intel ME kernel client (requires CONFIG_INTEL_MEI=y):
-make KDIR=/lib/modules/$(uname -r)/build -C kernel_module MEI=y
+make KDIR=/lib/modules/$(uname -r)/build -C kernel/linux MEI=y
 # With live AMD PSP handshake via the ccp driver (default PSP=y):
-make KDIR=/lib/modules/$(uname -r)/build -C kernel_module PSP=y
-# Metric-only (no MEI/PSP): make MEI=n PSP=n -C kernel_module
+make KDIR=/lib/modules/$(uname -r)/build -C kernel/linux PSP=y
+# Metric-only (no MEI/PSP): make MEI=n PSP=n -C kernel/linux
 
 # Load
-sudo insmod kernel_module/sysentinel_metrics.ko
+sudo insmod kernel/linux/sysentinel_metrics.ko
 cat /proc/sysentinel_metrics
 # → uptime_s=3600 modules=72 hypervisor=KVM/Intel_VT-x kvm_features=0x000001ff ring3=intel-me me_fw=18.0.1234.0 smm=off ro=ok(rt=0us)
 
@@ -460,14 +448,14 @@ is authoritative for that file; this map is the summary.
 | Path | Licence | Licence text shipped at |
 |---|---|---|
 | `daemon/` | Apache-2.0 | `daemon/LICENSE` |
-| `kernel_module/` | MIT OR GPL-2.0-or-later | `kernel_module/LICENSE-MIT`, `kernel_module/LICENSE-GPL` |
+| `kernel/linux/` | MIT OR GPL-2.0-or-later | `kernel/linux/LICENSE-MIT`, `kernel/linux/LICENSE-GPL` |
 | `ramdisk/` | MIT OR GPL-2.0-or-later | `ramdisk/LICENSE-MIT`, `ramdisk/LICENSE-GPL` |
 | `scripts/` | MIT OR GPL-2.0-or-later | `ramdisk/LICENSE-MIT`, `ramdisk/LICENSE-GPL` (same terms) |
 | `ramdisk/face/models/` | Apache-2.0 (third-party weights) | `ramdisk/face/models/LICENSE`, `.../NOTICE` |
 | `markitdown-rs/` | MIT (© 2025 uhobnil) | `markitdown-rs/LICENSE` |
 | everything else (root `README`, `Makefile`, …) | Apache-2.0 | `LICENSE` |
 
-### The one that bites: `kernel_module/`
+### The one that bites: `kernel/linux/`
 
 The source is dual-licensed, so the source alone may be taken under MIT. The
 built module is a different matter:
@@ -491,7 +479,7 @@ file's SPDX header. Plain `"GPL"` there would quietly drop the MIT half.
 ### The daemon is not a derivative work of the kernel
 
 `daemon/` is ordinary user-space: it talks over syscalls, sysfs and `/proc`, and
-links nothing from `kernel_module/`. The two communicate only through the text
+links nothing from `kernel/linux/`. The two communicate only through the text
 tokens published on `/proc/sysentinel_metrics` — a protocol both sides must
 spell the same way, not shared implementation.
 

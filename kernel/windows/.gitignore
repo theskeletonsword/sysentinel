@@ -1,0 +1,6 @@
+# Windows driver signing material. NEVER commit these: an EV certificate or
+# its private key is the identity Windows drivers are shipped under.
+*.pfx
+*.pvk
+*.cer
+*.spc

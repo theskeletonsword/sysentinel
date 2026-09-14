@@ -5,7 +5,7 @@
 //! # Intel ME (HECI/MEI)
 //!
 //! ME firmware queries are performed **in ring-0** by the `sysentinel_metrics`
-//! kernel module (see `kernel_module/`), which binds the MKHI MEI client on the
+//! kernel module (see `kernel/linux/`), which binds the MKHI MEI client on the
 //! kernel's own MEI bus and exposes the result on `/proc/sysentinel_metrics`.
 //! This module just reads that one-shot procfs file and parses `me_fw=` from it.
 //!
@@ -287,7 +287,7 @@ pub fn query_amd_psp() -> Result<Option<String>> {
     if ccp_present && parts.is_empty() {
         parts.push(
             "AMD CCP/PSP present (direct firmware-version query requires \
-             ring-0 access; see kernel_module/ for the ring-0 path)"
+             ring-0 access; see kernel/linux/ for the ring-0 path)"
                 .to_string(),
         );
     }
