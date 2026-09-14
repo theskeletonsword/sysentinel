@@ -31,15 +31,13 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.slideInVertically
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -346,7 +344,7 @@ private fun AppRoot(
                         contentPadding = PaddingValues(12.dp),
                         verticalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
-                        items(messages, key = { it.serverId.takeIf { id -> id > 0L } ?: it.timestamp }) { msg ->
+                        items(messages) { msg ->
                             val sel = msg in selectedMsgs
                             Bubble(
                                 m = msg,
@@ -1014,24 +1012,17 @@ private fun Bubble(
     onLongClick: () -> Unit = {},
     onClick: () -> Unit = {},
 ) {
-    var visible by remember { mutableStateOf(false) }
-    LaunchedEffect(Unit) { visible = true }
+    var appeared by remember { mutableStateOf(false) }
+    val alpha   by animateFloatAsState(if (appeared) 1f else 0f, tween(200), label = "alpha")
+    val slideY  by animateFloatAsState(if (appeared) 0f else 28f,
+        tween(260, easing = FastOutSlowInEasing), label = "slide")
+    LaunchedEffect(Unit) { appeared = true }
 
     val time = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(m.timestamp))
     val rowBg = if (selected) Accent.copy(alpha = 0.15f) else Color.Transparent
 
-    AnimatedVisibility(
-        visible = visible,
-        enter = fadeIn(tween(180)) + slideInVertically(
-            animationSpec = spring(
-                dampingRatio = Spring.DampingRatioMediumBouncy,
-                stiffness = Spring.StiffnessMediumLow,
-            ),
-            initialOffsetY = { it / 4 },
-        ),
-    ) {
     Row(
-        Modifier.fillMaxWidth().background(rowBg),
+        Modifier.fillMaxWidth().background(rowBg).graphicsLayer { this.alpha = alpha; translationY = slideY },
         horizontalArrangement = if (m.fromMe) Arrangement.End else Arrangement.Start,
     ) {
         Surface(
@@ -1082,7 +1073,6 @@ private fun Bubble(
             }
         }
     }
-    } // AnimatedVisibility
 }
 
 private val QUICK_COMMANDS = listOf(
