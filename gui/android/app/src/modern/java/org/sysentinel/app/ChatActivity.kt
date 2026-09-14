@@ -31,6 +31,12 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.slideInVertically
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -340,7 +346,7 @@ private fun AppRoot(
                         contentPadding = PaddingValues(12.dp),
                         verticalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
-                        items(messages) { msg ->
+                        items(messages, key = { it.serverId.takeIf { id -> id > 0L } ?: it.timestamp }) { msg ->
                             val sel = msg in selectedMsgs
                             Bubble(
                                 m = msg,
@@ -1008,9 +1014,22 @@ private fun Bubble(
     onLongClick: () -> Unit = {},
     onClick: () -> Unit = {},
 ) {
+    var visible by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) { visible = true }
+
     val time = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(m.timestamp))
-    // Selection highlight: tint the row background
     val rowBg = if (selected) Accent.copy(alpha = 0.15f) else Color.Transparent
+
+    AnimatedVisibility(
+        visible = visible,
+        enter = fadeIn(tween(180)) + slideInVertically(
+            animationSpec = spring(
+                dampingRatio = Spring.DampingRatioMediumBouncy,
+                stiffness = Spring.StiffnessMediumLow,
+            ),
+            initialOffsetY = { it / 4 },
+        ),
+    ) {
     Row(
         Modifier.fillMaxWidth().background(rowBg),
         horizontalArrangement = if (m.fromMe) Arrangement.End else Arrangement.Start,
@@ -1063,6 +1082,7 @@ private fun Bubble(
             }
         }
     }
+    } // AnimatedVisibility
 }
 
 private val QUICK_COMMANDS = listOf(
