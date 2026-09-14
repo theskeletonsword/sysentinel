@@ -3376,16 +3376,38 @@ PMU).";
         let mut it = rest.split_whitespace();
         match it.next() {
             Some("register") => {
-                let n = it
-                    .next()
-                    .and_then(|s| s.parse::<u32>().ok())
-                    .unwrap_or(3)
-                    .clamp(1, 20);
+                let mut it2 = it;
+                let mut n_arg: Option<u32> = None;
+                let mut force = false;
+                for token in it2.by_ref() {
+                    match token {
+                        "--force" | "-f" => force = true,
+                        s => if n_arg.is_none() { n_arg = s.parse::<u32>().ok(); }
+                    }
+                }
+                let n = n_arg.unwrap_or(3).clamp(1, 20);
+
+                // Refuse silent overwrite when a face is already enrolled.
+                if !force {
+                    let store = crate::fhash::FaceStore::load(
+                        std::path::Path::new(&self.config.face.path)
+                    );
+                    let already = store.map(|s| !s.is_empty()).unwrap_or(false);
+                    if already {
+                        let _ = self.send(
+                            chat_id,
+                            "⚠️ *Face already enrolled.* \
+                             To replace it run `/face register --force [N]`.",
+                        );
+                        return;
+                    }
+                }
+
                 {
                     let mut g = self.state.lock().expect("bot state mutex");
                     g.face_pending = n;
                 }
-                let flag = if self.config.face.enabled { ": white_check_mark:" } else { "" };
+                let flag = if self.config.face.enabled { " ✅" } else { "" };
                 let _ = self.send(
                     chat_id,
                     &format!(
@@ -3393,8 +3415,7 @@ PMU).";
                          I keep the perceptual hashes (pHash + wHash, 64 bits) and, if the \
                          initramfs tool is installed, the 128-D face vector so early boot \
                          can recognise you before the disk is decrypted. I never keep the \
-                         image.{}\nNote: photos are processed on arrival and deleted.",
-                        flag,
+                         image.{flag}\nNote: photos are processed on arrival and deleted.",
                     ),
                 );
             }
