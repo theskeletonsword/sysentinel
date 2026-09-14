@@ -29,6 +29,7 @@
 //! gets to replace a typed code.
 
 mod ipc;
+mod remote;
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -139,6 +140,27 @@ fn main() -> glib::ExitCode {
     app.run()
 }
 
+/// Which console this window watches, from the environment:
+///
+/// - `SYSENTINEL_CONNECT` set → remote **client** GUI over pinned TLS (the
+///   string the daemon prints under "Network console").
+/// - otherwise `SYSENTINEL_SOCKET` (default `/run/sysentinel/gui.sock`) →
+///   local **server** GUI against this machine's daemon.
+fn resolve_target() -> Result<remote::Target, String> {
+    if let Ok(uri) = std::env::var("SYSENTINEL_CONNECT") {
+        let uri = uri.trim();
+        if !uri.is_empty() {
+            return remote::parse_connect(uri)
+                .map(remote::Target::Remote)
+                .map_err(|e| e.to_string());
+        }
+    }
+    let socket: PathBuf = std::env::var("SYSENTINEL_SOCKET")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| ipc::default_socket_path());
+    Ok(remote::Target::Local(socket))
+}
+
 fn build_ui(app: &adw::Application) {
     // Dark by default: this is a panel you glance at, often in a dim room.
     if let Some(manager) = adw::StyleManager::default().into() {
@@ -146,9 +168,13 @@ fn build_ui(app: &adw::Application) {
         m.set_color_scheme(adw::ColorScheme::ForceDark);
     }
 
-    let socket: PathBuf = std::env::var("SYSENTINEL_SOCKET")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| ipc::default_socket_path());
+    let target = match resolve_target() {
+        Ok(t) => t,
+        Err(message) => {
+            eprintln!("sysentinel-gui: {message}");
+            std::process::exit(1);
+        }
+    };
 
     let readout = gtk4::TextView::builder()
         .editable(false)
@@ -257,10 +283,8 @@ fn build_ui(app: &adw::Application) {
 
     let toolbar = adw::ToolbarView::new();
     let bar = adw::HeaderBar::new();
-    bar.set_title_widget(Some(&adw::WindowTitle::new(
-        "sysentinel",
-        "local console · quiet by design",
-    )));
+    let subtitle = target.describe();
+    bar.set_title_widget(Some(&adw::WindowTitle::new("sysentinel", &subtitle)));
     toolbar.add_top_bar(&bar);
     toolbar.set_content(Some(&split));
 
@@ -287,7 +311,7 @@ fn build_ui(app: &adw::Application) {
         let readout = readout.clone();
         let title = title.clone();
         let status_dot = status_dot.clone();
-        let socket = socket.clone();
+        let target = target.clone();
         move |index: usize| {
             let panel = PANELS[index].clone();
             title.set_text(panel.title);
@@ -296,10 +320,9 @@ fn build_ui(app: &adw::Application) {
             // The request runs on a worker: probing every disk takes real time,
             // and a UI that freezes while it happens is worse than none.
             let (tx, rx) = async_channel::bounded::<Result<String, String>>(1);
-            let socket = socket.clone();
+            let target = target.clone();
             std::thread::spawn(move || {
-                let result =
-                    ipc::ask(&socket, panel.request.clone()).map_err(|e| e.to_string());
+                let result = target.ask(panel.request.clone()).map_err(|e| e.to_string());
                 let _ = tx.send_blocking(result);
             });
 
@@ -348,7 +371,7 @@ fn build_ui(app: &adw::Application) {
         let title = title.clone();
         let entry = entry.clone();
         let send = send.clone();
-        let socket = socket.clone();
+        let target = target.clone();
         move || {
             let question = entry.text().to_string();
             if question.trim().is_empty() {
@@ -363,10 +386,11 @@ fn build_ui(app: &adw::Application) {
                 .set_text(&format!("> {question}\n\nthinking…"));
 
             let (tx, rx) = async_channel::bounded::<Result<String, String>>(1);
-            let socket = socket.clone();
+            let target = target.clone();
             let q = question.clone();
             std::thread::spawn(move || {
-                let r = ipc::ask(&socket, ipc::Request::Chat { text: q })
+                let r = target
+                    .ask(ipc::Request::Chat { text: q })
                     .map_err(|e| e.to_string());
                 let _ = tx.send_blocking(r);
             });

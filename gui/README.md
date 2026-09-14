@@ -12,7 +12,7 @@ not have to type into a chat window in a room full of colleagues.
 
 | Path | Target | Talks to the daemon over |
 |---|---|---|
-| [`linux/`](linux/) | GTK4 desktop app | the local Unix socket (`[ipc]`) |
+| [`linux/`](linux/) | GTK4 desktop app | the local Unix socket (`[ipc]`), or — as the **client** GUI — the network console over pinned TLS 1.3 + token |
 | [`android/`](android/) | APK, `arm64-v8a` + `armeabi-v7a` | the network, with a hardware-backed identity |
 
 ## They are quiet
@@ -42,3 +42,24 @@ element with user authentication cannot be replayed by anyone who is not there.
 
 See [`android/README.md`](android/README.md) for what the phone actually has to
 prove, and `daemon/src/confirm.rs` for what the daemon accepts as proof.
+
+## The desktop as a client
+
+For years the Unix socket made the GTK app a *local* console only — fine for a
+machine you sit in front of, useless for watching it from somewhere else. With
+the network console (`[ipc] net_bind` in the daemon) the same window is also the
+**client GUI**: run it on any machine with `SYSENTINEL_CONNECT` pointing at the
+daemon's connect string, and it shows the exact same panels over TLS 1.3.
+
+Two proofs, both mandatory:
+
+- **pin** — the GUI only accepts the machine whose certificate it was given, so
+  an attacker on the path cannot substitute their own key (no CA certifies a
+  LAN/VPN address; the key IS the identity, same reasoning as the phone QR).
+- **token** — after the handshake the daemon demands the `[ipc] net_token`
+  before a byte of system state moves, so whoever found the port but not the
+  secret learns nothing.
+
+That is what makes the Windows `.ko` port realistic: the GUI `gui/linux` is
+the exact client. Details and the printed connect string are in
+[`linux/README.md`](linux/README.md).

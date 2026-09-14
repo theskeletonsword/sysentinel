@@ -23,3 +23,16 @@ serde      = { version = "1", features = ["derive"] }
 serde_json = "1"
 # The modern gtk4-rs way to get worker results back onto the UI thread.
 async-channel = "2"
+# Network console: TLS 1.3 with the daemon's pinned key. Same crypto backend as
+# the daemon so the whole repository has one implementation.
+rustls           = { version = "0.23", default-features = false, features = ["aws_lc_rs", "logging", "std"] }
+rustls-pki-types = "1"
+aws-lc-rs        = "1"
+base64           = "0.22"
+
+[dev-dependencies]
+# remote.rs tests stand up a loopback TLS server with the same protocol the
+# daemon speaks (token line, then line-delimited JSON) and need to mint the
+# machine's self-signed certificate — rcgen does that, on the same crypto
+# backend as everything else here.
+rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs"] }

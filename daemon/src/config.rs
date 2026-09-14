@@ -481,13 +481,39 @@ pub struct IpcConfig {
     /// so this is the whole access control.
     #[serde(default)]
     pub group: Option<String>,
+    /// Address the network console listens on — the client GUI on another
+    /// machine. Unset switches the network console off. Same transport as the
+    /// phone channel (TLS 1.3, the machine's pinned certificate) with a token
+    /// exchanged after the handshake as the client's half of the
+    /// authentication.
+    #[serde(default)]
+    pub net_bind: Option<String>,
+    /// Port for `net_bind`.
+    #[serde(default = "default_ipc_net_port")]
+    pub net_port: u16,
+    /// The network console's client secret: 64 hex characters, like the phone
+    /// pairing key. Required whenever `net_bind` is set; the daemon refuses to
+    /// start the console without one and prints a freshly minted suggestion.
+    #[serde(default)]
+    pub net_token: Option<String>,
+}
+
+/// The network console's default port. Deliberately not the phone channel's.
+fn default_ipc_net_port() -> u16 {
+    8888
 }
 
 impl Default for IpcConfig {
     /// Off, and root-only when switched on. A local socket onto a root daemon
     /// is not something to enable by accident.
     fn default() -> Self {
-        Self { enabled: false, group: None }
+        Self {
+            enabled: false,
+            group: None,
+            net_bind: None,
+            net_port: default_ipc_net_port(),
+            net_token: None,
+        }
     }
 }
 

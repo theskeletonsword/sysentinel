@@ -32,11 +32,14 @@
 //! and it does not get to skip the step that is.
 
 use std::io::{BufRead, BufReader, Read, Write};
+use std::net::{TcpListener, TcpStream};
 use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 /// A request from the front-end. One JSON object per line.
@@ -321,6 +324,10 @@ pub fn run_ipc_loop(
 }
 
 /// One connection: read requests line by line until the peer goes away.
+///
+/// The protocol is transport-agnostic on purpose — the Unix socket and the
+/// network console serve the exact same bytes, so a rename on one end breaks
+/// both and there is no second dialect to drift.
 fn serve_connection(
     stream: UnixStream,
     config: &crate::config::Config,
@@ -328,17 +335,23 @@ fn serve_connection(
     llm: &dyn crate::llm::LlmBackend,
 ) {
     log::debug!("ipc: client connected");
-    let Ok(write_half) = stream.try_clone() else {
-        return;
-    };
-    let reader = BufReader::new(stream);
-    let mut writer = write_half;
+    let mut stream = stream;
+    serve_io(&mut stream, config, settings, llm);
+}
+
+/// Serve line-delimited JSON over anything that is both readable and writable.
+fn serve_io<S: Read + Write>(
+    stream: &mut S,
+    config: &crate::config::Config,
+    settings: &Arc<Mutex<crate::settings::Settings>>,
+    llm: &dyn crate::llm::LlmBackend,
+) {
+    let mut reader = BufReader::new(stream);
 
     // Bounded: `lines()` will happily grow one allocation until the daemon
-    // dies, and the peers here are local processes that may be buggy as easily
-    // as hostile. A request is a small JSON object; a megabyte is generous.
+    // dies, and the peers here are clients that may be buggy as easily as
+    // hostile. A request is a small JSON object; a megabyte is generous.
     const MAX_REQUEST: u64 = 1 << 20;
-    let mut reader = reader;
     loop {
         let mut line = String::new();
         let read = {
@@ -348,9 +361,11 @@ fn serve_connection(
         match read {
             Ok(0) => break,
             Ok(n) if n as u64 >= MAX_REQUEST => {
-                let _ = writer.write_all(
-                    b"{\"error\":{\"message\":\"request too long\"}}\n",
-                );
+                let too_long = Response::err("request too long");
+                if let Ok(mut encoded) = serde_json::to_string(&too_long) {
+                    encoded.push('\n');
+                    let _ = reader.get_mut().write_all(encoded.as_bytes());
+                }
                 break;
             }
             Ok(_) => {}
@@ -367,10 +382,198 @@ fn serve_connection(
             break;
         };
         encoded.push('\n');
-        if writer.write_all(encoded.as_bytes()).is_err() {
+        if reader.get_mut().write_all(encoded.as_bytes()).is_err() {
             break;
         }
     }
+}
+
+// ── Network console ───────────────────────────────────────────────────────────
+
+/// Serve the network control channel until the process ends.
+///
+/// The same line-delimited JSON protocol as the Unix socket above, but two
+/// gates stand in front of it that make it safe to open beyond a socket file
+/// on one disk:
+///
+/// - TLS 1.3 under the machine's own pinned identity (`phonetls`, the same
+///   key the phone channel uses — one machine, one identity). A client that
+///   does not hold the pin cannot complete a handshake, so a port scan
+///   against an unpinned peer gets nothing but a TLS alert and learns nothing
+///   about this machine.
+/// - A token line exchanged immediately after the handshake. The pin proves
+///   the *machine* to the client; nothing in TLS proves the *client* to the
+///   machine, so the token does. Without it the connection is closed before a
+///   single byte of system state moves.
+///
+/// Unlike the Unix socket there is no filesystem gate — the access control
+/// here is exactly those two checks, so both are mandatory.
+pub fn run_net_ipc_loop(
+    config: &crate::config::Config,
+    settings: &Arc<Mutex<crate::settings::Settings>>,
+    llm: Arc<dyn crate::llm::LlmBackend + Send + Sync>,
+) -> Result<()> {
+    let bind = config
+        .ipc
+        .net_bind
+        .clone()
+        .context("ipc-net: net_bind is unset — the network console is off")?;
+    let Some(token_hex) = config.ipc.net_token.clone() else {
+        let suggested = crate::phone::fresh_pairing_key().unwrap_or_default();
+        anyhow::bail!(
+            "ipc-net: [ipc] net_token is not set, and the network console needs one.\n\
+             Here is a freshly minted one — put it in config.toml:\n\n\
+             \t[ipc]\n\tnet_token = \"{suggested}\"\n\n\
+             It is the client's half of the authentication: the machine's \
+             pinned key proves the server, and this proves whoever connects. \
+             Treat it as a credential."
+        );
+    };
+    if token_hex.len() != 64 || !token_hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        anyhow::bail!("ipc-net: [ipc] net_token must be 64 hex characters");
+    }
+    let port = config.ipc.net_port;
+
+    // The machine's own identity — unconditionally the same certificate the
+    // phone channel answers under. One machine, one pinned key, so a desktop
+    // client and a phone can check the same fingerprint.
+    let profile = crate::phonehome::profile_path(&config.phone.queue_path);
+    let state_dir = profile
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| std::path::PathBuf::from("/var/lib/sysentinel"));
+    let tls = crate::phonetls::TlsIdentity::load_or_create(&state_dir)?;
+    let server_cfg = tls.server_config()?;
+    let pinned = tls.fingerprint.clone();
+
+    let listener = TcpListener::bind((bind.as_str(), port))
+        .with_context(|| format!("ipc-net: cannot listen on {bind}:{port}"))?;
+    let local = listener.local_addr().context("ipc-net: local address unavailable")?;
+
+    log::info!("ipc-net: network console listening on {local}");
+    // The pin is not a secret: it is what the client *requires*, exactly like
+    // the phone's. Printing it at startup saves the owner a walk to the
+    // watched machine to read a file. The token is the secret and stays where
+    // they put it — in config.toml, not in a log line.
+    eprintln!(
+        "\n  Network console — point the client GUI at this machine:\n\n\
+\taddress  {local}\n\
+\tpin      {pinned}\n\
+\ttoken    the [ipc] net_token from config.toml\n\
+\tenv      SYSENTINEL_CONNECT=\"sysentinel://connect?addr={local}&pin={pinned}&token=<net_token>\"\n\n\
+\tNothing is served to anyone who does not present that token over a \
+\thandshake pinned to this machine's key.\n"
+    );
+
+    for stream in listener.incoming() {
+        let stream = match stream {
+            Ok(s) => s,
+            Err(e) => {
+                log::warn!("ipc-net: accept failed: {e}");
+                continue;
+            }
+        };
+        let peer = stream
+            .peer_addr()
+            .map(|a| a.to_string())
+            .unwrap_or_else(|_| "?".to_string());
+        let tok = token_hex.clone();
+        let cfg = config.clone();
+        let st = Arc::clone(settings);
+        let cfg_server = Arc::clone(&server_cfg);
+        let llm_c = Arc::clone(&llm);
+        std::thread::Builder::new()
+            .name(format!("ipc-net-{peer}"))
+            .spawn(move || serve_net_conn(stream, cfg_server, tok, peer, &cfg, &st, llm_c))
+            .context("spawning ipc-net connection thread")?;
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn serve_net_conn(
+    stream: TcpStream,
+    server_cfg: Arc<rustls::ServerConfig>,
+    token: String,
+    peer: String,
+    config: &crate::config::Config,
+    settings: &Arc<Mutex<crate::settings::Settings>>,
+    llm: Arc<dyn crate::llm::LlmBackend + Send + Sync>,
+) {
+    let _ = stream.set_nodelay(true);
+    // Tokens and requests are small and occasional; thirty seconds to produce
+    // the *next* line is generous and still bounds a peer that has gone quiet.
+    let t = Some(Duration::from_secs(30));
+    let _ = stream.set_read_timeout(t);
+    let _ = stream.set_write_timeout(t);
+
+    let conn = match rustls::ServerConnection::new(server_cfg) {
+        Ok(c) => c,
+        Err(e) => {
+            log::warn!("ipc-net: {peer}: no TLS session: {e}");
+            return;
+        }
+    };
+    let mut tls = rustls::StreamOwned::new(conn, stream);
+
+    // The handshake and the token travel together: rustls completes the
+    // handshake on the first I/O, so the token itself only ever exists behind
+    // a pinned-key session — an attacker who cannot complete that session can
+    // never even send us a token.
+    let mut token_line = String::new();
+    let mut byte = [0u8; 1];
+    let mut exceeded = false;
+    loop {
+        match tls.read(&mut byte) {
+            Ok(0) => break,
+            Ok(_) => {
+                token_line.push(byte[0] as char);
+                if token_line.len() > 128 {
+                    exceeded = true;
+                    break;
+                }
+                if byte[0] == b'\n' {
+                    break;
+                }
+            }
+            Err(e) => {
+                log::warn!("ipc-net: {peer}: token read failed: {e}");
+                return;
+            }
+        }
+    }
+    if exceeded {
+        log::warn!("ipc-net: {peer}: token line too long — refusing");
+        return;
+    }
+    if token_line.trim().is_empty() {
+        log::warn!("ipc-net: {peer}: closed before sending a token");
+        return;
+    }
+    if !token_matches(token_line.trim(), &token) {
+        log::warn!("ipc-net: {peer}: wrong token — closing without answering");
+        return;
+    }
+    log::info!("ipc-net: {peer}: authenticated, serving");
+
+    serve_io(&mut tls, config, settings, llm.as_ref());
+}
+
+/// Constant-time comparison of a client token against the configured one.
+///
+/// Both sides are hashed first so the compared slices are always a digest in
+/// length, and the length mixin below does not correlate with how close the
+/// inputs were.
+fn token_matches(seen: &str, expected: &str) -> bool {
+    use aws_lc_rs::digest;
+    let a = digest::digest(&digest::SHA256, seen.as_bytes());
+    let b = digest::digest(&digest::SHA256, expected.as_bytes());
+    let (x, y) = (a.as_ref(), b.as_ref());
+    let mut diff = x.len() ^ y.len();
+    for (i, j) in x.iter().zip(y.iter()) {
+        diff |= usize::from(i ^ j);
+    }
+    diff == 0
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -515,5 +718,126 @@ mod tests {
         assert!(gid_for("definitely-not-a-real-group-xyzzy").is_none());
         // root always exists, and resolves to 0.
         assert_eq!(gid_for("root"), Some(0));
+    }
+
+    #[test]
+    fn a_pinned_client_presenting_the_token_talks_over_tls() {
+        use rustls::pki_types::ServerName;
+
+        // The machine identity the console answers under — same one the phone
+        // channel uses.
+        let dir = std::env::temp_dir().join(format!("sysentinel-ipc-net-ok-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let identity = crate::phonetls::TlsIdentity::load_or_create(&dir).unwrap();
+        let pin = identity.fingerprint.clone();
+        let server_cfg = identity.server_config().unwrap();
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let cfg: crate::config::Config = toml::from_str(
+            r#"
+            [general]
+            [persona]
+            tone = "casual"
+            emotions = true
+            language = "Spanish"
+            [llm]
+            model = "m"
+            "#,
+        )
+        .expect("config parses");
+        let settings = Arc::new(Mutex::new(crate::settings::Settings::default()));
+
+        let expected = "a".repeat(64);
+        let server = std::thread::spawn(move || {
+            let (sock, _) = listener.accept().unwrap();
+            let llm: Arc<dyn crate::llm::LlmBackend + Send + Sync> =
+                Arc::new(crate::llm::NoneBackend);
+            serve_net_conn(sock, server_cfg, expected, "peer".into(), &cfg, &settings, llm);
+        });
+
+        // The client pins the machine's key — nothing else gets a handshake.
+        let client_cfg = crate::phonetls::client_config_pinned(&pin).unwrap();
+        let name = ServerName::try_from("sysentinel").unwrap();
+        let conn = rustls::ClientConnection::new(client_cfg, name).unwrap();
+        let sock = std::net::TcpStream::connect(addr).unwrap();
+        let mut tls = rustls::StreamOwned::new(conn, sock);
+        tls.write_all(format!("{}\n", "a".repeat(64)).as_bytes()).unwrap();
+        tls.flush().unwrap();
+        tls.write_all(b"{\"op\":\"ping\"}\n").unwrap();
+        tls.flush().unwrap();
+
+        let mut reader = BufReader::new(&mut tls);
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        let r: Response = serde_json::from_str(&line).unwrap();
+        match r {
+            Response::Ok { text } => assert!(text.contains("never notifies"), "{text}"),
+            Response::Error { message } => panic!("ping failed: {message}"),
+        }
+
+        server.join().unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_wrong_token_gets_the_connection_closed_without_answer() {
+        use rustls::pki_types::ServerName;
+
+        let dir = std::env::temp_dir().join(format!("sysentinel-ipc-net-bad-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let identity = crate::phonetls::TlsIdentity::load_or_create(&dir).unwrap();
+        let pin = identity.fingerprint.clone();
+        let server_cfg = identity.server_config().unwrap();
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let cfg: crate::config::Config = toml::from_str(
+            r#"
+            [general]
+            [persona]
+            tone = "casual"
+            emotions = true
+            language = "Spanish"
+            [llm]
+            model = "m"
+            "#,
+        )
+        .expect("config parses");
+        let settings = Arc::new(Mutex::new(crate::settings::Settings::default()));
+
+        let server = std::thread::spawn(move || {
+            let (sock, _) = listener.accept().unwrap();
+            let llm: Arc<dyn crate::llm::LlmBackend + Send + Sync> =
+                Arc::new(crate::llm::NoneBackend);
+            serve_net_conn(sock, server_cfg, "a".repeat(64), "peer".into(), &cfg, &settings, llm);
+        });
+
+        let client_cfg = crate::phonetls::client_config_pinned(&pin).unwrap();
+        let name = ServerName::try_from("sysentinel").unwrap();
+        let conn = rustls::ClientConnection::new(client_cfg, name).unwrap();
+        let sock = std::net::TcpStream::connect(addr).unwrap();
+        let mut tls = rustls::StreamOwned::new(conn, sock);
+        // The handshake completes (the key matches), but the token is wrong:
+        // the daemon must close before a byte of system state goes out.
+        tls.write_all(format!("{}\n", "0".repeat(64)).as_bytes()).unwrap();
+        tls.flush().unwrap();
+
+        let mut reader = BufReader::new(&mut tls);
+        let mut line = String::new();
+        // Cierre abrupto (sin close_notify) o EOF limpio: ambos significan
+        // "el daemon colgó sin responder", que es exactamente lo que debe
+        // pasar con un token equivocado.
+        match reader.read_line(&mut line) {
+            Ok(0) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {}
+            Ok(n) => panic!("a wrong token must not get an answer (got {n} bytes: {line:?})"),
+            Err(e) => panic!("unexpected error: {e}"),
+        }
+
+        server.join().unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -165,6 +165,10 @@ fn print_config_summary(path: &std::path::Path, config: &config::Config) {
     println!("  Camera     {}", if config.camera.enabled { "on" } else { "off" });
     println!("  Face       {}", if config.face.enabled { "on" } else { "off" });
     println!("  IPC socket {}", if config.ipc.enabled { "on" } else { "off" });
+    match &config.ipc.net_bind {
+        Some(b) => println!("  Net console {}:{}\t(pinned TLS + token)", b, config.ipc.net_port),
+        None => println!("  Net console off"),
+    }
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
@@ -440,6 +444,23 @@ fn main() -> Result<()> {
             .spawn(move || ipc::run_ipc_loop(&cfg_ipc, &st_ipc, llm_ipc.as_ref()))
             .context("spawning ipc thread")?;
         log::info!("ipc: local control socket thread started");
+    }
+
+    // ── Network console: the same control protocol, TLS 1.3 + token, for the
+    // client GUI on another machine. Off unless [ipc] net_bind says otherwise.
+    if config.ipc.net_bind.is_some() {
+        let cfg_net = config.clone();
+        let st_net = Arc::clone(&settings);
+        let llm_net: Arc<dyn llm::LlmBackend + Send + Sync> =
+            Arc::clone(&llm_backend) as Arc<dyn llm::LlmBackend + Send + Sync>;
+        thread::Builder::new()
+            .name("ipc-net".to_string())
+            .spawn(move || {
+                if let Err(e) = ipc::run_net_ipc_loop(&cfg_net, &st_net, llm_net) {
+                    log::error!("ipc-net: {e:#}");
+                }
+            })
+            .context("spawning ipc-net thread")?;
     }
 
     // ── Device watcher: keyboards and storage appearing on any bus ────────────

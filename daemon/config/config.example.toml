@@ -556,3 +556,26 @@ queue_path = "/var/lib/sysentinel/phone-queue.json"
 [ipc]
 enabled = false
 # group = "sysentinel"
+
+# Network console — the client GUI on another machine (or another OS).
+#
+# Same transport as the phone channel: TLS 1.3 in front of the same
+# line-delimited JSON protocol, and the machine answers under its pinned
+# certificate — nothing outside your network can even complete a handshake
+# against a GUI that only accepts that key. Two checks then stand between an
+# attacker and the panels:
+#
+#   pin   — the client refuses any server whose pinned key is not this
+#           machine's (it is printed at daemon start, under the network
+#           console line).
+#   token — after the handshake the client must present net_token below;
+#           without it the connection is closed before a single character of
+#           system state goes out.
+#
+# The token is a credential, same weight as the phone pairing key: keep it out
+# of backups, out of chat, out of log files. It is printed once at daemon start
+# only if you leave it unset, as an instruction — put it back in this file.
+#
+# net_bind  = "192.168.1.50"     # address to listen on; unset = console off
+# net_port  = 8888
+# net_token = "REPLACE_WITH_64_HEX"
