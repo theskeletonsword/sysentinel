@@ -1173,6 +1173,9 @@ private fun OwnershipScreen(
     // armed nor sent early: the enrolment only crosses the wire after the
     // owner's finger confirms it.
     var pendingFace by remember { mutableStateOf<ByteArray?>(null) }
+    // True once /face register has been sent this session so subsequent photos
+    // don't reset the daemon's pending counter back to 3.
+    var faceRegArmed by remember { mutableStateOf(false) }
 
     val facePicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if (uri != null) {
@@ -1211,7 +1214,10 @@ private fun OwnershipScreen(
                 payload = jpeg,
                 onSuccess = { confirmSig ->
                     pendingFace = null
-                    onCommand("/face register")
+                    if (!faceRegArmed) {
+                        faceRegArmed = true
+                        onCommand("/face register")
+                    }
                     engine.enrollFace(jpeg, confirmSig, listener)
                     if (saveLocal) {
                         saveFaceLocally(ctx, original)
