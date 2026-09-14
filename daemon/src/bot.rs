@@ -3720,6 +3720,74 @@ PMU).";
     /// Consume one photo sent while `/face register` is arming: hash it and
     /// take its 128-D embedding, then throw the pixels away.
     ///
+    /// Send a photo to the configured vision model and relay the reply.
+    ///
+    /// Called when a photo arrives but `/face register` is NOT active. Uses the
+    /// second model in the current provider's model list as the vision model
+    /// (set with `/model <provider> text-model,vision-model`). Falls back to the
+    /// first model if only one is configured — text-only backends just ignore
+    /// the image bytes and describe nothing, which is honest.
+    fn ask_vision_photo(&self, bytes: &[u8]) {
+        let chat_id = self.state.lock().expect("bot state mutex")
+            .paired_chat_id.unwrap_or(0);
+
+        // Find the vision model: second entry in llm_models[provider], or first.
+        let chain     = self.current_llm_chain();
+        let provider  = chain.first().map(String::as_str).unwrap_or("deepseek");
+        let vision_model: Option<String> = {
+            let g = self.settings.lock().expect("settings mutex");
+            g.llm_models.get(provider)
+                .and_then(|ms| ms.get(1).or_else(|| ms.get(0)))
+                .cloned()
+        };
+
+        let mut prefs = self.llm_prefs();
+        if let Some(vm) = vision_model {
+            prefs.model = Some(vm);
+            // Clear per-provider lists so build_named uses the override model.
+            prefs.models_by_provider.remove(provider);
+        }
+
+        let backend = match llm::build_named(&self.config, provider, &prefs) {
+            Ok(b) => b,
+            Err(e) => {
+                log::warn!("vision: could not build backend for '{provider}': {e:#}");
+                let _ = self.send(chat_id, &format!(
+                    "❌ No hay backend de visión para `{provider}`: {e}"
+                ));
+                return;
+            }
+        };
+
+        let system_prompt  = self.resolved_system_prompt();
+        let persona        = llm::resolved_persona(&self.config);
+        let system_context = build_system_context(&self.state, &persona);
+        let memory         = defang_control_markers(&self.memory.load_memory());
+        let conversation   = defang_control_markers(&self.memory.load_context());
+
+        let request = ChatRequest {
+            system_prompt:        &system_prompt,
+            system_context:       &system_context,
+            memory:               &memory,
+            conversation_history: &conversation,
+            user_message:         "",
+            max_tokens:           self.max_tokens,
+        };
+
+        match backend.chat_with_image(&request, bytes) {
+            Ok(reply) => {
+                if let Err(e) = self.memory.append_turn("[photo]", &reply) {
+                    log::error!("failed to append vision turn: {e:#}");
+                }
+                let _ = self.send_markdown(chat_id, &reply);
+            }
+            Err(e) => {
+                log::warn!("vision: LLM call failed: {e:#}");
+                let _ = self.send(chat_id, &format!("❌ El modelo de visión falló: {e}"));
+            }
+        }
+    }
+
     /// The bytes arrive over the phone channel; the image is never written to
     /// disk, only the two perceptual hashes and the embedding are kept.
     pub fn enroll_face_photo(&self, bytes: &[u8]) {
@@ -3728,7 +3796,9 @@ PMU).";
             g.face_pending > 0
         };
         if !wants {
-            log::debug!("face: a photo arrived with no `/face register` armed — ignored");
+            // No enrollment session active — treat it as a vision query if a
+            // vision model is configured for the current provider.
+            self.ask_vision_photo(bytes);
             return;
         }
 

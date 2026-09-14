@@ -110,6 +110,15 @@ pub trait LlmBackend: Send + Sync {
         })
     }
 
+    /// Like `chat`, but includes a JPEG image for vision-capable backends.
+    ///
+    /// Default: drops the image and falls back to text-only `chat`.
+    /// DeepSeek and OpenAI backends override this to send `image_url` content.
+    fn chat_with_image(&self, request: &ChatRequest, image_jpeg: &[u8]) -> Result<String> {
+        let _ = image_jpeg;
+        self.chat(request)
+    }
+
     /// Downcast helper used by tests to inspect the concrete backend shape
     /// (e.g. whether a provider model list built a `FallbackBackend`).
     #[allow(dead_code)]
@@ -408,6 +417,10 @@ impl LlmBackend for FallbackBackend {
 
     fn chat(&self, request: &ChatRequest) -> Result<String> {
         run_with_fallback(&self.chain, "chat", |b| b.chat(request))
+    }
+
+    fn chat_with_image(&self, request: &ChatRequest, image_jpeg: &[u8]) -> Result<String> {
+        run_with_fallback(&self.chain, "vision", |b| b.chat_with_image(request, image_jpeg))
     }
 
     fn as_any(&self) -> &dyn std::any::Any {
