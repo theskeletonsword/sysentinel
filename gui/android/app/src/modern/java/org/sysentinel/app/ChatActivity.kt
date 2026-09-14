@@ -1048,8 +1048,12 @@ private fun Bubble(
                     }
                     // Show filename below image in small text
                     Text(m.text, color = Muted, fontSize = 10.sp)
-                } else {
+                } else if (m.fromMe) {
+                    // My messages: plain text (commands, questions — no MD decoration)
                     Text(m.text, color = Color(0xFFC8D6E5), fontSize = 14.sp)
+                } else {
+                    // Machine messages: render markdown
+                    MarkdownText(m.text, color = Color(0xFFC8D6E5), fontSize = 14.sp)
                 }
                 Text(
                     time, color = Muted, fontSize = 10.sp,
